@@ -109,6 +109,7 @@ var _rock_hist: Array = []
 var _mushroom_hist: Array = []
 var _stump_hist: Array = []
 var _tree_collision_nodes: Array = []   # 全局顺序，撤销删除最近一棵树的碰撞体
+var _rock_collision_nodes: Array = []   # 全局顺序，撤销删除最近一块石头的碰撞体
 
 # 类别元数据
 var _category_models := {
@@ -320,7 +321,14 @@ func populate_auto(terrain: TerrainSystem, count_trees: int = 3200, count_flower
 			for _i in per_block:
 				var p := _random_in_block(terrain, bx, bz)
 				if p != Vector3.INF:
-					_add_instance(cat, p, _rng.randf_range(sr[0], sr[1]), _hist_for(cat))
+					var s := _rng.randf_range(sr[0], sr[1])
+					match cat:
+						"tree":
+							add_tree(p, s)   # 带树干胶囊碰撞
+						"rock":
+							add_rock(p, s)   # 带石头盒碰撞
+						_:
+							_add_instance(cat, p, s, _hist_for(cat))
 
 func _random_in_block(terrain: TerrainSystem, bx: int, bz: int) -> Vector3:
 	var margin := 4.0
@@ -366,7 +374,23 @@ func add_grass(pos: Vector3, scale := 1.0) -> void:
 	_add_instance("grass", pos, scale, _grass_hist)
 
 func add_rock(pos: Vector3, scale := 1.0) -> void:
-	_add_instance("rock", pos, scale, _rock_hist)
+	if not _add_instance("rock", pos, scale, _rock_hist):
+		return
+	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
+	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
+	var block: Dictionary = _blocks[bz * _block_n + bx]
+	var sb := StaticBody3D.new()
+	sb.collision_layer = 8
+	sb.collision_mask = 0
+	var col := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(0.75, 0.45, 0.75) * scale
+	col.shape = box
+	col.position = Vector3(0, 0.22 * scale, 0)
+	sb.add_child(col)
+	sb.position = pos
+	(block["collisions"] as Node3D).add_child(sb)
+	_rock_collision_nodes.append(sb)
 
 func add_mushroom(pos: Vector3, scale := 1.0) -> void:
 	_add_instance("mushroom", pos, scale, _mushroom_hist)
@@ -391,6 +415,9 @@ func remove_last_grass() -> void:
 
 func remove_last_rock() -> void:
 	_remove_last("rock", _rock_hist)
+	if _rock_collision_nodes.size() > 0:
+		var sb: StaticBody3D = _rock_collision_nodes.pop_back()
+		sb.queue_free()
 
 func remove_last_mushroom() -> void:
 	_remove_last("mushroom", _mushroom_hist)
