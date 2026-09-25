@@ -63,14 +63,29 @@ const STUMP_MODELS := [
 	"res://assets/models/nature/log_large.glb",
 ]
 
-# ---- 每类全图上限 ----
-const MAX_TREES := 3200
-const MAX_BUSHES := 3200
-const MAX_FLOWERS := 12000
-const MAX_GRASS := 32000
-const MAX_ROCKS := 1400
-const MAX_MUSHROOMS := 1000
-const MAX_STUMPS := 600
+# ---- 每类全图上限（铺满后玩家仍可放置：种植入口满员时自动顶掉最近一棵） ----
+const MAX_TREES := 4000
+const MAX_BUSHES := 4000
+const MAX_FLOWERS := 16000
+const MAX_GRASS := 40000
+const MAX_ROCKS := 1800
+const MAX_MUSHROOMS := 1200
+const MAX_STUMPS := 800
+
+# ---- 每类生物质量（操作地形/放置建筑时植被自动回收） ----
+## 生物质：植被类回收为生物质
+const BIOMASS := {
+	"tree": 10.0,
+	"bush": 4.0,
+	"flower": 1.5,
+	"grass": 0.5,
+	"mushroom": 2.5,
+	"stump": 5.0,
+}
+## 石材：石头单独回收为石材（不混入生物质）
+const STONE_VALUE := {
+	"rock": 8.0,
+}
 
 # 使用实例随机配色的类别
 const COLORED_CATEGORIES := ["flower", "grass", "mushroom", "stump"]
@@ -234,8 +249,9 @@ func _hist_for(cat: String) -> Array:
 		"stump": return _stump_hist
 	return []
 
-## 通用添加：定位所在块 → 随机模型变体 → 随机旋转/缩放 → 可选实例色
-func _add_instance(cat: String, pos: Vector3, scale: float, hist: Array) -> bool:
+## 通用添加：定位所在块 → 随机模型变体 → 指定/随机旋转 → 随机缩放 → 可选实例色
+## yaw >= 0 使用指定朝向（玩家放置旋转），-1 随机朝向
+func _add_instance(cat: String, pos: Vector3, scale: float, hist: Array, yaw: float = -1.0) -> bool:
 	var max_total: int = _category_max[cat]
 	if _category_total[cat] >= max_total:
 		return false
@@ -258,7 +274,8 @@ func _add_instance(cat: String, pos: Vector3, scale: float, hist: Array) -> bool
 		return false
 	var mm: MultiMesh = mmis[vi].multimesh
 	var idx: int = counts[vi]
-	var basis := Basis.IDENTITY.rotated(Vector3.UP, _rng.randf_range(0.0, TAU)).scaled(Vector3.ONE * scale)
+	var rot := _rng.randf_range(0.0, TAU) if yaw < 0.0 else yaw
+	var basis := Basis.IDENTITY.rotated(Vector3.UP, rot).scaled(Vector3.ONE * scale)
 	mm.set_instance_transform(idx, Transform3D(basis, pos))
 	if cat in COLORED_CATEGORIES:
 		mm.set_instance_color(idx, _random_plant_color(cat))
@@ -343,9 +360,11 @@ func _random_in_block(terrain: TerrainSystem, bx: int, bz: int) -> Vector3:
 			return Vector3(x, h, z)
 	return Vector3.INF
 
-## 添加一棵树（随机变体 + 树干碰撞体）
-func add_tree(pos: Vector3, scale := 1.0) -> void:
-	if not _add_instance("tree", pos, scale, _tree_hist):
+## 添加一棵树（随机变体 + 树干碰撞体；yaw>=0 指定朝向；满员时顶掉最近一棵保证可种）
+func add_tree(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
+	if _category_total["tree"] >= MAX_TREES:
+		remove_last_tree()
+	if not _add_instance("tree", pos, scale, _tree_hist, yaw):
 		return
 	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
@@ -367,8 +386,10 @@ func add_tree(pos: Vector3, scale := 1.0) -> void:
 func add_bush(pos: Vector3, scale := 1.0) -> void:
 	_add_instance("bush", pos, scale, _bush_hist)
 
-func add_flower(pos: Vector3, scale := 1.0) -> void:
-	_add_instance("flower", pos, scale, _flower_hist)
+func add_flower(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
+	if _category_total["flower"] >= MAX_FLOWERS:
+		remove_last_flower()
+	_add_instance("flower", pos, scale, _flower_hist, yaw)
 
 func add_grass(pos: Vector3, scale := 1.0) -> void:
 	_add_instance("grass", pos, scale, _grass_hist)
@@ -478,6 +499,56 @@ func clear_around(center: Vector3, radius: float) -> void:
 				collisions.remove_child(c)
 				c.queue_free()
 	_rebuild_all_hist()
+
+## 回收指定中心周围半径内的植被：移除实例（含树/石碰撞体）
+## 返回 {"biomass": 植被生物质, "stone": 石头石材}——石头不混入生物质
+func recycle_around(center: Vector3, radius: float) -> Dictionary:
+	var result := {"biomass": 0.0, "stone": 0.0}
+	if _blocks.is_empty():
+		return result
+	var r2 := radius * radius
+	for bi in _blocks.size():
+		var block: Dictionary = _blocks[bi]
+		for cat in block["mmis"]:
+			var mmis: Array = block["mmis"][cat]
+			var counts: Array = block["counts"][cat]
+			var bm: float = BIOMASS.get(cat, 0.0)
+			var sv: float = STONE_VALUE.get(cat, 0.0)
+			var removed := 0
+			for mi in mmis.size():
+				var mm: MultiMesh = mmis[mi].multimesh
+				var count: int = counts[mi]
+				var i := 0
+				while i < count:
+					var origin: Vector3 = mm.get_instance_transform(i).origin
+					var dx := origin.x - center.x
+					var dz := origin.z - center.z
+					if dx * dx + dz * dz < r2:
+						var last_t: Transform3D = mm.get_instance_transform(count - 1)
+						mm.set_instance_transform(i, last_t)
+						count -= 1
+						mm.visible_instance_count = count
+						result["biomass"] += bm
+						result["stone"] += sv
+						removed += 1
+					else:
+						i += 1
+				counts[mi] = count
+			_category_total[cat] = maxi(0, _category_total[cat] - removed)
+	# 同步清理树/石碰撞体，避免残留隐形障碍
+	for bi in _blocks.size():
+		var block: Dictionary = _blocks[bi]
+		var collisions := block["collisions"] as Node3D
+		for c in collisions.get_children():
+			var sb := c as StaticBody3D
+			var dx: float = sb.global_position.x - center.x
+			var dz: float = sb.global_position.z - center.z
+			if dx * dx + dz * dz < r2:
+				collisions.remove_child(c)
+				c.queue_free()
+	if result["biomass"] > 0.0 or result["stone"] > 0.0:
+		_rebuild_all_hist()
+	return result
 
 func _rebuild_all_hist() -> void:
 	for cat in _category_models:

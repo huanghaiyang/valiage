@@ -16,6 +16,15 @@ var preview_wall_mat: StandardMaterial3D
 var preview_roof: MeshInstance3D
 var preview_roof_mat: StandardMaterial3D
 
+# 单点放置预览（塔/屋/树/花：视野中心目标点的半透明模型，绿=可放置，红=占位）
+var preview_place: Node3D
+var preview_place_mat_green: StandardMaterial3D
+var preview_place_mat_red: StandardMaterial3D
+var _place_tools := [Game.Tool.TOWER, Game.Tool.ROOF, Game.Tool.TREE, Game.Tool.FLOWER]
+var _place_yaw := 0.0  # 放置朝向（右键旋转）
+const PLACE_OCCUPY_RADIUS := 0.9    # 占位检测球半径（建筑层）
+const PLACE_RECYCLE_RADIUS := 2.0   # 放置时回收植被范围
+
 # 拖拽状态
 var _drag_start: Vector3 = Vector3.ZERO
 var _is_dragging := false
@@ -61,6 +70,13 @@ func _ready() -> void:
 		_capture_frames = 90
 
 func _process(_delta: float) -> void:
+	# 拖拽预览跟随准星持续更新（第一人称下相机在移动）
+	if _is_dragging:
+		_update_preview()
+	# 单点放置工具的目标点半透明预览（绿/红）
+	if Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) and Game.current_tool in _place_tools:
+		_place_yaw += deg_to_rad(0.5)
+	_update_place_preview()
 	if _capture_frames > 0:
 		_capture_frames -= 1
 		if _capture_frames == 0:
@@ -169,6 +185,44 @@ func _setup_previews() -> void:
 	preview_roof.visible = false
 	add_child(preview_roof)
 
+	# 单点放置预览：半透明模型显示在视野中心目标点（绿=可放置，红=建筑占位）
+	preview_place_mat_green = StandardMaterial3D.new()
+	preview_place_mat_green.albedo_color = Color(0.3, 1.0, 0.4, 0.5)
+	preview_place_mat_green.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	preview_place_mat_green.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	preview_place_mat_red = StandardMaterial3D.new()
+	preview_place_mat_red.albedo_color = Color(1.0, 0.3, 0.3, 0.5)
+	preview_place_mat_red.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	preview_place_mat_red.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	preview_place = Node3D.new()
+	preview_place.name = "PreviewPlace"
+	preview_place.visible = false
+	add_child(preview_place)
+	# 塔预览：真实塔楼模型半透明（scale 与放置时一致）
+	var tower_mi := MeshInstance3D.new()
+	tower_mi.name = "TowerPreview"
+	tower_mi.mesh = _extract_mesh(buildings.tower_scene)
+	tower_mi.scale = Vector3.ONE * maxf(0.35, tower_radius * 2.0 / buildings._tower_base)
+	preview_place.add_child(tower_mi)
+	# 屋预览：真实小屋模型半透明（scale 与放置默认一致）
+	var house_mi := MeshInstance3D.new()
+	house_mi.name = "HousePreview"
+	house_mi.mesh = _extract_mesh(buildings.house_scene)
+	house_mi.scale = Vector3.ONE * buildings.HOUSE_BASE_SCALE
+	preview_place.add_child(house_mi)
+	# 树预览：真实树模型半透明（scale 取种树中值）
+	var tree_mi := MeshInstance3D.new()
+	tree_mi.name = "TreePreview"
+	tree_mi.mesh = _extract_mesh(load(VegetationSystem.TREE_MODELS[0]))
+	tree_mi.scale = Vector3.ONE * 1.2
+	preview_place.add_child(tree_mi)
+	# 花预览：真实花模型半透明
+	var flower_mi := MeshInstance3D.new()
+	flower_mi.name = "FlowerPreview"
+	flower_mi.mesh = _extract_mesh(load(VegetationSystem.FLOWER_MODELS[0]))
+	flower_mi.scale = Vector3.ONE * 1.1
+	preview_place.add_child(flower_mi)
+
 func _setup_input_actions() -> void:
 	# 快捷键：撤销
 	var action := InputEventKey.new()
@@ -236,6 +290,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not camera_rig.is_mouse_captured():
 		return
 	if event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed and Game.current_tool in _place_tools:
+			_place_yaw += deg_to_rad(10.0)
+			return
 		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 			_begin_tool()
 		elif event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
@@ -254,22 +311,46 @@ func _begin_tool() -> void:
 			_drag_start = p
 			_is_dragging = true
 		Game.Tool.TOWER:
-			buildings.add_tower(p, tower_radius, tower_height, true)
+			if _is_occupied(p):
+				return
+			buildings.add_tower(p, tower_radius, tower_height, true, _place_yaw)
 			buildings.flush_all()
+			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 		Game.Tool.ROOF:
 			# 屋顶工具：点击放置预制小屋模型
-			buildings.add_house(p, 1.0 + randf() * 0.3)
+			if _is_occupied(p):
+				return
+			buildings.add_house(p, 1.0 + randf() * 0.3, _place_yaw)
 			buildings.flush_all()
+			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 		Game.Tool.TREE:
-			vegetation.add_tree(p + Vector3(0, 0.1, 0), 1.0 + randf() * 0.5)
+			if _is_occupied(p):
+				return
+			vegetation.add_tree(p + Vector3(0, 0.1, 0), 1.0 + randf() * 0.5, _place_yaw)
+			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 		Game.Tool.FLOWER:
-			vegetation.add_flower(p, 1.0 + randf() * 0.4)
+			if _is_occupied(p):
+				return
+			vegetation.add_flower(p, 1.0 + randf() * 0.4, _place_yaw)
+			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 		Game.Tool.TERRAIN_RAISE:
 			terrain.apply_brush(p, terrain.brush_radius, terrain.brush_strength)
+			_recycle_vegetation(p)
 		Game.Tool.TERRAIN_LOWER:
 			terrain.apply_brush(p, terrain.brush_radius, -terrain.brush_strength)
+			_recycle_vegetation(p)
 		Game.Tool.TERRAIN_FLATTEN:
 			terrain.apply_brush(p, terrain.brush_radius, -terrain.brush_strength * 0.3)
+			_recycle_vegetation(p)
+
+## 刷地/放置后回收范围内的植被：植被→生物质，石头→石材（UI 自动更新）
+func _recycle_vegetation(p: Vector3, radius: float = -1.0) -> void:
+	var r := terrain.brush_radius + 0.8 if radius < 0.0 else radius
+	var got := vegetation.recycle_around(p, r)
+	if got["biomass"] > 0.0:
+		Game.biomass += got["biomass"]
+	if got["stone"] > 0.0:
+		Game.stone += got["stone"]
 
 func _end_tool() -> void:
 	if not _is_dragging:
@@ -285,6 +366,8 @@ func _end_tool() -> void:
 			if _drag_start.distance_to(end) > 0.5:
 				buildings.add_wall(_drag_start, end, wall_height, wall_thickness, false)
 				buildings.flush_all()
+				_recycle_vegetation(_drag_start, PLACE_RECYCLE_RADIUS)
+				_recycle_vegetation(end, PLACE_RECYCLE_RADIUS)
 		_:
 			pass
 
@@ -318,12 +401,82 @@ func _update_preview() -> void:
 					preview_roof.visible = true
 			preview_wall.visible = false
 
+## 单点放置工具的目标点半透明预览：每帧跟随准星，绿=可放置，红=建筑占位
+func _update_place_preview() -> void:
+	if not Game.current_tool in _place_tools:
+		preview_place.visible = false
+		return
+	var p: Variant = _get_ground_pos()
+	if p == null:
+		preview_place.visible = false
+		return
+	preview_place.visible = true
+	preview_place.global_position = Vector3(p.x, p.y, p.z)
+	preview_place.rotation = Vector3(0, _place_yaw, 0)
+	var mat := preview_place_mat_red if _is_occupied(p) else preview_place_mat_green
+	var want := _place_node_name(Game.current_tool)
+	for child in preview_place.get_children():
+		child.visible = (child.name == want)
+		_apply_place_material(child, mat)
+
+func _place_node_name(tool: int) -> String:
+	match tool:
+		Game.Tool.TOWER:
+			return "TowerPreview"
+		Game.Tool.ROOF:
+			return "HousePreview"
+		Game.Tool.TREE:
+			return "TreePreview"
+		Game.Tool.FLOWER:
+			return "FlowerPreview"
+	return ""
+
+## 递归设置预览材质（树预览是 MeshInstance3D 或 Node3D 容器）
+func _apply_place_material(node: Node, mat: StandardMaterial3D) -> void:
+	if node is MeshInstance3D:
+		node.material_override = mat
+	for c in node.get_children():
+		_apply_place_material(c, mat)
+
+## 从场景提取第一个 MeshInstance3D 的 Mesh（用于真实模型半透明预览）
+func _extract_mesh(scene: PackedScene) -> Mesh:
+	if scene == null:
+		return null
+	var inst := scene.instantiate()
+	var m := _find_first_mesh(inst)
+	inst.free()
+	return m
+
+func _find_first_mesh(node: Node) -> Mesh:
+	if node is MeshInstance3D:
+		return node.mesh
+	for c in node.get_children():
+		var m := _find_first_mesh(c)
+		if m != null:
+			return m
+	return null
+
+## 占位检测：目标点半径内是否有建筑（玩家创建的墙/塔/屋，层4）。
+## 小植被（树/石/草/花/蘑菇/灌木）不占位，放置时自动回收为生物质/石材。
+func _is_occupied(p: Vector3) -> bool:
+	var space := get_world_3d().direct_space_state
+	var params := PhysicsShapeQueryParameters3D.new()
+	var shape := SphereShape3D.new()
+	shape.radius = PLACE_OCCUPY_RADIUS
+	params.shape = shape
+	params.transform = Transform3D(Basis.IDENTITY, p + Vector3(0, PLACE_OCCUPY_RADIUS, 0))
+	params.collision_mask = 4
+	var hits := space.intersect_shape(params, 4)
+	return not hits.is_empty()
+
 ## UI 回调：切换工具
 func set_tool(tool: int) -> void:
 	Game.current_tool = tool
 	_is_dragging = false
+	_place_yaw = 0.0
 	preview_wall.visible = false
 	preview_roof.visible = false
+	preview_place.visible = false
 
 ## UI 回调：撤销
 func undo() -> void:

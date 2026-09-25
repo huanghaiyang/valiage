@@ -91,7 +91,38 @@ func _physics_process(delta: float) -> void:
 	if player.is_on_floor():
 		_velocity_y = 0.0
 
+	# 地形高度同步与防穿透
+	# 1) 刷地同步：仅在刷地后短暂窗口内（0.5s），且角色位于刷地影响范围且接近地面时，
+	#    高度直接跟随地形高度（网格 0.1s 先更新、碰撞 0.35s 后更新，此间隙内角色不再悬空/被埋/卡住）。
+	#    窗口结束后恢复正常物理，角色可在已下陷/抬升的地形上正常跳跃。
+	var th := terrain.get_height_at(player.global_position.x, player.global_position.z)
+	var bc := terrain._last_brush_center
+	var br := terrain._last_brush_radius
+	var in_brush := false
+	if bc != Vector3.ZERO and br > 0.0:
+		var bdx := player.global_position.x - bc.x
+		var bdz := player.global_position.z - bc.z
+		in_brush = bdx * bdx + bdz * bdz < (br + 1.2) * (br + 1.2)
+	if in_brush and Time.get_ticks_msec() - terrain._last_brush_time < 500 and absf(player.global_position.y - th) < 1.5:
+		player.global_position.y = th + 0.05
+		_velocity_y = 0.0
+	elif player.global_position.y < th - 0.5:
+		# 2) 深度穿透兜底：任何原因掉到地面以下都吸回地表
+		player.global_position.y = th + 0.1
+		_velocity_y = 0.0
+
 	player.set_moving(moved)
+
+	# 仰视角动态限制：角色前方地形越高，允许抬头越少（避免低处看高山时镜头看到山体内部/穿模）
+	var fwd2 := Vector3(-sin(_current_yaw), 0.0, -cos(_current_yaw))
+	var ahead := player.global_position + fwd2 * 8.0
+	var ahead_h := terrain.get_height_at(ahead.x, ahead.z)
+	var foot_h := terrain.get_height_at(player.global_position.x, player.global_position.z)
+	var rise := ahead_h - foot_h
+	var min_pitch_dyn := min_pitch
+	if rise > 1.0:
+		min_pitch_dyn = lerpf(min_pitch, -0.08, clampf((rise - 1.0) / 6.0, 0.0, 1.0))
+	_current_pitch = clampf(_current_pitch, min_pitch_dyn, max_pitch)
 
 	# 相机定位 + 角色模型显隐（第一人称隐藏身体，避免相机卡进头部）
 	if third_person:
@@ -134,20 +165,16 @@ func get_center_ray() -> Array:
 	return [from, dir]
 
 ## 用准星射线求地面交点（返回 null 表示未命中或超出交互距离）
+## 物理射线直接打地形碰撞体（层2），在深坑/陡坡等复杂地形上也能精确命中目标点，
+## 不再用 y=0 平面交点 + 迭代修正（深坑里会漂移导致刷错位置，如"下陷处无法抬升"）
 func get_ground_point_center(terrain: TerrainSystem) -> Variant:
 	var result := get_center_ray()
 	var from: Vector3 = result[0]
 	var dir: Vector3 = result[1]
-	if absf(dir.y) < 0.0001:
+	var space := get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.create(from, from + dir * interact_range)
+	query.collision_mask = 2   # 只检测地形层
+	var res := space.intersect_ray(query)
+	if res.is_empty():
 		return null
-	var t := -from.y / dir.y
-	if t < 0.0:
-		return null
-	var hit := from + dir * t
-	if from.distance_to(hit) > interact_range:
-		return null
-	# 迭代修正：用地形真实高度近似地面
-	for i in 3:
-		var h := terrain.get_height_at(hit.x, hit.z)
-		hit.y = h
-	return hit
+	return res.position

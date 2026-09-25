@@ -5,7 +5,7 @@ extends Node3D
 ## 面积较初版扩大 20 倍：边长 200m → 900m（面积 40000 → 810000 m²），分辨率同步提高保持细节
 
 const SIZE := 900.0          # 地形总尺寸（米），面积约为原版 20 倍
-const RESOLUTION := 512      # 网格分辨率（顶点数），保持约 1.76m/格的地形细节
+const RESOLUTION := 1024     # 地形分辨率（1023² 顶点 ≈ 0.88m/格，poly 较 512 提升 4 倍）      # 网格分辨率（顶点数），保持约 1.76m/格的地形细节
 const GRID := RESOLUTION - 1
 const HALF := SIZE * 0.5
 const CELL := SIZE / float(GRID)
@@ -23,7 +23,21 @@ var brush_strength := 1.2
 # 噪声生成
 var _noise: FastNoiseLite
 
-var _dirty := true
+var _mesh_dirty := false
+var _collision_dirty := false
+var _mesh_timer := 0.0
+var _collision_timer := 0.0
+# 重建节流：连续刷地时合并重建，避免每次点击都全量重建网格+碰撞
+const MESH_REBUILD_DELAY := 0.1
+const COLLISION_REBUILD_DELAY := 0.35
+
+# 地形网格分块：7×7=49 块（GRID=511=7×73），刷地只重建受影响块，避免全量重建
+const CHUNKS := 11           # 网格分块（1023=11×93，121 块，刷地只重建受影响块）
+const CHUNK_GRID := GRID / CHUNKS
+var chunk_meshes: Array[MeshInstance3D] = []
+var _last_brush_center := Vector3.ZERO
+var _last_brush_radius := 0.0
+var _last_brush_time := 0   # 最近一次刷地时间（毫秒），供角色仅在刷地后短暂窗口内贴地同步
 
 func _init() -> void:
 	_noise = FastNoiseLite.new()
@@ -41,8 +55,11 @@ func _ready() -> void:
 	collision_body = StaticBody3D.new()
 	collision_body.collision_layer = 2
 	collision_body.collision_mask = 0
+	# 碰撞采样 1.5m/点（HeightMapShape3D 本地采样间隔固定 1 单位，节点 XZ 放大 1.5 倍覆盖 900m），
+	# 采样点数 601²=36 万，重建 ~85ms；比 2m 采样更贴合地形，陡坡处角色行走不再大台阶抖动
+	collision_body.scale = Vector3(1.5, 1.0, 1.5)
 	# HeightMapShape3D 网格以 CollisionShape3D origin 为中心，采样点间隔 1 单位
-	# map_width=SIZE+1 覆盖 [-HALF, HALF]，直接对齐地形网格
+	# map_width=SIZE/STEP+1 覆盖 [-HALF, HALF]，直接对齐地形网格
 	var _col_shape := CollisionShape3D.new()
 	_col_shape.name = "TerrainCollision"
 	collision_body.add_child(_col_shape)
@@ -57,6 +74,13 @@ func _ready() -> void:
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
 	mat.diffuse_mode = BaseMaterial3D.DIFFUSE_LAMBERT
 	mesh_instance.material_override = mat
+	# 分块网格实例（7×7 块，共享同一材质，刷地只重建受影响块）
+	for ci in CHUNKS * CHUNKS:
+		var mi := MeshInstance3D.new()
+		mi.name = "TerrainChunk_%d" % ci
+		mi.material_override = mat
+		mesh_instance.add_child(mi)
+		chunk_meshes.append(mi)
 
 func generate(seed_value: int = -1) -> void:
 	if seed_value >= 0:
@@ -138,7 +162,8 @@ func flatten_region(center: Vector3, radius: float, target_h: float) -> void:
 			var idx := z * RESOLUTION + x
 			height_map[idx] = target_h
 			color_map[idx] = _color_for_height(target_h, wx, wz)
-	_dirty = true
+	_last_brush_time = Time.get_ticks_msec()
+	_mark_dirty(center, radius)
 
 func apply_brush(world_pos: Vector3, radius: float, delta: float) -> void:
 	if height_map.is_empty():
@@ -161,23 +186,109 @@ func apply_brush(world_pos: Vector3, radius: float, delta: float) -> void:
 			var falloff := 1.0 - smoothstep(0.0, radius, sqrt(d2))
 			var idx := z * RESOLUTION + x
 			var new_h := height_map[idx] + delta * falloff
-			height_map[idx] = clampf(new_h, -1.0, 8.0)
+			# 无限下陷：下限放宽到 -100m（上限 8m 防飞天），可挖出任意深坑
+			height_map[idx] = clampf(new_h, -100.0, 8.0)
 			color_map[idx] = _color_for_height(height_map[idx], wx, wz)
-	_dirty = true
+	# 轻量局部平滑：抹平抬升叠加产生的"山尖尖"，让地形变化圆润
+	_smooth_region(start_x, end_x, start_z, end_z)
+	_last_brush_time = Time.get_ticks_msec()
+	_mark_dirty(world_pos, radius)
 
-func _process(_delta: float) -> void:
-	if _dirty:
-		_dirty = false
-		rebuild()
-
-## 重建地形网格
-func rebuild() -> void:
-	if height_map.is_empty():
+## 轻量局部平滑：对刷地区域做 alpha 混合邻域均值，抹平单格尖峰（山尖尖）
+## 仅混合快照内数据，区域边缘 clamp 到区域边界，避免与区域外高度串扰
+func _smooth_region(start_x: int, end_x: int, start_z: int, end_z: int) -> void:
+	if end_x <= start_x or end_z <= start_z:
 		return
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for z in GRID:
-		for x in GRID:
+	var w := end_x - start_x + 1
+	var h := end_z - start_z + 1
+	var snap := PackedFloat32Array()
+	snap.resize(w * h)
+	for z in range(start_z, end_z + 1):
+		for x in range(start_x, end_x + 1):
+			snap[(z - start_z) * w + (x - start_x)] = height_map[z * RESOLUTION + x]
+	const ALPHA := 0.4
+	const ITER := 1
+	for _it in ITER:
+		for z in range(start_z, end_z + 1):
+			for x in range(start_x, end_x + 1):
+				var acc := 0.0
+				var cnt := 0
+				for dz in range(-1, 2):
+					for dx in range(-1, 2):
+						var zz := clampi(z + dz, start_z, end_z)
+						var xx := clampi(x + dx, start_x, end_x)
+						acc += snap[(zz - start_z) * w + (xx - start_x)]
+						cnt += 1
+				var idx := z * RESOLUTION + x
+				snap[(z - start_z) * w + (x - start_x)] = lerpf(snap[(z - start_z) * w + (x - start_x)], acc / float(cnt), ALPHA)
+				height_map[idx] = snap[(z - start_z) * w + (x - start_x)]
+				color_map[idx] = _color_for_height(height_map[idx], -HALF + x * CELL, -HALF + z * CELL)
+
+## 标记需要重建（节流合并：网格 0.1s 内合并，碰撞 0.35s 内合并；记录刷地范围用于局部重建）
+func _mark_dirty(center: Vector3 = Vector3.ZERO, radius: float = 0.0) -> void:
+	_mesh_dirty = true
+	_collision_dirty = true
+	_mesh_timer = MESH_REBUILD_DELAY
+	_collision_timer = COLLISION_REBUILD_DELAY
+	_last_brush_center = center
+	_last_brush_radius = radius
+
+func _process(delta: float) -> void:
+	_mesh_timer -= delta
+	_collision_timer -= delta
+	if _mesh_dirty and _mesh_timer <= 0.0:
+		_mesh_dirty = false
+		if _last_brush_radius > 0.0:
+			rebuild_mesh_around(_last_brush_center, _last_brush_radius + CELL * 2.0)
+		else:
+			rebuild_mesh()
+	if _collision_dirty and _collision_timer <= 0.0:
+		_collision_dirty = false
+		rebuild_collision()
+
+## 重建地形（初始生成时全量重建网格+碰撞）
+func rebuild() -> void:
+	rebuild_mesh()
+	rebuild_collision()
+
+## 重建全部地形网格块（初始生成时调用）
+func rebuild_mesh() -> void:
+	if height_map.is_empty() or chunk_meshes.is_empty():
+		return
+	for ci in chunk_meshes.size():
+		_build_chunk(ci % CHUNKS, ci / CHUNKS)
+
+## 只重建刷地范围覆盖的网格块（局部更新，避免全量重建）
+func rebuild_mesh_around(center: Vector3, radius: float) -> void:
+	if height_map.is_empty() or chunk_meshes.is_empty():
+		return
+	var gx := clampi(int((center.x + HALF) / CELL), 0, GRID)
+	var gz := clampi(int((center.z + HALF) / CELL), 0, GRID)
+	var gr := int(ceil(radius / CELL)) + 1
+	var cbx0 := clampi((gx - gr) / CHUNK_GRID, 0, CHUNKS - 1)
+	var cbx1 := clampi((gx + gr) / CHUNK_GRID, 0, CHUNKS - 1)
+	var cbz0 := clampi((gz - gr) / CHUNK_GRID, 0, CHUNKS - 1)
+	var cbz1 := clampi((gz + gr) / CHUNK_GRID, 0, CHUNKS - 1)
+	for cbz in range(cbz0, cbz1 + 1):
+		for cbx in range(cbx0, cbx1 + 1):
+			_build_chunk(cbx, cbz)
+
+## 构建单个网格块（批量数组构造 + 中心差分法线）
+func _build_chunk(cbx: int, cbz: int) -> void:
+	var x_start := cbx * CHUNK_GRID
+	var z_start := cbz * CHUNK_GRID
+	var x_end := x_start + CHUNK_GRID
+	var z_end := z_start + CHUNK_GRID
+	var verts := PackedVector3Array()
+	var norms := PackedVector3Array()
+	var cols := PackedColorArray()
+	var tri_count := CHUNK_GRID * CHUNK_GRID * 6
+	verts.resize(tri_count)
+	norms.resize(tri_count)
+	cols.resize(tri_count)
+	var vi := 0
+	for z in range(z_start, z_end):
+		for x in range(x_start, x_end):
 			var i00 := z * RESOLUTION + x
 			var i10 := z * RESOLUTION + x + 1
 			var i01 := (z + 1) * RESOLUTION + x
@@ -186,32 +297,61 @@ func rebuild() -> void:
 			var p10 := Vector3(-HALF + (x + 1) * CELL, height_map[i10], -HALF + z * CELL)
 			var p01 := Vector3(-HALF + x * CELL, height_map[i01], -HALF + (z + 1) * CELL)
 			var p11 := Vector3(-HALF + (x + 1) * CELL, height_map[i11], -HALF + (z + 1) * CELL)
-			var n1 := (p01 - p00).cross(p10 - p00).normalized()
-			var n2 := (p01 - p10).cross(p11 - p10).normalized()
+			# 中心差分法线近似（每格 1 次，替代 2 次叉积）
+			var dh_dx := (height_map[i10] - height_map[i00] + height_map[i11] - height_map[i01]) * 0.5 / CELL
+			var dh_dz := (height_map[i01] - height_map[i00] + height_map[i11] - height_map[i10]) * 0.5 / CELL
+			var n := Vector3(-dh_dx, 1.0, -dh_dz).normalized()
 			var c00 := color_map[i00]; var c10 := color_map[i10]
 			var c01 := color_map[i01]; var c11 := color_map[i11]
-			st.set_color(c00); st.set_normal(n1); st.add_vertex(p00)
-			st.set_color(c01); st.set_normal(n1); st.add_vertex(p01)
-			st.set_color(c10); st.set_normal(n1); st.add_vertex(p10)
-			st.set_color(c10); st.set_normal(n2); st.add_vertex(p10)
-			st.set_color(c01); st.set_normal(n2); st.add_vertex(p01)
-			st.set_color(c11); st.set_normal(n2); st.add_vertex(p11)
-	var mesh := st.commit()
-	mesh_instance.mesh = mesh
+			verts[vi] = p00; norms[vi] = n; cols[vi] = c00; vi += 1
+			verts[vi] = p01; norms[vi] = n; cols[vi] = c01; vi += 1
+			verts[vi] = p10; norms[vi] = n; cols[vi] = c10; vi += 1
+			verts[vi] = p10; norms[vi] = n; cols[vi] = c10; vi += 1
+			verts[vi] = p01; norms[vi] = n; cols[vi] = c01; vi += 1
+			verts[vi] = p11; norms[vi] = n; cols[vi] = c11; vi += 1
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = norms
+	arrays[Mesh.ARRAY_COLOR] = cols
+	var m := ArrayMesh.new()
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	chunk_meshes[cbz * CHUNKS + cbx].mesh = m
 
-	# 更新碰撞：新建 HeightMapShape3D 实例并替换 shape（触发物理服务器更新，避免直接改 map_data 不生效）
-	# HeightMapShape3D 采样间隔固定 1 单位，覆盖 900m 需要 901×901 采样点
+## 重建地形碰撞（内联双线性采样；采样间隔 2m，碰撞体 XZ 放大 2 倍覆盖 900m，Y 不变）
+func rebuild_collision() -> void:
+	if height_map.is_empty():
+		return
 	var col_shape := collision_body.get_node("TerrainCollision") as CollisionShape3D
-	if col_shape != null:
-		var hm := HeightMapShape3D.new()
-		var S := int(SIZE) + 1
-		hm.map_width = S
-		hm.map_depth = S
-		var data := PackedFloat32Array()
-		data.resize(S * S)
-		for z in S:
-			for x in S:
-				data[z * S + x] = get_height_at(-HALF + float(x), -HALF + float(z))
-		hm.map_data = data
-		col_shape.shape = hm
+	if col_shape == null:
+		return
+	const STEP := 1.5
+	var S := int(SIZE / STEP) + 1
+	var data := PackedFloat32Array()
+	data.resize(S * S)
+	for z in S:
+		var wz := -HALF + float(z) * STEP
+		var fz := clampf((wz + HALF) / CELL, 0.0, float(GRID))
+		var z0 := int(fz); var z1 := mini(z0 + 1, GRID)
+		var tz := fz - z0
+		var row0 := z0 * RESOLUTION
+		var row1 := z1 * RESOLUTION
+		for x in S:
+			var wx := -HALF + float(x) * STEP
+			var fx := clampf((wx + HALF) / CELL, 0.0, float(GRID))
+			var x0 := int(fx); var x1 := mini(x0 + 1, GRID)
+			var tx := fx - x0
+			var h00 := height_map[row0 + x0]
+			var h10 := height_map[row0 + x1]
+			var h01 := height_map[row1 + x0]
+			var h11 := height_map[row1 + x1]
+			var h0 := lerpf(h00, h10, tx)
+			var h1 := lerpf(h01, h11, tx)
+			data[z * S + x] = lerpf(h0, h1, tz)
+	var hm := HeightMapShape3D.new()
+	hm.map_width = S
+	hm.map_depth = S
+	hm.map_data = data
+	# 新建 shape 实例替换以触发物理服务器更新（直接改 map_data 不生效）
+	col_shape.shape = hm
 	mesh_instance.position = Vector3.ZERO

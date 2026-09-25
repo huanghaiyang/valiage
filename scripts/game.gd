@@ -27,6 +27,22 @@ var current_tool: int = Tool.WALL:
 
 signal tool_changed(tool: int)
 
+## 生物质余额（操作地形/放置时回收植被获得）
+var biomass := 0.0:
+	set(v):
+		biomass = v
+		biomass_changed.emit(v)
+
+signal biomass_changed(value: float)
+
+## 石材余额（石头单独回收为石材，不混入生物质）
+var stone := 0.0:
+	set(v):
+		stone = v
+		stone_changed.emit(v)
+
+signal stone_changed(value: float)
+
 ## 当前是否处于搭建（拖拽）状态
 var is_building := false
 

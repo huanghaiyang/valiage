@@ -7,6 +7,7 @@ var tool_button_map: Dictionary = {}  # button -> tool
 var title_label: Label
 var hint_label: Label
 var undo_button: Button
+var biomass_label: Label
 
 const TOOL_BUTTONS := [
 	["墙壁", Game.Tool.WALL],
@@ -62,6 +63,23 @@ func _build_ui() -> void:
 	undo_button.pressed.connect(_on_undo_pressed)
 	hbox.add_child(undo_button)
 
+	# 生物质/石材余额（右上角，回收植被获得；石头单独计入石材）
+	biomass_label = Label.new()
+	biomass_label.text = "生物质 0\n石材 0"
+	biomass_label.add_theme_font_size_override("font_size", 17)
+	biomass_label.add_theme_color_override("font_color", Color(0.78, 0.95, 0.62))
+	biomass_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.7))
+	biomass_label.add_theme_constant_override("outline_size", 5)
+	biomass_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	biomass_label.offset_left = -220
+	biomass_label.offset_right = -16
+	biomass_label.offset_top = 12
+	biomass_label.offset_bottom = 66
+	biomass_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	add_child(biomass_label)
+	Game.biomass_changed.connect(_on_biomass_changed)
+	Game.stone_changed.connect(_on_biomass_changed)
+
 	# 底部提示
 	hint_label = Label.new()
 	hint_label.text = "左键搭建/涂抹 · WASD 移动 · 鼠标旋转视角 · Shift 加速 · Space/C 升降 · T 切换视角 · Esc 释放鼠标"
@@ -88,6 +106,9 @@ func _build_ui() -> void:
 	add_child(cross_container)
 
 	_on_tool_changed(Game.current_tool)
+
+func _on_biomass_changed(_v: float) -> void:
+	biomass_label.text = "生物质 %.1f\n石材 %.1f" % [Game.biomass, Game.stone]
 
 func _on_tool_button_pressed(btn: Button) -> void:
 	var tool: int = tool_button_map[btn]

@@ -74,33 +74,20 @@ func _instantiate(scene: PackedScene) -> Node3D:
 	container.add_child(inst)
 	return inst
 
-## 给建筑实例加静态碰撞盒（均匀缩放，随实例 scale 一起缩放；size/center 为模型原始尺度）
-func _add_box_collision(inst: Node3D, size: Vector3, center: Vector3) -> void:
+## 给建筑实例加模型三角网格碰撞（ConcavePolygonShape3D）
+## 直接用模型实际 mesh 的多面体做碰撞，而非 box：屋顶/塔身斜坡都能真实贴合，
+## 角色可沿真实形状爬上跳上（如跳到房屋屋顶）。shape 随 inst 的 scale/rotation 一起变换。
+func _add_mesh_collision(inst: Node3D) -> void:
+	var wmi := _find_mesh_instance(inst)
+	if wmi == null or wmi.mesh == null:
+		return
 	var sb := StaticBody3D.new()
 	sb.collision_layer = 4
 	sb.collision_mask = 0
 	var col := CollisionShape3D.new()
-	var shape := BoxShape3D.new()
-	shape.size = size
-	col.shape = shape
-	col.position = center
+	col.shape = wmi.mesh.create_trimesh_shape()
 	sb.add_child(col)
 	inst.add_child(sb)
-
-## 给墙加世界尺度碰撞盒（墙高做了非均匀缩放，碰撞体独立放到 container 避免形状失真）
-func _add_wall_collision(world_pos: Vector3, yaw: float) -> void:
-	var sb := StaticBody3D.new()
-	sb.collision_layer = 4
-	sb.collision_mask = 0
-	var col := CollisionShape3D.new()
-	var shape := BoxShape3D.new()
-	shape.size = Vector3(_wall_len, 1.1 * WALL_HEIGHT_SCALE, 0.8)
-	col.shape = shape
-	col.position = Vector3(0, 0.55 * WALL_HEIGHT_SCALE, 0)
-	sb.add_child(col)
-	sb.position = world_pos
-	sb.rotation = Vector3(0, yaw, 0)
-	container.add_child(sb)
 
 ## 添加一段墙：沿 a→b 路径按模型长度拼接多个墙段
 func add_wall(a: Vector3, b: Vector3, _height: float, _thickness: float, _crenellated := false) -> void:
@@ -126,38 +113,38 @@ func _place_wall(a: Vector3, b: Vector3) -> void:
 		inst.global_position = Vector3(p.x, p.y, p.z)
 		inst.scale = Vector3(1.0, WALL_HEIGHT_SCALE, 1.0)
 		inst.rotation = Vector3(0, yaw, 0)
-		_add_wall_collision(Vector3(p.x, p.y, p.z), yaw)
+		_add_mesh_collision(inst)
 
-## 添加一座塔
-func add_tower(center: Vector3, radius: float, _height: float, _with_roof := true) -> void:
-	_place_tower(center, radius)
-	_undo_stack.append({"type": "tower", "c": center, "r": radius})
+## 添加一座塔（yaw>=0 指定朝向，-1 随机）
+func add_tower(center: Vector3, radius: float, _height: float, _with_roof := true, yaw := -1.0) -> void:
+	_place_tower(center, radius, yaw)
+	_undo_stack.append({"type": "tower", "c": center, "r": radius, "y": yaw})
 
-func _place_tower(center: Vector3, radius: float) -> void:
+func _place_tower(center: Vector3, radius: float, yaw: float) -> void:
 	var inst := _instantiate(tower_scene)
 	if inst == null:
 		return
 	var s := maxf(0.35, radius * 2.0 / _tower_base)
 	inst.global_position = Vector3(center.x, center.y, center.z)
 	inst.scale = Vector3.ONE * s
-	inst.rotation = Vector3(0, _rng.randf_range(0.0, TAU), 0)
-	# 塔碰撞盒（含锥顶，原始总高约 2.4）
-	_add_box_collision(inst, Vector3(1.0, 2.4, 1.2), Vector3(0, 1.2, 0))
+	inst.rotation = Vector3(0, yaw if yaw >= 0.0 else _rng.randf_range(0.0, TAU), 0)
+	# 塔碰撞：模型三角网格多面体（含锥顶/塔身，角色可沿塔身形状交互）
+	_add_mesh_collision(inst)
 
-## 放置一栋房屋（对应原"屋顶"工具，改用预制小屋模型）
-func add_house(pos: Vector3, scale := 1.0) -> void:
-	_place_house(pos, scale)
-	_undo_stack.append({"type": "house", "p": pos, "s": scale})
+## 放置一栋房屋（对应原"屋顶"工具，改用预制小屋模型；yaw>=0 指定朝向，-1 随机）
+func add_house(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
+	_place_house(pos, scale, yaw)
+	_undo_stack.append({"type": "house", "p": pos, "s": scale, "y": yaw})
 
-func _place_house(pos: Vector3, scale: float) -> void:
+func _place_house(pos: Vector3, scale: float, yaw: float) -> void:
 	var inst := _instantiate(house_scene)
 	if inst == null:
 		return
 	inst.global_position = Vector3(pos.x, pos.y, pos.z)
 	inst.scale = Vector3.ONE * (maxf(0.4, scale) * HOUSE_BASE_SCALE)
-	inst.rotation = Vector3(0, _rng.randf_range(0.0, TAU), 0)
-	# 房子碰撞盒（原始尺度，随均匀缩放）
-	_add_box_collision(inst, Vector3(0.8, 0.93, 0.85), Vector3(0, 0.465, 0))
+	inst.rotation = Vector3(0, yaw if yaw >= 0.0 else _rng.randf_range(0.0, TAU), 0)
+	# 房屋碰撞：模型三角网格多面体（含屋顶斜面，角色可跳到屋顶上）
+	_add_mesh_collision(inst)
 
 ## 兼容旧接口（已改为放置房屋模型）
 func add_gable_roof(a: Vector3, b: Vector3, width: float, _ridge_h: float, _eave_h: float) -> void:
@@ -193,9 +180,9 @@ func _rebuild_from_history() -> void:
 			"wall":
 				_place_wall(op.a, op.b)
 			"tower":
-				_place_tower(op.c, op.r)
+				_place_tower(op.c, op.r, op.get("y", -1.0))
 			"house":
-				_place_house(op.p, op.s)
+				_place_house(op.p, op.s, op.get("y", -1.0))
 	_undo_stack = history
 
 func _clear_all() -> void:
