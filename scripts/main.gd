@@ -22,6 +22,7 @@ var preview_place_mat_green: StandardMaterial3D
 var preview_place_mat_red: StandardMaterial3D
 var _place_tools := [Game.Tool.TOWER, Game.Tool.ROOF, Game.Tool.TREE, Game.Tool.FLOWER]
 var _place_yaw := 0.0  # 放置朝向（右键旋转）
+var _place_rot_accum := 0.0  # 按住右键旋转的累积时间（每 100ms +10°）
 const PLACE_OCCUPY_RADIUS := 0.9    # 占位检测球半径（建筑层）
 const PLACE_RECYCLE_RADIUS := 2.0   # 放置时回收植被范围
 
@@ -69,13 +70,16 @@ func _ready() -> void:
 	if "--capture" in OS.get_cmdline_user_args():
 		_capture_frames = 90
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	# 拖拽预览跟随准星持续更新（第一人称下相机在移动）
 	if _is_dragging:
 		_update_preview()
 	# 单点放置工具的目标点半透明预览（绿/红）
 	if Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) and Game.current_tool in _place_tools:
-		_place_yaw += deg_to_rad(0.5)
+		_place_rot_accum += delta
+		while _place_rot_accum >= 0.1:
+			_place_rot_accum -= 0.1
+			_place_yaw += deg_to_rad(10.0)
 	_update_place_preview()
 	if _capture_frames > 0:
 		_capture_frames -= 1
@@ -313,26 +317,26 @@ func _begin_tool() -> void:
 		Game.Tool.TOWER:
 			if _is_occupied(p):
 				return
+			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 			buildings.add_tower(p, tower_radius, tower_height, true, _place_yaw)
 			buildings.flush_all()
-			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 		Game.Tool.ROOF:
 			# 屋顶工具：点击放置预制小屋模型
 			if _is_occupied(p):
 				return
+			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 			buildings.add_house(p, 1.0 + randf() * 0.3, _place_yaw)
 			buildings.flush_all()
-			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 		Game.Tool.TREE:
 			if _is_occupied(p):
 				return
-			vegetation.add_tree(p + Vector3(0, 0.1, 0), 1.0 + randf() * 0.5, _place_yaw)
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
+			vegetation.add_tree(p + Vector3(0, 0.1, 0), 1.0 + randf() * 0.5, _place_yaw)
 		Game.Tool.FLOWER:
 			if _is_occupied(p):
 				return
-			vegetation.add_flower(p, 1.0 + randf() * 0.4, _place_yaw)
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
+			vegetation.add_flower(p, 1.0 + randf() * 0.4, _place_yaw)
 		Game.Tool.TERRAIN_RAISE:
 			terrain.apply_brush(p, terrain.brush_radius, terrain.brush_strength)
 			_recycle_vegetation(p)
