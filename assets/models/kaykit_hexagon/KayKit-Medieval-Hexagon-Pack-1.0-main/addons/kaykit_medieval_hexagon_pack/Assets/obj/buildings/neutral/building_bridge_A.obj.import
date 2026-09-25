@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://cj8dn75y47l8f"
+path="res://.godot/imported/building_bridge_A.obj-6174590fb0703254f29f64bb3ef0d953.mesh"
+
+[deps]
+
+files=["res://.godot/imported/building_bridge_A.obj-6174590fb0703254f29f64bb3ef0d953.mesh"]
+
+source_file="res://assets/models/kaykit_hexagon/KayKit-Medieval-Hexagon-Pack-1.0-main/addons/kaykit_medieval_hexagon_pack/Assets/obj/buildings/neutral/building_bridge_A.obj"
+dest_files=["res://.godot/imported/building_bridge_A.obj-6174590fb0703254f29f64bb3ef0d953.mesh", "res://.godot/imported/building_bridge_A.obj-6174590fb0703254f29f64bb3ef0d953.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false

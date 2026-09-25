@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://dsj73jwm4yidk"
+path="res://.godot/imported/resource_stone.obj-025b23161535c244ed3928036fd93fcb.mesh"
+
+[deps]
+
+files=["res://.godot/imported/resource_stone.obj-025b23161535c244ed3928036fd93fcb.mesh"]
+
+source_file="res://assets/models/kaykit_hexagon/KayKit-Medieval-Hexagon-Pack-1.0-main/addons/kaykit_medieval_hexagon_pack/Assets/obj/decoration/props/resource_stone.obj"
+dest_files=["res://.godot/imported/resource_stone.obj-025b23161535c244ed3928036fd93fcb.mesh", "res://.godot/imported/resource_stone.obj-025b23161535c244ed3928036fd93fcb.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false

@@ -1,0 +1,22 @@
+# ---- Godot 4 引擎缓存 ----
+.godot/
+*.tmp
+*.translation
+
+# ---- 导出产物（96MB exe 不入库） ----
+export/
+
+# ---- 运行时/本地生成 ----
+.runtime/
+
+# ---- 截图与临时验证产物 ----
+screenshots/
+screenshot_*.png
+screenshot_*.png.import
+check_shot.gd.uid
+*.avi
+
+# ---- 系统文件 ----
+.DS_Store
+Thumbs.db
+Desktop.ini

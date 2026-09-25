@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://dq70rwhweu2nl"
+path="res://.godot/imported/building_tower_A_blue_building_tower_A_top_blue.obj-e50e33823d41587a777c315217030d63.mesh"
+
+[deps]
+
+files=["res://.godot/imported/building_tower_A_blue_building_tower_A_top_blue.obj-e50e33823d41587a777c315217030d63.mesh"]
+
+source_file="res://assets/models/kaykit_hexagon/KayKit-Medieval-Hexagon-Pack-1.0-main/addons/kaykit_medieval_hexagon_pack/Assets/obj/buildings/blue/building_tower_A_blue_building_tower_A_top_blue.obj"
+dest_files=["res://.godot/imported/building_tower_A_blue_building_tower_A_top_blue.obj-e50e33823d41587a777c315217030d63.mesh", "res://.godot/imported/building_tower_A_blue_building_tower_A_top_blue.obj-e50e33823d41587a777c315217030d63.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false
