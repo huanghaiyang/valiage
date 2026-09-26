@@ -15,6 +15,8 @@ var _jump_air := false           # 跳跃滞空（保持跳跃动画直到落地
 const CHARACTER_SCENE := "res://assets/models/characters/Mage.glb"
 # Mage 模型身体（头顶）原始约 2.94m，缩到 0.368 → 角色约 1.08m（门 1.7m 的约 64%）
 const CHARACTER_SCALE := 0.368
+# KayKit Character Animations 重定向动作库（KayKit 6 骨 → Mage 41 骨烘焙，路径前缀与 Mage.glb 一致）
+const KAYKIT_LIB_PATH := "res://assets/animations/kaykit_library.tres"
 
 # 碰撞体尺寸（主体胶囊：凸形状才能与场景 trimesh 地形正常碰撞；凹形 ConcavePolygonShape3D 在 Godot 物理中不支持 CharacterBody 会穿模）
 const COLLIDER_RADIUS := 0.28
@@ -52,7 +54,7 @@ const ACTION_LIB: Array = [
 	["翻越", "Jump_Full_Short", "one"],
 	["仰头", "Spellcast_Raise", "one"],
 	["俯视", "Spellcast_Shoot", "one"],
-	["挥手", "Cheer", "one"],
+	["挥手", "kaykit/Wave", "one"],
 	["拒绝", "Dodge_Backward", "one"],
 	["晃动", "Hit_A", "one"],
 	["下蹲", "Sit_Floor_Down", "one"],
@@ -63,6 +65,18 @@ const ACTION_LIB: Array = [
 	["格挡", "Blocking", "loop"],
 	["闪避", "Dodge_Forward", "one"],
 	["坐地", "Sit_Floor_Idle", "loop"],
+	# KayKit Character Animations 重定向动作（KayKit 6 骨 → Mage 41 骨烘焙）
+	["跳舞", "kaykit/Dance", "loop"],
+	["攀爬", "kaykit/Climbing", "loop"],
+	["翻滚", "kaykit/Roll", "one"],
+	["重击", "kaykit/HeavyAttack", "one"],
+	["冲刺前", "kaykit/DashFront", "one"],
+	["冲刺后", "kaykit/DashBack", "one"],
+	["冲刺左", "kaykit/DashLeft", "one"],
+	["冲刺右", "kaykit/DashRight", "one"],
+	["受击", "kaykit/Defeat", "one"],
+	["单跳", "kaykit/Hop", "one"],
+	["躺卧", "kaykit/LayingDownIdle", "loop"],
 ]
 
 func _ready() -> void:
@@ -72,6 +86,11 @@ func _ready() -> void:
 		body.name = "Visual"
 		add_child(body)
 	body.scale = Vector3.ONE * CHARACTER_SCALE
+
+	# 加载 KayKit 动作库（骨骼重定向烘焙到 Mage 骨架）
+	var kk_lib: AnimationLibrary = load(KAYKIT_LIB_PATH)
+	if kk_lib != null and anim_player != null:
+		anim_player.add_animation_library("kaykit", kk_lib)
 
 	# 角色碰撞体：主体胶囊 + 底部平底圆柱（凸形状组合，底部对齐脚底）
 	var col := CollisionShape3D.new()
