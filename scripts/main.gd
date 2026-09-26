@@ -7,8 +7,12 @@ var vegetation: VegetationSystem
 var buildings: BuildingManager
 var camera_rig: CameraRig
 var player: Player
+var ui: CanvasLayer
+var _minimap: CanvasLayer               # 游戏 UI（_setup_ui 注入）
+var _hint_timer := 0.0            # 家具互动提示节流
 var sun: DirectionalLight3D
 var env: WorldEnvironment
+var roads: RoadNetwork
 
 # 预览节点
 var preview_wall: MeshInstance3D
@@ -53,10 +57,11 @@ func _ready() -> void:
 	terrain.generate()
 	# 出生点与演示建筑区整平为一片平台，避免地形起伏遮挡视野
 	terrain.flatten_region(Vector3(3.0, 0.0, 5.0), 18.0, 0.4)
-	vegetation.populate_auto(terrain)
+	vegetation.populate_auto(terrain, 2400, 10000, 40000, 4500, 1000, 800, 400)
 	vegetation.set_camera(camera_rig.camera)
 	# 演示建筑示例
-	_build_demo()
+	roads.setup(terrain)
+	_build_settlements()
 	# 出生点清场：确保角色出生和第三人称相机不被植被遮挡
 	vegetation.clear_around(Vector3(6.0, 0.0, 11.0), 3.5)
 	Game.world = self
@@ -81,6 +86,10 @@ func _process(delta: float) -> void:
 			_place_rot_accum -= 0.1
 			_place_yaw += deg_to_rad(10.0)
 	_update_place_preview()
+	_hint_timer -= delta
+	if _hint_timer <= 0.0:
+		_hint_timer = 0.15
+		_update_interact_hint()
 	if _capture_frames > 0:
 		_capture_frames -= 1
 		if _capture_frames == 0:
@@ -90,10 +99,15 @@ func _process(delta: float) -> void:
 			get_tree().quit()
 
 func _setup_ui() -> void:
-	var ui: CanvasLayer = load("res://scripts/ui/game_ui.gd").new()
+	ui = load("res://scripts/ui/game_ui.gd").new()
 	ui.name = "UI"
 	add_child(ui)
 	ui.setup(self)
+	var minimap: CanvasLayer = load("res://scripts/ui/minimap.gd").new()
+	minimap.name = "Minimap"
+	add_child(minimap)
+	minimap.setup(self)
+	_minimap = minimap
 
 func _build_world() -> void:
 	terrain = TerrainSystem.new()
@@ -107,6 +121,10 @@ func _build_world() -> void:
 	buildings = BuildingManager.new()
 	buildings.name = "Buildings"
 	add_child(buildings)
+
+	roads = RoadNetwork.new()
+	roads.name = "Roads"
+	add_child(roads)
 
 	# 玩家角色（程序化卡通人形）
 	player = Player.new()
@@ -129,8 +147,8 @@ func _setup_environment() -> void:
 	# 方向光（暖色午后阳光）
 	sun = DirectionalLight3D.new()
 	sun.name = "Sun"
-	sun.light_color = Color(1.0, 0.94, 0.82)
-	sun.light_energy = 1.4
+	sun.light_color = Color(1.0, 0.88, 0.68)
+	sun.light_energy = 1.28
 	sun.rotation_degrees = Vector3(-50, -35, 0)
 	sun.shadow_enabled = true
 	sun.directional_shadow_max_distance = 300.0
@@ -140,7 +158,7 @@ func _setup_environment() -> void:
 	# 补光（天光）
 	var fill := DirectionalLight3D.new()
 	fill.name = "FillLight"
-	fill.light_color = Color(0.55, 0.7, 0.95)
+	fill.light_color = Color(0.90, 0.78, 0.55)
 	fill.light_energy = 0.45
 	fill.rotation_degrees = Vector3(30, 120, 0)
 	fill.shadow_enabled = false
@@ -153,14 +171,14 @@ func _setup_environment() -> void:
 	environment.background_mode = Environment.BG_SKY
 	environment.sky = Sky.new()
 	var sky_mat := ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color = Color(0.58, 0.78, 0.95)
-	sky_mat.sky_horizon_color = Color(0.9, 0.92, 0.85)
-	sky_mat.ground_bottom_color = Color(0.55, 0.7, 0.5)
-	sky_mat.ground_horizon_color = Color(0.9, 0.92, 0.85)
+	sky_mat.sky_top_color = Color(0.70, 0.72, 0.56)
+	sky_mat.sky_horizon_color = Color(0.92, 0.86, 0.66)
+	sky_mat.ground_bottom_color = Color(0.52, 0.58, 0.40)
+	sky_mat.ground_horizon_color = Color(0.92, 0.86, 0.66)
 	sky_mat.sun_angle_max = 20.0
 	environment.sky.sky_material = sky_mat
 	environment.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	environment.ambient_light_energy = 0.9
+	environment.ambient_light_energy = 0.85
 	environment.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 	environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	environment.fog_enabled = false
@@ -246,38 +264,130 @@ func _setup_input_actions() -> void:
 	action.ctrl_pressed = true
 	InputMap.action_add_event("ui_undo", action)
 
-func _build_demo() -> void:
-	# 一座小屋 + 围墙 + 塔的示例，展示玩法
-	var cx := 0.0; var cz := 0.0
-	var gy := 0.4   # 与 flatten 后的地面高度对齐，避免建筑被地形掩埋
+func _build_settlements() -> void:
+	# 参考复古战棋大地图布局：
+	# - 右侧中部主聚落集群（多屋 + 围墙 + 塔）
+	# - 出生点基地 + 两个零散哨站
+	# - 浅灰砂石路网连接各点位
+	_build_homestead(Vector3(0.0, 0.0, 0.0), 0.4)
+	var village_c := Vector3(260.0, 0.0, 60.0)
+	var village_h := _round_quarter(terrain.get_height_at(village_c.x, village_c.z))
+	terrain.flatten_region(village_c, 45.0, village_h)
+	_build_village(village_c, village_h)
+	var outpost_a := Vector3(-160.0, 0.0, 220.0)
+	var outpost_a_h := _round_quarter(terrain.get_height_at(outpost_a.x, outpost_a.z))
+	terrain.flatten_region(outpost_a, 16.0, outpost_a_h)
+	_build_outpost(outpost_a, outpost_a_h, "east")
+	var outpost_b := Vector3(60.0, 0.0, -240.0)
+	var outpost_b_h := _round_quarter(terrain.get_height_at(outpost_b.x, outpost_b.z))
+	terrain.flatten_region(outpost_b, 16.0, outpost_b_h)
+	_build_outpost(outpost_b, outpost_b_h, "north")
+	# 砂石路网：主路 出生点→主聚落群；支路 主聚落群→南哨站、出生点→北哨站
+	roads.build_path([Vector3(0.0, 0.0, 0.0), Vector3(120.0, 0.0, 15.0), Vector3(190.0, 0.0, 40.0), village_c])
+	roads.build_path([village_c, Vector3(180.0, 0.0, -100.0), outpost_b])
+	roads.build_path([Vector3(0.0, 0.0, 0.0), Vector3(-80.0, 0.0, 110.0), outpost_a])
+	# 聚落/哨站周边清场，形成开阔聚落区（参考图聚落集群周围空旷）
+	vegetation.clear_around(village_c, 52.0)
+	vegetation.clear_around(outpost_a, 22.0)
+	vegetation.clear_around(outpost_b, 22.0)
+	# 多处刷平后全量重建地形，保证网格与高度数据一致
+	terrain.rebuild()
+	buildings.flush_all()
+
+## 出生点基地：一座小屋 + 围墙（东/西留门洞）+ 塔（原演示基地）
+func _build_homestead(c: Vector3, gy: float) -> void:
+	var cx := c.x; var cz := c.z
 	buildings.add_wall(Vector3(cx - 4, gy, cz - 3), Vector3(cx + 4, gy, cz - 3), 3.0, 0.5)
-	buildings.add_wall(Vector3(cx + 4, gy, cz - 3), Vector3(cx + 4, gy, cz + 3), 3.0, 0.5)
 	buildings.add_wall(Vector3(cx + 4, gy, cz + 3), Vector3(cx - 4, gy, cz + 3), 3.0, 0.5)
-	buildings.add_wall(Vector3(cx - 4, gy, cz + 3), Vector3(cx - 4, gy, cz - 3), 3.0, 0.5)
+	buildings.add_wall(Vector3(cx + 4, gy, cz - 3), Vector3(cx + 4, gy, cz - 2), 3.0, 0.5)
+	buildings.add_wall(Vector3(cx + 4, gy, cz + 2), Vector3(cx + 4, gy, cz + 3), 3.0, 0.5)
+	buildings.add_wall(Vector3(cx - 4, gy, cz - 3), Vector3(cx - 4, gy, cz - 2), 3.0, 0.5)
+	buildings.add_wall(Vector3(cx - 4, gy, cz + 2), Vector3(cx - 4, gy, cz + 3), 3.0, 0.5)
 	buildings.add_house(Vector3(cx, gy, cz + 5), 1.0)
 	buildings.add_tower(Vector3(cx + 6, gy, cz + 2), 1.0, 5.0, true)
-	buildings.flush_all()
-	# demo 周围点缀植被，营造温馨氛围（围绕小屋/围墙外圈）
+	# 基地周围点缀植被，营造温馨氛围
+	_demo_greenery(c, gy)
+
+## 主聚落集群：5 屋错落 + 三边围墙（南墙留主路口）+ 两座塔 + 内部点缀
+func _build_village(c: Vector3, gy: float) -> void:
+	var cx := c.x; var cz := c.z
+	var houses: Array[Vector3] = [
+		Vector3(cx - 10, gy, cz + 8),
+		Vector3(cx + 10, gy, cz - 8),
+		Vector3(cx - 8, gy, cz - 14),
+		Vector3(cx + 12, gy, cz + 14),
+		Vector3(cx, gy, cz - 2),
+	]
+	for hpos in houses:
+		buildings.add_house(hpos, 1.0)
+	# 围墙：东、北完整，南墙中间留 8m 主路口（砂石路穿入聚落）
+	var w := 22.0
+	buildings.add_wall(Vector3(cx - w, gy, cz - w), Vector3(cx - 4, gy, cz - w), 3.0, 0.5)
+	buildings.add_wall(Vector3(cx + 4, gy, cz - w), Vector3(cx + w, gy, cz - w), 3.0, 0.5)
+	buildings.add_wall(Vector3(cx + w, gy, cz - w), Vector3(cx + w, gy, cz + w), 3.0, 0.5)
+	buildings.add_wall(Vector3(cx + w, gy, cz + w), Vector3(cx - w, gy, cz + w), 3.0, 0.5)
+	# 两座塔在东北/东南角
+	buildings.add_tower(Vector3(cx + w - 3, gy, cz + w - 3), 1.0, 5.0, true)
+	buildings.add_tower(Vector3(cx + w - 3, gy, cz - w + 3), 1.0, 5.0, true)
+	# 聚落内部点缀：花环 + 家具，营造聚居生活感
+	for i in 6:
+		var fa := TAU * float(i) / 6.0 + 0.4
+		var fr := 12.0 + float(i % 3) * 2.0
+		var fh := terrain.get_height_at(c.x + cos(fa) * fr, c.z + sin(fa) * fr)
+		vegetation.add_flower(Vector3(c.x + cos(fa) * fr, fh, c.z + sin(fa) * fr), 1.1)
+	vegetation.add_furniture(Vector3(cx - 4, gy, cz + 2), 1.0)
+	vegetation.add_furniture(Vector3(cx + 4, gy, cz + 2), 1.0)
+
+## 零散哨站：一屋 + 围墙（朝向道路一侧留门洞）+ 一塔
+func _build_outpost(c: Vector3, gy: float, open_side: String) -> void:
+	var cx := c.x; var cz := c.z
+	buildings.add_house(Vector3(cx, gy, cz), 1.0)
+	buildings.add_tower(Vector3(cx + 5, gy, cz - 5), 1.0, 5.0, true)
+	if open_side == "east":
+		buildings.add_wall(Vector3(cx - 5, gy, cz - 5), Vector3(cx + 5, gy, cz - 5), 3.0, 0.5)
+		buildings.add_wall(Vector3(cx + 5, gy, cz + 5), Vector3(cx - 5, gy, cz + 5), 3.0, 0.5)
+		buildings.add_wall(Vector3(cx - 5, gy, cz - 5), Vector3(cx - 5, gy, cz + 5), 3.0, 0.5)
+		buildings.add_wall(Vector3(cx + 5, gy, cz - 5), Vector3(cx + 5, gy, cz - 2), 3.0, 0.5)
+		buildings.add_wall(Vector3(cx + 5, gy, cz + 2), Vector3(cx + 5, gy, cz + 5), 3.0, 0.5)
+	else:
+		buildings.add_wall(Vector3(cx - 5, gy, cz - 5), Vector3(cx + 5, gy, cz - 5), 3.0, 0.5)
+		buildings.add_wall(Vector3(cx - 5, gy, cz - 5), Vector3(cx - 5, gy, cz + 5), 3.0, 0.5)
+		buildings.add_wall(Vector3(cx + 5, gy, cz - 5), Vector3(cx + 5, gy, cz + 5), 3.0, 0.5)
+		buildings.add_wall(Vector3(cx - 5, gy, cz + 5), Vector3(cx - 2, gy, cz + 5), 3.0, 0.5)
+		buildings.add_wall(Vector3(cx + 2, gy, cz + 5), Vector3(cx + 5, gy, cz + 5), 3.0, 0.5)
+
+## 基地周围一圈点缀植被（花/灌木/树），沿用原演示布局
+func _demo_greenery(c: Vector3, gy: float) -> void:
 	for i in 20:
 		var fa := TAU * float(i) / 20.0 + 0.13
 		var fr := 7.0 + float(i % 5) * 0.8
-		var fh := terrain.get_height_at(cos(fa) * fr, sin(fa) * fr)
-		vegetation.add_flower(Vector3(cos(fa) * fr, fh, sin(fa) * fr), 1.1)
+		var fh := terrain.get_height_at(c.x + cos(fa) * fr, c.z + sin(fa) * fr)
+		vegetation.add_flower(Vector3(c.x + cos(fa) * fr, fh, c.z + sin(fa) * fr), 1.1)
 	for i in 12:
 		var ba := TAU * float(i) / 12.0 + 0.4
 		var br := 8.0 + float(i % 4) * 1.2
-		var bh := terrain.get_height_at(cos(ba) * br, sin(ba) * br)
-		vegetation.add_bush(Vector3(cos(ba) * br, bh, sin(ba) * br), 1.2)
+		var bh := terrain.get_height_at(c.x + cos(ba) * br, c.z + sin(ba) * br)
+		vegetation.add_bush(Vector3(c.x + cos(ba) * br, bh, c.z + sin(ba) * br), 1.2)
 	for i in 6:
 		var ta := TAU * float(i) / 6.0 + 0.9
 		var tr := 11.0 + float(i % 3) * 1.5
-		var th := terrain.get_height_at(cos(ta) * tr, sin(ta) * tr)
-		vegetation.add_tree(Vector3(cos(ta) * tr, th, sin(ta) * tr), 1.15)
+		var th := terrain.get_height_at(c.x + cos(ta) * tr, c.z + sin(ta) * tr)
+		vegetation.add_tree(Vector3(c.x + cos(ta) * tr, th, c.z + sin(ta) * tr), 1.15)
+
+## 高度取整到 0.25 米（建筑/平台基准）
+func _round_quarter(v: float) -> float:
+	return floorf(v / 0.25) * 0.25
 
 func _physics_process(_delta: float) -> void:
 	# 拖拽预览跟随准星持续更新（第一人称下相机在移动）
 	if _is_dragging:
 		_update_preview()
+	# 家具互动中：按移动键/跳跃立即退出
+	if player.is_interacting():
+		if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_SPACE) or Input.is_key_pressed(KEY_C):
+			player.stop_interact()
+	# 家具互动期间冻结角色物理驱动（位置由 player 管理，防坐/睡高度被重力拉回）
+	camera_rig.interact_freeze = player.is_interacting()
 
 func _unhandled_input(event: InputEvent) -> void:
 	# 键盘：撤销 / 重生成 / 数字键切工具
@@ -286,7 +396,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			buildings.undo()
 			return
 		if event.keycode == KEY_R:
-			terrain.generate()
+			get_tree().reload_current_scene()
 			return
 		var tool_by_key := {
 			KEY_1: Game.Tool.WALL,
@@ -303,6 +413,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		if tool_by_key.has(event.keycode):
 			set_tool(tool_by_key[event.keycode])
 			return
+		if event.keycode == KEY_E:
+			_try_interact()
+			return
 
 	# 第一人称：仅在鼠标捕获时响应左键搭建
 	if not camera_rig.is_mouse_captured():
@@ -315,6 +428,38 @@ func _unhandled_input(event: InputEvent) -> void:
 			_begin_tool()
 		elif event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
 			_end_tool()
+
+## ---------- 家具互动（E 键触发） ----------
+
+const INTERACT_RADIUS := 2.6
+
+## 交互/退出交互：交互中按 E 退出；否则触发附近家具互动
+func _try_interact() -> void:
+	if player.is_interacting():
+		player.stop_interact()
+		return
+	var it := vegetation.find_nearest_interactable(player.global_position, INTERACT_RADIUS)
+	if not it.is_empty():
+		player.start_interact(it.kind, it.pos, it.yaw, it.height)
+
+## 更新家具互动提示（节流调用）
+func _update_interact_hint() -> void:
+	if player.is_interacting():
+		ui.show_interact_hint("按 E 退出 · 移动/跳跃退出")
+		return
+	var it := vegetation.find_nearest_interactable(player.global_position, INTERACT_RADIUS)
+	if it.is_empty():
+		ui.clear_interact_hint()
+		return
+	var action := "互动"
+	match it.kind:
+		"sit":
+			action = "坐下"
+		"sleep":
+			action = "睡觉"
+		"climb":
+			action = "上梯子"
+	ui.show_interact_hint("按 E %s" % action)
 
 ## 用准星射线求地面放置点（返回 null 表示未命中或超出交互距离）
 func _get_ground_pos() -> Variant:
@@ -334,6 +479,7 @@ func _begin_tool() -> void:
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 			buildings.add_tower(p, tower_radius, tower_height, true, _place_yaw)
 			buildings.flush_all()
+			player.play_cast_gesture()
 		Game.Tool.ROOF:
 			# 屋顶工具：点击放置预制小屋模型
 			if _is_occupied(p):
@@ -341,26 +487,31 @@ func _begin_tool() -> void:
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 			buildings.add_house(p, 1.0, _place_yaw)
 			buildings.flush_all()
+			player.play_cast_gesture()
 		Game.Tool.TREE:
 			if _is_occupied(p):
 				return
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 			vegetation.add_tree(p + Vector3(0, 0.1, 0), 1.2, _place_yaw)
+			player.play_cast_gesture()
 		Game.Tool.FLOWER:
 			if _is_occupied(p):
 				return
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 			vegetation.add_flower(p, 1.1, _place_yaw)
+			player.play_cast_gesture()
 		Game.Tool.DECOR:
 			if _is_occupied(p):
 				return
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 			vegetation.add_furniture(p + Vector3(0, 0.1, 0), 1.0, _place_yaw)
+			player.play_cast_gesture()
 		Game.Tool.MOUNTAIN:
 			if _is_occupied(p):
 				return
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 			vegetation.add_mountain(p + Vector3(0, 0.1, 0), 4.0, _place_yaw)
+			player.play_cast_gesture()
 		Game.Tool.TERRAIN_RAISE:
 			terrain.apply_brush(p, terrain.brush_radius, terrain.brush_strength)
 			_recycle_vegetation(p)
@@ -394,6 +545,7 @@ func _end_tool() -> void:
 			if _drag_start.distance_to(end) > 0.5:
 				buildings.add_wall(_drag_start, end, wall_height, wall_thickness, false)
 				buildings.flush_all()
+				player.play_cast_gesture()
 				_recycle_vegetation(_drag_start, PLACE_RECYCLE_RADIUS)
 				_recycle_vegetation(end, PLACE_RECYCLE_RADIUS)
 		_:

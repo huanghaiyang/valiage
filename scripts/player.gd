@@ -11,6 +11,9 @@ var _running := false
 var _action_active := false      # 正在播放非移动动作
 var _action_loop := false        # 当前动作是否循环播放
 var _jump_air := false           # 跳跃滞空（保持跳跃动画直到落地）
+var _cast_timer := 0.0            # 放置施法手势剩余时间（到时恢复移动/Idle）
+var _interact := ""                 # "", "sit", "sleep", "climb"（家具互动）
+var _interact_top_y := 0.0        # 爬梯目标顶 y
 
 const CHARACTER_SCENE := "res://assets/models/characters/Mage.glb"
 # Mage 模型身体（头顶）原始约 2.94m，缩到 0.368 → 角色约 1.08m（门 1.7m 的约 64%）
@@ -30,6 +33,9 @@ const COLLIDER_FOOT_HEIGHT := 0.05
 const ANIM_IDLE := "Idle"
 const ANIM_WALK := "Walking_A"
 const ANIM_RUN := "Running_A"
+# 放置物体时施法手势时长（挥舞法杖 loop 动画限时播放）
+const CAST_DURATION := 0.9
+const CLIMB_SPEED := 1.3          # 爬梯上升速度（米/秒）
 
 ## 动作注册表：[显示名, 动画名, 模式]
 ## 模式: "one"=一次性动作（播完回移动/Idle）；"loop"=循环动作（保持直到打断/再次移动）；"move"=移动类（交给移动状态机）
@@ -117,12 +123,25 @@ func _ready() -> void:
 	floor_max_angle = deg_to_rad(50.0)
 
 func _physics_process(delta: float) -> void:
+	# 施法手势计时：到时自动停止并恢复移动/Idle
+	if _cast_timer > 0.0:
+		_cast_timer -= delta
+		if _cast_timer <= 0.0:
+			_action_active = false
+			if not _jump_air:
+				_update_move_anim()
 	# 非循环动作：播放结束后自动回到移动/Idle
 	if _action_active and not _action_loop and anim_player != null:
 		if not anim_player.is_playing():
 			_action_active = false
 			if not _jump_air:
 				_update_move_anim()
+	# 爬梯上升：直到梯顶后结束互动
+	if _interact == "climb":
+		var ny := minf(global_position.y + CLIMB_SPEED * delta, _interact_top_y)
+		global_position.y = ny
+		if ny >= _interact_top_y:
+			stop_interact()
 
 func _instantiate_character() -> Node3D:
 	var scene: PackedScene = load(CHARACTER_SCENE)
@@ -203,6 +222,53 @@ func on_land() -> void:
 ## 获取动作注册表
 func get_action_lib() -> Array:
 	return ACTION_LIB
+
+## 放置物体时的施法手势：挥舞法杖动画限时播放，到时自动恢复移动/Idle
+func play_cast_gesture() -> void:
+	if anim_player == null or not anim_player.has_animation("Spellcasting"):
+		return
+	_action_active = true
+	_action_loop = false
+	_jump_air = false
+	_cast_timer = CAST_DURATION
+	anim_player.play("Spellcasting")
+
+## ---------- 家具互动（坐/睡/爬梯） ----------
+
+## 开始家具互动；target 为家具底部中心世界坐标，stand_h 为椅面/床面/梯高
+func start_interact(kind: String, target: Vector3, yaw: float, stand_h: float) -> void:
+	_cast_timer = 0.0
+	_jump_air = false
+	_interact = kind
+	global_position.x = target.x
+	global_position.z = target.z
+	body.rotation.y = yaw
+	_action_active = true
+	_action_loop = true
+	match kind:
+		"sit":
+			global_position.y = target.y + stand_h * 0.55
+			anim_player.play("Sit_Floor_Idle")
+		"sleep":
+			global_position.y = target.y + stand_h * 0.5
+			anim_player.play("Lie_Down")
+		"climb":
+			global_position.y = target.y
+			_interact_top_y = target.y + stand_h
+			anim_player.play("kaykit/Climbing")
+
+## 退出家具互动（移动键/E 触发），恢复移动/Idle
+func stop_interact() -> void:
+	if _interact == "":
+		return
+	_interact = ""
+	_action_active = false
+	_action_loop = false
+	_update_move_anim()
+
+## 是否正在家具互动
+func is_interacting() -> bool:
+	return _interact != ""
 
 ## 按索引播放动作；返回实际动画名（不可用时返回空串）
 func play_action(index: int) -> String:

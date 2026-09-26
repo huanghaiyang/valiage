@@ -97,31 +97,42 @@ func generate(seed_value: int = -1) -> void:
 	rebuild()
 
 func _sample_noise_height(wx: float, wz: float) -> float:
+	# 大尺度区域噪声：划分开阔平原带与低矮丘陵带（参考复古战棋大地图的分层地形）
+	var region := _noise.get_noise_2d(wx * 0.0022 + 31.7, wz * 0.0022 + 31.7)
+	var hill_w := smoothstep(-0.55, 0.75, region)
 	var h := _noise.get_noise_2d(wx, wz)
+	# 平原带起伏平缓（开阔草地），丘陵带起伏明显（低矮丘陵），振幅随区域权重过渡
+	var amp := lerpf(0.35, 1.25, hill_w)
 	# 边缘压低，形成山谷盆地感；整体压低起伏，避免地形起伏掩盖建筑
 	var edge := clampf(1.0 - (absf(wx) / HALF + absf(wz) / HALF) * 0.5, 0.0, 1.0)
-	return h * 1.0 * edge + 0.4
+	return h * amp * edge + 0.4
 
 func _color_for_height(h: float, wx: float, wz: float) -> Color:
-	# 卡通分层配色：低处深绿草地，高处浅绿（更饱和，避免与天空地平线混成一片）
-	var c := Color(0.34, 0.60, 0.24)
-	if h < 0.4:
-		c = Color(0.28, 0.48, 0.30)
-	elif h < 1.2:
-		c = Color(0.37, 0.64, 0.26)
+	# 黄绿混染做旧配色（复古战棋大地图）：低处深橄榄绿湿地，中部黄绿草地，高处橄榄黄丘陵
+	var c := Color(0.48, 0.58, 0.14)
+	if h < 0.35:
+		c = Color(0.32, 0.42, 0.16)
+	elif h < 0.9:
+		c = Color(0.48, 0.58, 0.14)
+	elif h < 1.5:
+		c = Color(0.62, 0.62, 0.14)
 	else:
-		c = Color(0.50, 0.70, 0.30)
-	# 岩石点缀：高海拔区域出现灰岩
+		c = Color(0.64, 0.68, 0.22)
+	# 岩石点缀：高海拔区域出现灰岩（暖灰，融入做旧色调）
 	var rock_n := _noise.get_noise_2d(wx * 1.6 + 7.0, wz * 1.6 + 7.0)
-	if h > 1.8 and rock_n > 0.28:
-		c = c.lerp(Color(0.56, 0.57, 0.53), clampf((rock_n - 0.28) * 2.2, 0.0, 0.75))
-	# 草地斑块：低频噪声产生明暗草色变化
+	if h > 1.6 and rock_n > 0.28:
+		c = c.lerp(Color(0.60, 0.60, 0.52), clampf((rock_n - 0.28) * 2.2, 0.0, 0.75))
+	# 草地斑块：低频噪声产生亮黄绿草色变化（参考图草灌铺底的明暗斑驳）
 	var patch := _noise.get_noise_2d(wx * 0.3 + 50.0, wz * 0.3 + 50.0)
 	if patch > 0.35:
-		c = c.lerp(Color(0.46, 0.72, 0.26), clampf((patch - 0.35) * 1.8, 0.0, 0.45))
-	# 轻微噪声扰动，避免单调
+		c = c.lerp(Color(0.56, 0.66, 0.16), clampf((patch - 0.35) * 1.8, 0.0, 0.45))
+	# 边缘暗化：接近地图边界时压暗（参考图边缘深灰云雾的未探索感）
+	var edgef := clampf(1.0 - (absf(wx) / HALF + absf(wz) / HALF) * 0.5, 0.0, 1.0)
+	if edgef < 0.8:
+		c = c.lerp(Color(0.24, 0.30, 0.20), minf((0.8 - edgef) * 1.8, 0.85))
+	# 轻微做旧噪声扰动（暖黄倾向），避免单调
 	var jitter := _noise.get_noise_2d(wx * 2.0 + 100.0, wz * 2.0 + 100.0) * 0.03
-	c.r += jitter; c.g += jitter; c.b += jitter * 0.5
+	c.r += jitter; c.g += jitter * 0.8; c.b += jitter * 0.3
 	return c
 
 ## 获取指定世界坐标的地形高度（含插值）
@@ -246,8 +257,10 @@ func _process(delta: float) -> void:
 		_collision_dirty = false
 		rebuild_collision()
 
-## 重建地形（初始生成时全量重建网格+碰撞）
+## 重建地形（初始生成/多处刷平后全量重建网格+碰撞；同时清空节流标记，避免 _process 重复局部重建）
 func rebuild() -> void:
+	_mesh_dirty = false
+	_collision_dirty = false
 	rebuild_mesh()
 	rebuild_collision()
 

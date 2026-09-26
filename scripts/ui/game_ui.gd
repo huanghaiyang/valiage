@@ -11,6 +11,7 @@ var biomass_label: Label
 var action_button: Button           # 动作菜单开关按钮
 var action_panel: PanelContainer    # 动作列表面板
 var _action_visible := false
+var interact_label: Label        # 家具互动提示浮层
 
 const TOOL_BUTTONS := [
 	["墙壁", Game.Tool.WALL],
@@ -120,6 +121,30 @@ func _build_ui() -> void:
 	crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	cross_container.add_child(crosshair)
 	add_child(cross_container)
+
+	# 家具互动提示（准星下方，按 E 交互）
+	interact_label = Label.new()
+	interact_label.text = ""
+	interact_label.visible = false
+	interact_label.set_anchors_preset(Control.PRESET_CENTER)
+	interact_label.custom_minimum_size = Vector2(420, 46)
+	interact_label.offset_left = -210
+	interact_label.offset_right = 210
+	interact_label.offset_top = 96
+	interact_label.offset_bottom = 142
+	interact_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	interact_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	interact_label.add_theme_font_size_override("font_size", 18)
+	interact_label.add_theme_color_override("font_color", Color(1.0, 0.95, 0.7))
+	interact_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
+	interact_label.add_theme_constant_override("outline_size", 4)
+	var isb := StyleBoxFlat.new()
+	isb.bg_color = Color(0.08, 0.12, 0.10, 0.78)
+	isb.border_color = Color(0.72, 0.6, 0.34, 0.95)
+	isb.set_border_width_all(2)
+	isb.set_corner_radius_all(10)
+	interact_label.add_theme_stylebox_override("normal", isb)
+	add_child(interact_label)
 
 	_on_tool_changed(Game.current_tool)
 
@@ -238,3 +263,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.keycode == KEY_ESCAPE and _action_visible:
 			_toggle_action_panel()
 			get_viewport().set_input_as_handled()
+
+# ---------- 家具互动提示 ----------
+
+func show_interact_hint(text: String) -> void:
+	if interact_label == null:
+		return
+	interact_label.text = text
+	interact_label.visible = true
+
+func clear_interact_hint() -> void:
+	if interact_label:
+		interact_label.visible = false

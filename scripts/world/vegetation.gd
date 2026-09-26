@@ -189,6 +189,8 @@ var _tree_shapes: Dictionary = {}       # 树模型路径 → 共享 ConcavePoly
 var _rock_shapes: Dictionary = {}       # 石头模型路径 → 共享 ConcavePolygonShape3D（贴合视觉模型）
 var _furniture_shapes: Dictionary = {}
 var _mountain_shapes: Dictionary = {}
+var _interactables: Array = []          # 可交互家具注册表（kind/pos/yaw/height）
+var _furniture_height_cache: Dictionary = {}  # 家具模型路径 -> 站立面/爬升高度缓存
 
 # 类别元数据
 var _category_models := {
@@ -573,6 +575,78 @@ func add_furniture(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
 	sb.position = pos
 	(block["collisions"] as Node3D).add_child(sb)
 	_furniture_collision_nodes.append(sb)
+	_rebuild_interactables()
+
+## ---------- 家具互动（坐/睡/爬梯） ----------
+
+## 家具交互类型：sit 坐 / sleep 睡 / climb 爬梯；"" 表示不可交互
+func _furniture_kind(path: String) -> String:
+	var n := path.get_file().get_basename()
+	if n.begins_with("chair") or n == "bench" or n == "loungeChair" or n == "stoolBar":
+		return "sit"
+	if n.begins_with("bed"):
+		return "sleep"
+	if n.begins_with("stairs") or n == "dungeon":
+		return "climb"
+	return ""
+
+## 家具站立面/爬升高度估算（由模型包围盒高度推导，带缓存）
+func _furniture_stand_height(path: String) -> float:
+	if _furniture_height_cache.has(path):
+		return _furniture_height_cache[path]
+	var mesh := _extract_mesh(path)
+	var h := 0.5
+	if mesh != null:
+		var s: float = mesh.get_aabb().size.y
+		match _furniture_kind(path):
+			"sit":
+				h = clampf(s * 0.42, 0.3, 0.8)
+			"sleep":
+				h = clampf(s * 0.5, 0.3, 0.8)
+			"climb":
+				h = maxf(s, 0.5)
+	_furniture_height_cache[path] = h
+	return h
+
+## 重建可交互家具注册表（家具增删/回收后调用，遍历全部家具实例）
+func _rebuild_interactables() -> void:
+	_interactables.clear()
+	for bi in _blocks.size():
+		var block: Dictionary = _blocks[bi]
+		var mmis: Array = block["mmis"]["furniture"]
+		var counts: Array = block["counts"]["furniture"]
+		for vi in mmis.size():
+			var kind := _furniture_kind(FURNITURE_MODELS[vi])
+			if kind == "":
+				continue
+			var mm: MultiMesh = (mmis[vi] as MultiMeshInstance3D).multimesh
+			var cnt: int = counts[vi]
+			var stand_h := _furniture_stand_height(FURNITURE_MODELS[vi])
+			for i in cnt:
+				var t: Transform3D = mm.get_instance_transform(i)
+				_interactables.append({
+					"kind": kind,
+					"pos": t.origin,
+					"yaw": t.basis.get_euler().y,
+					"height": stand_h,
+				})
+
+## 查询玩家附近最近的可交互家具；返回 {} 或 {kind,pos,yaw,height,distance}
+func find_nearest_interactable(pos: Vector3, radius: float) -> Dictionary:
+	var best := {}
+	var best_d2 := radius * radius
+	for it in _interactables:
+		var dx: float = (it.pos as Vector3).x - pos.x
+		var dz: float = (it.pos as Vector3).z - pos.z
+		var d2 := dx * dx + dz * dz
+		if d2 < best_d2:
+			best_d2 = d2
+			best = it
+	if best.is_empty():
+		return {}
+	var res := best.duplicate()
+	res["distance"] = sqrt(best_d2)
+	return res
 
 ## 添加一座山体（悬崖/岩壁随机变体 + 模型 trimesh 碰撞；yaw>=0 指定朝向；满员顶掉最近一座）
 func add_mountain(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
@@ -627,6 +701,7 @@ func remove_last_furniture() -> void:
 	if _furniture_collision_nodes.size() > 0:
 		var sb: StaticBody3D = _furniture_collision_nodes.pop_back()
 		sb.queue_free()
+		_rebuild_interactables()
 
 func remove_last_mountain() -> void:
 	_remove_last("mountain", _mountain_hist)
@@ -690,6 +765,7 @@ func clear_around(center: Vector3, radius: float) -> void:
 				collisions.remove_child(c)
 				c.queue_free()
 	_rebuild_all_hist()
+	_rebuild_interactables()
 
 ## 回收指定中心周围半径内的植被：移除实例（含树/石碰撞体）
 ## 返回 {"biomass": 植被生物质, "stone": 石头石材}——石头不混入生物质
@@ -739,6 +815,7 @@ func recycle_around(center: Vector3, radius: float) -> Dictionary:
 				c.queue_free()
 	if result["biomass"] > 0.0 or result["stone"] > 0.0:
 		_rebuild_all_hist()
+	_rebuild_interactables()
 	return result
 
 func _rebuild_all_hist() -> void:

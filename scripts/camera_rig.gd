@@ -27,6 +27,7 @@ var _current_pitch := 0.0
 var _mouse_captured := true
 var _velocity_y := 0.0       # 垂直速度（跳跃/重力）
 var _space_prev := false     # 上一帧空格状态（防按住连跳）
+var interact_freeze := false    # 家具互动期间冻结角色物理驱动（位置由 player 管理）
 var ui_override := false     # UI（动作菜单等）占用时让出鼠标/键盘控制
 
 func _ready() -> void:
@@ -63,6 +64,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			third_person = not third_person
 
 func _physics_process(delta: float) -> void:
+	# 家具互动（坐/睡/爬梯）期间：冻结移动/重力驱动，位置由 player 管理，相机仍跟随
+	if interact_freeze:
+		_update_camera_only()
+		return
 	# WASD 水平移动：始终响应键盘（不依赖鼠标捕获）
 	var moved := false
 	var dir := _get_move_input()
@@ -152,6 +157,21 @@ func _physics_process(delta: float) -> void:
 		camera.global_transform = Transform3D(rot, player.global_position + Vector3(0.0, eye_height, 0.0))
 
 ## 只返回水平移动方向（x=左右，y=前后）。跳跃在 _physics_process 单独处理。
+## 互动冻结期间仅更新相机（跟随玩家位置/朝向）
+func _update_camera_only() -> void:
+	if third_person:
+		player.set_body_visible(true)
+		var yaw_vec := Vector3(sin(_current_yaw), 0.0, cos(_current_yaw))
+		var dist_h := cos(_current_pitch) * tps_distance
+		var dist_v := sin(_current_pitch) * tps_distance
+		var cam_pos := player.global_position + yaw_vec * dist_h + Vector3(0.0, tps_height + dist_v, 0.0)
+		camera.global_position = cam_pos
+		camera.look_at(player.global_position + Vector3(0.0, 1.05, 0.0), Vector3.UP)
+	else:
+		player.set_body_visible(false)
+		var rot := Basis.from_euler(Vector3(_current_pitch, _current_yaw, 0.0))
+		camera.global_transform = Transform3D(rot, player.global_position + Vector3(0.0, eye_height, 0.0))
+
 func _get_move_input() -> Vector2:
 	var dir := Vector2.ZERO
 	if Input.is_key_pressed(KEY_W):
