@@ -1,7 +1,7 @@
 class_name Player
 extends CharacterBody3D
 ## 玩家角色：第三方模型（KayKit Adventurers - Mage，CC0）
-## CharacterBody3D + 胶囊碰撞体，由 CameraRig 用 move_and_slide 驱动（走物理碰撞）
+## CharacterBody3D + 胶囊碰撞（凸形状，兼容场景三角碰撞地形），由 CameraRig 用 move_and_slide 驱动（走物理碰撞）
 ## 动作系统：ACTION_LIB 动作注册表 + 一次性/循环动作播放 + 移动状态联动（走/跑/跳）
 
 var body: Node3D
@@ -16,10 +16,13 @@ const CHARACTER_SCENE := "res://assets/models/characters/Mage.glb"
 # Mage 模型身体（头顶）原始约 2.94m，缩到 0.368 → 角色约 1.08m（门 1.7m 的约 64%）
 const CHARACTER_SCALE := 0.368
 
-# 碰撞体尺寸（胶囊，底部对齐脚底；高度匹配身体 1.08m，随缩放等比缩小）
+# 碰撞体尺寸（主体胶囊：凸形状才能与场景 trimesh 地形正常碰撞；凹形 ConcavePolygonShape3D 在 Godot 物理中不支持 CharacterBody 会穿模）
 const COLLIDER_RADIUS := 0.28
 const COLLIDER_HEIGHT := 1.08
 const COLLIDER_OFFSET_Y := 0.54
+# 脚底平底薄圆柱：只垫平球面最低点（站突起/石头/树干时脚部不下陷）；
+# 必须很薄——太高会在坡面/物体边缘把角色垫起造成浮空
+const COLLIDER_FOOT_HEIGHT := 0.05
 
 # 移动动画
 const ANIM_IDLE := "Idle"
@@ -70,14 +73,23 @@ func _ready() -> void:
 		add_child(body)
 	body.scale = Vector3.ONE * CHARACTER_SCALE
 
-	# 角色碰撞体（胶囊，底部对齐脚底 origin）
+	# 角色碰撞体：主体胶囊 + 底部平底圆柱（凸形状组合，底部对齐脚底）
 	var col := CollisionShape3D.new()
-	var cap := CapsuleShape3D.new()
-	cap.radius = COLLIDER_RADIUS
-	cap.height = COLLIDER_HEIGHT
-	col.shape = cap
-	col.position = Vector3(0, COLLIDER_OFFSET_Y, 0)
+	var capsule := CapsuleShape3D.new()
+	capsule.radius = COLLIDER_RADIUS
+	capsule.height = COLLIDER_HEIGHT
+	col.shape = capsule
+	col.position = Vector3(0.0, COLLIDER_OFFSET_Y, 0.0)
 	add_child(col)
+
+	# 脚底平底薄圆柱：垫平球面最低点，站突起/石头/树干上脚部贴合
+	var col2 := CollisionShape3D.new()
+	var cyl := CylinderShape3D.new()
+	cyl.radius = COLLIDER_RADIUS
+	cyl.height = COLLIDER_FOOT_HEIGHT
+	col2.shape = cyl
+	col2.position = Vector3(0.0, COLLIDER_FOOT_HEIGHT * 0.5, 0.0)
+	add_child(col2)
 
 	# 碰撞：层1=玩家；mask 与地形(2)/建筑(4)/植被(8)碰撞
 	collision_layer = 1

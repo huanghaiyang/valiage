@@ -10,6 +10,7 @@ var tower_scene: PackedScene
 var house_scene: PackedScene
 
 var _undo_stack: Array[Dictionary] = []
+var _shape_cache: Dictionary = {}   # 场景路径 -> ConcavePolygonShape3D（同类模型共享，按模型实际面）
 var _rng := RandomNumberGenerator.new()
 
 # 模型尺寸校准（运行时从 AABB 读取）
@@ -75,19 +76,41 @@ func _instantiate(scene: PackedScene) -> Node3D:
 	return inst
 
 ## 给建筑实例加模型三角网格碰撞（ConcavePolygonShape3D）
-## 直接用模型实际 mesh 的多面体做碰撞，而非 box：屋顶/塔身斜坡都能真实贴合，
-## 角色可沿真实形状爬上跳上（如跳到房屋屋顶）。shape 随 inst 的 scale/rotation 一起变换。
-func _add_mesh_collision(inst: Node3D) -> void:
-	var wmi := _find_mesh_instance(inst)
-	if wmi == null or wmi.mesh == null:
+## 收集模型内所有 MeshInstance 的实际三角面（多部件：墙身/塔身/屋顶等全部覆盖），
+## 按模型实际面碰撞而非写死体积；shape 顶点在模型本地空间，随 inst 的 scale/rotation 一起变换。
+## 同类场景共享同一 shape（缓存），避免每段墙/每座塔重复收集面。
+func _add_mesh_collision(inst: Node3D, scene: PackedScene) -> void:
+	if scene == null or inst == null:
 		return
+	var shape: ConcavePolygonShape3D = _shape_cache.get(scene.resource_path)
+	if shape == null:
+		var faces := PackedVector3Array()
+		# 从 inst 收集但不乘 inst 自身 transform（shape 挂 inst 下，inst 的 scale/rotation 会整体作用）
+		_collect_mesh_faces(inst, Transform3D.IDENTITY, faces, false)
+		if faces.is_empty():
+			return
+		shape = ConcavePolygonShape3D.new()
+		shape.set_faces(faces)
+		_shape_cache[scene.resource_path] = shape
 	var sb := StaticBody3D.new()
 	sb.collision_layer = 4
 	sb.collision_mask = 0
 	var col := CollisionShape3D.new()
-	col.shape = wmi.mesh.create_trimesh_shape()
+	col.shape = shape
 	sb.add_child(col)
 	inst.add_child(sb)
+
+## 递归收集场景内所有 MeshInstance3D 的三角面顶点，按节点 transform 链式变换到根空间
+## include_self 为 false 时跳过根节点自身 transform（shape 挂根节点下随根 transform 整体变换）
+func _collect_mesh_faces(n: Node3D, xform: Transform3D, out: PackedVector3Array, include_self: bool = true) -> void:
+	var t: Transform3D = xform * (n.transform if include_self else Transform3D.IDENTITY)
+	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+		var mf := (n as MeshInstance3D).mesh.get_faces()
+		for v in mf:
+			out.append(t * v)
+	for c in n.get_children():
+		if c is Node3D:
+			_collect_mesh_faces(c as Node3D, t, out, true)
 
 ## 添加一段墙：沿 a→b 路径按模型长度拼接多个墙段
 func add_wall(a: Vector3, b: Vector3, _height: float, _thickness: float, _crenellated := false) -> void:
@@ -113,7 +136,7 @@ func _place_wall(a: Vector3, b: Vector3) -> void:
 		inst.global_position = Vector3(p.x, p.y, p.z)
 		inst.scale = Vector3(1.0, WALL_HEIGHT_SCALE, 1.0)
 		inst.rotation = Vector3(0, yaw, 0)
-		_add_mesh_collision(inst)
+		_add_mesh_collision(inst, wall_scene)
 
 ## 添加一座塔（yaw>=0 指定朝向，-1 随机）
 func add_tower(center: Vector3, radius: float, _height: float, _with_roof := true, yaw := -1.0) -> void:
@@ -129,7 +152,7 @@ func _place_tower(center: Vector3, radius: float, yaw: float) -> void:
 	inst.scale = Vector3.ONE * s
 	inst.rotation = Vector3(0, yaw if yaw >= 0.0 else _rng.randf_range(0.0, TAU), 0)
 	# 塔碰撞：模型三角网格多面体（含锥顶/塔身，角色可沿塔身形状交互）
-	_add_mesh_collision(inst)
+	_add_mesh_collision(inst, tower_scene)
 
 ## 放置一栋房屋（对应原"屋顶"工具，改用预制小屋模型；yaw>=0 指定朝向，-1 随机）
 func add_house(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
@@ -144,7 +167,7 @@ func _place_house(pos: Vector3, scale: float, yaw: float) -> void:
 	inst.scale = Vector3.ONE * (maxf(0.4, scale) * HOUSE_BASE_SCALE)
 	inst.rotation = Vector3(0, yaw if yaw >= 0.0 else _rng.randf_range(0.0, TAU), 0)
 	# 房屋碰撞：模型三角网格多面体（含屋顶斜面，角色可跳到屋顶上）
-	_add_mesh_collision(inst)
+	_add_mesh_collision(inst, house_scene)
 
 ## 兼容旧接口（已改为放置房屋模型）
 func add_gable_roof(a: Vector3, b: Vector3, width: float, _ridge_h: float, _eave_h: float) -> void:
