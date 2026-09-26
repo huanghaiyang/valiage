@@ -27,6 +27,7 @@ var _current_pitch := 0.0
 var _mouse_captured := true
 var _velocity_y := 0.0       # 垂直速度（跳跃/重力）
 var _space_prev := false     # 上一帧空格状态（防按住连跳）
+var ui_override := false     # UI（动作菜单等）占用时让出鼠标/键盘控制
 
 func _ready() -> void:
 	# 初始站在小屋旁，看向演示小屋（spawn 略高于地面，靠重力自然落位）
@@ -44,7 +45,13 @@ func _set_mouse_captured(captured: bool) -> void:
 	_mouse_captured = captured
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if captured else Input.MOUSE_MODE_VISIBLE
 
+## UI（动作菜单等）请求释放/恢复鼠标捕获
+func set_ui_capture(captured: bool) -> void:
+	_set_mouse_captured(captured)
+
 func _unhandled_input(event: InputEvent) -> void:
+	if ui_override:
+		return
 	if event is InputEventMouseMotion and _mouse_captured:
 		_current_yaw -= event.relative.x * mouse_sensitivity
 		# 鼠标上移→抬头（pitch 减小），下移→低头（pitch 增大），并夹紧到上下限
@@ -60,9 +67,11 @@ func _physics_process(delta: float) -> void:
 	var moved := false
 	var dir := _get_move_input()
 	var move_xz := Vector3.ZERO
+	var running := Input.is_key_pressed(KEY_SHIFT)
+	player.set_running(running)
 	if dir.x != 0.0 or dir.y != 0.0:
 		moved = true
-		var speed := run_speed if Input.is_key_pressed(KEY_SHIFT) else move_speed
+		var speed := run_speed if running else move_speed
 		var forward := Vector3(-sin(_current_yaw), 0.0, -cos(_current_yaw))
 		var right := Vector3(cos(_current_yaw), 0.0, -sin(_current_yaw))
 		move_xz = (forward * dir.y + right * dir.x) * speed
@@ -83,13 +92,17 @@ func _physics_process(delta: float) -> void:
 	var space_now := Input.is_key_pressed(KEY_SPACE)
 	if space_now and not _space_prev and player.is_on_floor():
 		_velocity_y = jump_speed
+		player.on_jump()
 	_space_prev = space_now
 
 	# 用 move_and_slide 走物理碰撞（地面/建筑/树的碰撞体生效，禁止穿入）
+	var was_air := not player.is_on_floor()
 	player.velocity = Vector3(move_xz.x, _velocity_y, move_xz.z)
 	player.move_and_slide()
 	if player.is_on_floor():
 		_velocity_y = 0.0
+		if was_air:
+			player.on_land()
 
 	# 地形高度同步与防穿透
 	# 1) 刷地同步：仅在刷地后短暂窗口内（0.5s），且角色位于刷地影响范围且接近地面时，

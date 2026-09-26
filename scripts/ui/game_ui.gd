@@ -8,6 +8,9 @@ var title_label: Label
 var hint_label: Label
 var undo_button: Button
 var biomass_label: Label
+var action_button: Button           # 动作菜单开关按钮
+var action_panel: PanelContainer    # 动作列表面板
+var _action_visible := false
 
 const TOOL_BUTTONS := [
 	["墙壁", Game.Tool.WALL],
@@ -64,6 +67,17 @@ func _build_ui() -> void:
 	undo_button.custom_minimum_size = Vector2(110, 34)
 	undo_button.pressed.connect(_on_undo_pressed)
 	hbox.add_child(undo_button)
+
+	# 动作菜单按钮
+	action_button = Button.new()
+	action_button.text = "动作 (K)"
+	action_button.custom_minimum_size = Vector2(90, 34)
+	action_button.toggle_mode = true
+	action_button.pressed.connect(_toggle_action_panel)
+	hbox.add_child(action_button)
+
+	# 动作列表面板（默认隐藏，K 或按钮呼出）
+	_build_action_panel()
 
 	# 生物质/石材余额（右上角，回收植被获得；石头单独计入石材）
 	biomass_label = Label.new()
@@ -145,3 +159,82 @@ func _on_tool_changed(tool: int) -> void:
 		Game.Tool.MOUNTAIN:
 			tip = "点击放置山体（悬崖岩块）"
 	hint_label.text = "【%s】%s · WASD移动 · Shift加速 · Space/C升降 · T切换视角 · 数字键1-0切工具" % [Game.get_tool_name(), tip]
+
+# ---------- 动作菜单（快捷键 K 呼出，游戏内测试动作） ----------
+
+func _build_action_panel() -> void:
+	action_panel = PanelContainer.new()
+	action_panel.visible = false
+	action_panel.position = Vector2(12, 74)
+	action_panel.custom_minimum_size = Vector2(230, 0)
+	action_panel.add_theme_stylebox_override("panel", _panel_style())
+	add_child(action_panel)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 4)
+	action_panel.add_child(vbox)
+
+	var cap := Label.new()
+	cap.text = "动作测试（点击播放，再次移动/跳跃恢复）"
+	cap.add_theme_font_size_override("font_size", 13)
+	cap.add_theme_color_override("font_color", Color(0.95, 0.95, 0.9))
+	vbox.add_child(cap)
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(0, 380)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vbox.add_child(scroll)
+
+	var list := VBoxContainer.new()
+	list.add_theme_constant_override("separation", 2)
+	scroll.add_child(list)
+
+	var lib: Array = []
+	if main != null and main.player != null:
+		lib = main.player.get_action_lib()
+	for i in lib.size():
+		var entry: Array = lib[i]
+		var b := Button.new()
+		b.text = entry[0]
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.custom_minimum_size = Vector2(0, 30)
+		b.pressed.connect(_on_action_pressed.bind(i))
+		list.add_child(b)
+
+func _panel_style() -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.1, 0.13, 0.16, 0.88)
+	sb.border_color = Color(0.45, 0.55, 0.5, 0.9)
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(8)
+	sb.content_margin_left = 10
+	sb.content_margin_right = 10
+	sb.content_margin_top = 10
+	sb.content_margin_bottom = 10
+	return sb
+
+func _toggle_action_panel() -> void:
+	_action_visible = not _action_visible
+	action_panel.visible = _action_visible
+	action_button.button_pressed = _action_visible
+	if main != null and main.camera_rig != null:
+		var rig: CameraRig = main.camera_rig
+		if _action_visible:
+			rig.ui_override = true
+			rig.set_ui_capture(false)
+		else:
+			rig.ui_override = false
+			rig.set_ui_capture(true)
+
+func _on_action_pressed(index: int) -> void:
+	if main != null and main.player != null:
+		main.player.play_action(index)
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_K:
+			_toggle_action_panel()
+			get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_ESCAPE and _action_visible:
+			_toggle_action_panel()
+			get_viewport().set_input_as_handled()
