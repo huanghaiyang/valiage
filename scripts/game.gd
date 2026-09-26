@@ -2,7 +2,7 @@ extends Node
 ## 游戏状态管理（自动加载单例）
 ## 记录当前工具、搭建状态、场景引用，供各系统间通信
 
-enum Tool { NONE, WALL, TOWER, ROOF, TERRAIN_RAISE, TERRAIN_LOWER, TERRAIN_FLATTEN, TREE, FLOWER, PATH, DECOR, ERASE }
+enum Tool { NONE, WALL, TOWER, ROOF, TERRAIN_RAISE, TERRAIN_LOWER, TERRAIN_FLATTEN, TREE, FLOWER, PATH, DECOR, ERASE, MOUNTAIN }
 
 const TOOL_NAMES := {
 	Tool.NONE: "选择",
@@ -15,8 +15,9 @@ const TOOL_NAMES := {
 	Tool.TREE: "树木",
 	Tool.FLOWER: "花草",
 	Tool.PATH: "小径",
-	Tool.DECOR: "装饰",
+	Tool.DECOR: "家具",
 	Tool.ERASE: "橡皮擦",
+	Tool.MOUNTAIN: "山体",
 }
 
 ## 当前激活的工具

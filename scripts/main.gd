@@ -20,7 +20,7 @@ var preview_roof_mat: StandardMaterial3D
 var preview_place: Node3D
 var preview_place_mat_green: StandardMaterial3D
 var preview_place_mat_red: StandardMaterial3D
-var _place_tools := [Game.Tool.TOWER, Game.Tool.ROOF, Game.Tool.TREE, Game.Tool.FLOWER]
+var _place_tools := [Game.Tool.TOWER, Game.Tool.ROOF, Game.Tool.TREE, Game.Tool.FLOWER, Game.Tool.DECOR, Game.Tool.MOUNTAIN]
 var _place_yaw := 0.0  # 放置朝向（右键旋转）
 var _place_rot_accum := 0.0  # 按住右键旋转的累积时间（每 100ms +10°）
 const PLACE_OCCUPY_RADIUS := 0.9    # 占位检测球半径（建筑层）
@@ -226,6 +226,18 @@ func _setup_previews() -> void:
 	flower_mi.mesh = _extract_mesh(load(VegetationSystem.FLOWER_MODELS[0]))
 	flower_mi.scale = Vector3.ONE * 1.1
 	preview_place.add_child(flower_mi)
+	# 家具预览：真实家具模型半透明（scale 与放置一致）
+	var furniture_mi := MeshInstance3D.new()
+	furniture_mi.name = "FurniturePreview"
+	furniture_mi.mesh = _extract_mesh(load(VegetationSystem.FURNITURE_MODELS[0]))
+	furniture_mi.scale = Vector3.ONE
+	preview_place.add_child(furniture_mi)
+	# 山体预览：真实 cliff 模型半透明（scale 与放置一致，用山体中值）
+	var mountain_mi := MeshInstance3D.new()
+	mountain_mi.name = "MountainPreview"
+	mountain_mi.mesh = _extract_mesh(load(VegetationSystem.MOUNTAIN_MODELS[0]))
+	mountain_mi.scale = Vector3.ONE * 4.0
+	preview_place.add_child(mountain_mi)
 
 func _setup_input_actions() -> void:
 	# 快捷键：撤销
@@ -285,6 +297,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_6: Game.Tool.TERRAIN_FLATTEN,
 			KEY_7: Game.Tool.TREE,
 			KEY_8: Game.Tool.FLOWER,
+			KEY_9: Game.Tool.DECOR,
+			KEY_0: Game.Tool.MOUNTAIN,
 		}
 		if tool_by_key.has(event.keycode):
 			set_tool(tool_by_key[event.keycode])
@@ -325,18 +339,28 @@ func _begin_tool() -> void:
 			if _is_occupied(p):
 				return
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
-			buildings.add_house(p, 1.0 + randf() * 0.3, _place_yaw)
+			buildings.add_house(p, 1.0, _place_yaw)
 			buildings.flush_all()
 		Game.Tool.TREE:
 			if _is_occupied(p):
 				return
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
-			vegetation.add_tree(p + Vector3(0, 0.1, 0), 1.0 + randf() * 0.5, _place_yaw)
+			vegetation.add_tree(p + Vector3(0, 0.1, 0), 1.2, _place_yaw)
 		Game.Tool.FLOWER:
 			if _is_occupied(p):
 				return
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
-			vegetation.add_flower(p, 1.0 + randf() * 0.4, _place_yaw)
+			vegetation.add_flower(p, 1.1, _place_yaw)
+		Game.Tool.DECOR:
+			if _is_occupied(p):
+				return
+			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
+			vegetation.add_furniture(p + Vector3(0, 0.1, 0), 1.0, _place_yaw)
+		Game.Tool.MOUNTAIN:
+			if _is_occupied(p):
+				return
+			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
+			vegetation.add_mountain(p + Vector3(0, 0.1, 0), 4.0, _place_yaw)
 		Game.Tool.TERRAIN_RAISE:
 			terrain.apply_brush(p, terrain.brush_radius, terrain.brush_strength)
 			_recycle_vegetation(p)
@@ -433,6 +457,10 @@ func _place_node_name(tool: int) -> String:
 			return "TreePreview"
 		Game.Tool.FLOWER:
 			return "FlowerPreview"
+		Game.Tool.DECOR:
+			return "FurniturePreview"
+		Game.Tool.MOUNTAIN:
+			return "MountainPreview"
 	return ""
 
 ## 递归设置预览材质（树预览是 MeshInstance3D 或 Node3D 容器）

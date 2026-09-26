@@ -18,6 +18,8 @@ const TOOL_BUTTONS := [
 	["平整", Game.Tool.TERRAIN_FLATTEN],
 	["树木", Game.Tool.TREE],
 	["花草", Game.Tool.FLOWER],
+	["家具", Game.Tool.DECOR],
+	["山体", Game.Tool.MOUNTAIN],
 ]
 
 func setup(main_node: Node3D) -> void:
@@ -138,4 +140,8 @@ func _on_tool_changed(tool: int) -> void:
 			tip = "点击种树"
 		Game.Tool.FLOWER:
 			tip = "点击种花"
-	hint_label.text = "【%s】%s · WASD移动 · Shift加速 · Space/C升降 · T切换视角 · 数字键1-8切工具" % [Game.get_tool_name(), tip]
+		Game.Tool.DECOR:
+			tip = "点击放置家具（桌/椅/床/梯子等）"
+		Game.Tool.MOUNTAIN:
+			tip = "点击放置山体（悬崖岩块）"
+	hint_label.text = "【%s】%s · WASD移动 · Shift加速 · Space/C升降 · T切换视角 · 数字键1-0切工具" % [Game.get_tool_name(), tip]

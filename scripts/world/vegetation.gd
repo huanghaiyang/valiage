@@ -63,14 +63,70 @@ const STUMP_MODELS := [
 	"res://assets/models/nature/log_large.glb",
 ]
 
-# ---- 每类全图上限（铺满后玩家仍可放置：种植入口满员时自动顶掉最近一棵） ----
-const MAX_TREES := 4000
-const MAX_BUSHES := 4000
-const MAX_FLOWERS := 16000
-const MAX_GRASS := 40000
-const MAX_ROCKS := 1800
-const MAX_MUSHROOMS := 1200
-const MAX_STUMPS := 800
+# ---- 家具/梯子（Kenney Furniture Kit + KayKit Dungeon，CC0，低多边形卡通风） ----
+const FURNITURE_MODELS := [
+	"res://assets/models/furniture/bench.glb",
+	"res://assets/models/furniture/chair.glb",
+	"res://assets/models/furniture/chairRounded.glb",
+	"res://assets/models/furniture/loungeChair.glb",
+	"res://assets/models/furniture/table.glb",
+	"res://assets/models/furniture/tableRound.glb",
+	"res://assets/models/furniture/tableCoffee.glb",
+	"res://assets/models/furniture/desk.glb",
+	"res://assets/models/furniture/sideTable.glb",
+	"res://assets/models/furniture/stoolBar.glb",
+	"res://assets/models/furniture/bookcaseOpen.glb",
+	"res://assets/models/furniture/bookcaseClosed.glb",
+	"res://assets/models/furniture/bedSingle.glb",
+	"res://assets/models/furniture/bedDouble.glb",
+	"res://assets/models/furniture/pillow.glb",
+	"res://assets/models/furniture/lampRoundFloor.glb",
+	"res://assets/models/furniture/lampRoundTable.glb",
+	"res://assets/models/furniture/lampWall.glb",
+	"res://assets/models/furniture/pottedPlant.glb",
+	"res://assets/models/furniture/rugRound.glb",
+	"res://assets/models/furniture/stairs.glb",
+	"res://assets/models/furniture/stairsOpen.glb",
+	"res://assets/models/furniture/stairsCorner.glb",
+	"res://assets/models/dungeon/stairs_wood.glb",
+	"res://assets/models/dungeon/stairs_wide.glb",
+	"res://assets/models/dungeon/wall_scaffold.glb",
+	"res://assets/models/dungeon/barrel_large.glb",
+	"res://assets/models/dungeon/barrel_small.glb",
+	"res://assets/models/dungeon/chest.glb",
+	"res://assets/models/dungeon/candle.glb",
+	"res://assets/models/dungeon/torch_mounted.glb",
+	"res://assets/models/dungeon/table_medium.glb",
+	"res://assets/models/dungeon/shelf_large.glb",
+	"res://assets/models/dungeon/bed_decorated.glb",
+]
+
+# ---- 山体（Kenney Nature Kit cliff 悬崖/岩壁，CC0，风格统一） ----
+const MOUNTAIN_MODELS := [
+	"res://assets/models/mountain/cliff_block_rock.glb",
+	"res://assets/models/mountain/cliff_large_rock.glb",
+	"res://assets/models/mountain/cliff_steps_rock.glb",
+	"res://assets/models/mountain/cliff_corner_rock.glb",
+	"res://assets/models/mountain/cliff_diagonal_rock.glb",
+	"res://assets/models/mountain/cliff_half_rock.glb",
+	"res://assets/models/mountain/cliff_halfCorner_rock.glb",
+	"res://assets/models/mountain/cliff_cornerLarge_rock.glb",
+	"res://assets/models/mountain/cliff_rock.glb",
+	"res://assets/models/mountain/cliff_top_rock.glb",
+	"res://assets/models/mountain/cliff_cave_rock.glb",
+	"res://assets/models/mountain/cliff_waterfall_rock.glb",
+]
+
+# ---- 每类全图上限（已大幅放宽，玩家种植不再受感知限制；满员时自动顶掉最近一棵兜底） ----
+const MAX_TREES := 20000
+const MAX_BUSHES := 20000
+const MAX_FLOWERS := 80000
+const MAX_GRASS := 200000
+const MAX_ROCKS := 9000
+const MAX_MUSHROOMS := 6000
+const MAX_STUMPS := 4000
+const MAX_FURNITURE := 4000
+const MAX_MOUNTAIN := 2000
 
 # ---- 每类生物质量（操作地形/放置建筑时植被自动回收） ----
 ## 生物质：植被类回收为生物质
@@ -90,7 +146,7 @@ const STONE_VALUE := {
 # 使用实例随机配色的类别
 const COLORED_CATEGORIES := ["flower", "grass", "mushroom", "stump"]
 # 开启阴影的类别（低矮植被/杂物关闭阴影，明显提升阴影 pass 性能）
-const SHADOW_CATEGORIES := ["tree", "bush"]
+const SHADOW_CATEGORIES := ["tree", "bush", "furniture", "mountain"]
 
 var _rng := RandomNumberGenerator.new()
 
@@ -123,8 +179,16 @@ var _grass_hist: Array = []
 var _rock_hist: Array = []
 var _mushroom_hist: Array = []
 var _stump_hist: Array = []
+var _furniture_hist: Array = []
+var _mountain_hist: Array = []
 var _tree_collision_nodes: Array = []   # 全局顺序，撤销删除最近一棵树的碰撞体
 var _rock_collision_nodes: Array = []   # 全局顺序，撤销删除最近一块石头的碰撞体
+var _furniture_collision_nodes: Array = []
+var _mountain_collision_nodes: Array = []
+var _tree_shapes: Dictionary = {}       # 树模型路径 → 共享 ConcavePolygonShape3D（贴合视觉模型）
+var _rock_shapes: Dictionary = {}       # 石头模型路径 → 共享 ConcavePolygonShape3D（贴合视觉模型）
+var _furniture_shapes: Dictionary = {}
+var _mountain_shapes: Dictionary = {}
 
 # 类别元数据
 var _category_models := {
@@ -135,6 +199,8 @@ var _category_models := {
 	"rock": ROCK_MODELS,
 	"mushroom": MUSHROOM_MODELS,
 	"stump": STUMP_MODELS,
+	"furniture": FURNITURE_MODELS,
+	"mountain": MOUNTAIN_MODELS,
 }
 var _category_max := {
 	"tree": MAX_TREES,
@@ -144,6 +210,8 @@ var _category_max := {
 	"rock": MAX_ROCKS,
 	"mushroom": MAX_MUSHROOMS,
 	"stump": MAX_STUMPS,
+	"furniture": MAX_FURNITURE,
+	"mountain": MAX_MOUNTAIN,
 }
 var _category_total := {
 	"tree": 0,
@@ -153,6 +221,8 @@ var _category_total := {
 	"rock": 0,
 	"mushroom": 0,
 	"stump": 0,
+	"furniture": 0,
+	"mountain": 0,
 }
 var _scale_ranges := {
 	"tree": [0.7, 1.6],
@@ -162,6 +232,8 @@ var _scale_ranges := {
 	"rock": [0.6, 1.6],
 	"mushroom": [0.8, 1.5],
 	"stump": [0.8, 1.6],
+	"furniture": [1.0, 1.0],
+	"mountain": [1.0, 1.0],
 }
 
 func _ready() -> void:
@@ -247,6 +319,8 @@ func _hist_for(cat: String) -> Array:
 		"rock": return _rock_hist
 		"mushroom": return _mushroom_hist
 		"stump": return _stump_hist
+		"furniture": return _furniture_hist
+		"mountain": return _mountain_hist
 	return []
 
 ## 通用添加：定位所在块 → 随机模型变体 → 指定/随机旋转 → 随机缩放 → 可选实例色
@@ -360,24 +434,25 @@ func _random_in_block(terrain: TerrainSystem, bx: int, bz: int) -> Vector3:
 			return Vector3(x, h, z)
 	return Vector3.INF
 
-## 添加一棵树（随机变体 + 树干碰撞体；yaw>=0 指定朝向；满员时顶掉最近一棵保证可种）
+## 添加一棵树（随机变体 + 模型 trimesh 碰撞体；yaw>=0 指定朝向；满员时顶掉最近一棵保证可种）
 func add_tree(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
 	if _category_total["tree"] >= MAX_TREES:
 		remove_last_tree()
+	if yaw < 0.0:
+		yaw = _rng.randf_range(0.0, TAU)
 	if not _add_instance("tree", pos, scale, _tree_hist, yaw):
 		return
 	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var block: Dictionary = _blocks[bz * _block_n + bx]
+	var vi: int = _tree_hist[_tree_hist.size() - 1][2]
 	var sb := StaticBody3D.new()
 	sb.collision_layer = 8
 	sb.collision_mask = 0
 	var col := CollisionShape3D.new()
-	var cap := CapsuleShape3D.new()
-	cap.radius = 0.32 * scale
-	cap.height = 2.6 * scale
-	col.shape = cap
-	col.position = Vector3(0, 1.3 * scale, 0)
+	col.shape = _mesh_shape(TREE_MODELS[vi], _tree_shapes)
+	col.rotation.y = yaw
+	col.scale = Vector3.ONE * scale
 	sb.add_child(col)
 	sb.position = pos
 	(block["collisions"] as Node3D).add_child(sb)
@@ -394,30 +469,134 @@ func add_flower(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
 func add_grass(pos: Vector3, scale := 1.0) -> void:
 	_add_instance("grass", pos, scale, _grass_hist)
 
-func add_rock(pos: Vector3, scale := 1.0) -> void:
-	if not _add_instance("rock", pos, scale, _rock_hist):
+func add_rock(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
+	if yaw < 0.0:
+		yaw = _rng.randf_range(0.0, TAU)
+	if not _add_instance("rock", pos, scale, _rock_hist, yaw):
 		return
 	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var block: Dictionary = _blocks[bz * _block_n + bx]
+	var vi: int = _rock_hist[_rock_hist.size() - 1][2]
 	var sb := StaticBody3D.new()
 	sb.collision_layer = 8
 	sb.collision_mask = 0
 	var col := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	box.size = Vector3(0.75, 0.45, 0.75) * scale
-	col.shape = box
-	col.position = Vector3(0, 0.22 * scale, 0)
+	col.shape = _mesh_shape(ROCK_MODELS[vi], _rock_shapes)
+	col.rotation.y = yaw
+	col.scale = Vector3.ONE * scale
 	sb.add_child(col)
 	sb.position = pos
 	(block["collisions"] as Node3D).add_child(sb)
 	_rock_collision_nodes.append(sb)
+
+## 植被碰撞体：直接使用对应视觉模型的三角网格（共享 shape 资源），碰撞顶面与模型表面完全一致，避免踩上去浮空
+## 收集场景内所有 MeshInstance3D 的 faces，并按节点变换到根空间，保证与视觉完全贴合
+func _mesh_shape(model_path: String, cache: Dictionary) -> ConcavePolygonShape3D:
+	if cache.has(model_path):
+		return cache[model_path]
+	var shape := ConcavePolygonShape3D.new()
+	var faces := PackedVector3Array()
+	var m: Variant = load(model_path)
+	if m is Mesh:
+		faces = (m as Mesh).get_faces()
+	elif m is PackedScene:
+		var inst := (m as PackedScene).instantiate()
+		if inst is Node3D:
+			_collect_mesh_faces(inst as Node3D, Transform3D.IDENTITY, faces)
+			inst.free()
+	if faces.is_empty():
+		faces.append(Vector3(-0.5, 0.0, -0.5))
+		faces.append(Vector3(0.5, 0.0, -0.5))
+		faces.append(Vector3(0.0, 0.1, 0.0))
+	shape.set_faces(faces)
+	cache[model_path] = shape
+	return shape
+
+## 递归收集场景内所有 MeshInstance3D 的顶点，变换到根空间（考虑每个节点的局部 transform）
+func _collect_mesh_faces(n: Node3D, xform: Transform3D, out: PackedVector3Array) -> void:
+	var t: Transform3D = xform * n.transform
+	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+		var mf := (n as MeshInstance3D).mesh.get_faces()
+		for v in mf:
+			out.append(t * v)
+	for c in n.get_children():
+		if c is Node3D:
+			_collect_mesh_faces(c as Node3D, t, out)
+
+func _extract_mesh(model_path: String) -> Mesh:
+	var m: Variant = load(model_path)
+	if m is Mesh:
+		return m
+	if m is PackedScene:
+		var inst := (m as PackedScene).instantiate()
+		var mi := _find_first_mesh(inst)
+		if mi != null and mi.mesh != null:
+			return mi.mesh
+	return null
+
+func _find_first_mesh(n: Node) -> MeshInstance3D:
+	if n is MeshInstance3D:
+		return n
+	for c in n.get_children():
+		var r := _find_first_mesh(c)
+		if r != null:
+			return r
+	return null
 
 func add_mushroom(pos: Vector3, scale := 1.0) -> void:
 	_add_instance("mushroom", pos, scale, _mushroom_hist)
 
 func add_stump(pos: Vector3, scale := 1.0) -> void:
 	_add_instance("stump", pos, scale, _stump_hist)
+
+## 添加一件家具/梯子（随机变体 + 模型 trimesh 碰撞；yaw>=0 指定朝向；满员顶掉最近一件）
+func add_furniture(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
+	if _category_total["furniture"] >= MAX_FURNITURE:
+		remove_last_furniture()
+	if yaw < 0.0:
+		yaw = _rng.randf_range(0.0, TAU)
+	if not _add_instance("furniture", pos, scale, _furniture_hist, yaw):
+		return
+	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
+	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
+	var block: Dictionary = _blocks[bz * _block_n + bx]
+	var vi: int = _furniture_hist[_furniture_hist.size() - 1][2]
+	var sb := StaticBody3D.new()
+	sb.collision_layer = 8
+	sb.collision_mask = 0
+	var col := CollisionShape3D.new()
+	col.shape = _mesh_shape(FURNITURE_MODELS[vi], _furniture_shapes)
+	col.rotation.y = yaw
+	col.scale = Vector3.ONE * scale
+	sb.add_child(col)
+	sb.position = pos
+	(block["collisions"] as Node3D).add_child(sb)
+	_furniture_collision_nodes.append(sb)
+
+## 添加一座山体（悬崖/岩壁随机变体 + 模型 trimesh 碰撞；yaw>=0 指定朝向；满员顶掉最近一座）
+func add_mountain(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
+	if _category_total["mountain"] >= MAX_MOUNTAIN:
+		remove_last_mountain()
+	if yaw < 0.0:
+		yaw = _rng.randf_range(0.0, TAU)
+	if not _add_instance("mountain", pos, scale, _mountain_hist, yaw):
+		return
+	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
+	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
+	var block: Dictionary = _blocks[bz * _block_n + bx]
+	var vi: int = _mountain_hist[_mountain_hist.size() - 1][2]
+	var sb := StaticBody3D.new()
+	sb.collision_layer = 8
+	sb.collision_mask = 0
+	var col := CollisionShape3D.new()
+	col.shape = _mesh_shape(MOUNTAIN_MODELS[vi], _mountain_shapes)
+	col.rotation.y = yaw
+	col.scale = Vector3.ONE * scale
+	sb.add_child(col)
+	sb.position = pos
+	(block["collisions"] as Node3D).add_child(sb)
+	_mountain_collision_nodes.append(sb)
 
 func remove_last_tree() -> void:
 	_remove_last("tree", _tree_hist)
@@ -442,6 +621,18 @@ func remove_last_rock() -> void:
 
 func remove_last_mushroom() -> void:
 	_remove_last("mushroom", _mushroom_hist)
+
+func remove_last_furniture() -> void:
+	_remove_last("furniture", _furniture_hist)
+	if _furniture_collision_nodes.size() > 0:
+		var sb: StaticBody3D = _furniture_collision_nodes.pop_back()
+		sb.queue_free()
+
+func remove_last_mountain() -> void:
+	_remove_last("mountain", _mountain_hist)
+	if _mountain_collision_nodes.size() > 0:
+		var sb: StaticBody3D = _mountain_collision_nodes.pop_back()
+		sb.queue_free()
 
 func remove_last_stump() -> void:
 	_remove_last("stump", _stump_hist)
