@@ -18,6 +18,13 @@ var _capture_aerial := false      # 调试截图：俯视全景
 var _capture_free := false        # 调试截图：--cam=x,y,z --look=x,y,z 自由机位
 var _capture_cam := Vector3.ZERO
 var _capture_look := Vector3.ZERO
+var _capture_staff := ""              # 调试截图：--staff=<id> 先装备指定法杖
+var _capture_seq: PackedStringArray = []   # 调试截图：--staffseq=a,b,c 一次运行连拍
+var _seq_idx := -1
+var _seq_step := 18                   # 连拍时每根法杖占用的帧数（--seqstep=N 可改）
+var _capture_start := 90              # 本次截图模式的起始帧数（--capframes=N 可改）
+var _verify := false                  # --verify：无人值守自检（见 _run_verify()）
+var _verify_frame := 0                # 自检等待的帧数（等世界与各系统装配完）
 
 # 预览节点（结构在场景中，材质为可复用资源）
 @onready var preview_wall: MeshInstance3D = $PreviewWall
@@ -69,6 +76,14 @@ func _ready() -> void:
 	vegetation.set_camera(camera_rig.camera)
 	# 天气系统：绑定太阳/环境/雨，并订阅相机跟随
 	Weather.bind_world(sun, env, self, vegetation.wind_materials())
+	# 长辈：三个聚落各一位，依赖地形高度贴地
+	var elders := get_node_or_null("/root/Elders")
+	if elders != null:
+		elders.call("build", self)
+		if not elders.is_connected("elder_spoke", _on_elder_spoke):
+			elders.connect("elder_spoke", _on_elder_spoke)
+		if not elders.is_connected("staff_granted", _on_staff_granted):
+			elders.connect("staff_granted", _on_staff_granted)
 	Game.world = self
 	Settings.world_environment = env
 	Settings.vegetation_root = vegetation
@@ -87,6 +102,7 @@ func _ready() -> void:
 	# 调试截图模式：渲染稳定后保存画面并退出
 	if "--capture" in OS.get_cmdline_user_args():
 		_capture_frames = 90
+		_capture_start = 90
 		_capture_aerial = "--aerial" in OS.get_cmdline_user_args()
 		for a in OS.get_cmdline_user_args():
 			if a.begins_with("--cam="):
@@ -94,6 +110,19 @@ func _ready() -> void:
 				_capture_cam = _parse_vec3(a.split("=")[1])
 			if a.begins_with("--look="):
 				_capture_look = _parse_vec3(a.split("=")[1])
+			if a.begins_with("--staff="):
+				_capture_staff = a.split("=")[1]
+			if a.begins_with("--staffseq="):
+				# 一次启动连拍多根法杖（每根 18 帧），省掉反复启动 Godot 的
+				# 地形生成开销（单次约 6s，一轮 20 根要跑 20 次太慢）
+				_capture_seq = a.split("=")[1].split(",")
+			if a.begins_with("--capframes="):
+				_capture_frames = maxi(1, int(a.split("=")[1]))
+				_capture_start = _capture_frames
+			if a.begins_with("--seqstep="):
+				_seq_step = maxi(2, int(a.split("=")[1]))
+	if "--verify" in OS.get_cmdline_user_args():
+		_verify = true
 		if "--no-ui" in OS.get_cmdline_user_args():
 			ui.visible = false
 			_minimap.visible = false
@@ -121,20 +150,206 @@ func _process(delta: float) -> void:
 			_update_interact_hint()
 	# 雨盒跟随相机
 	Weather.follow_camera(camera_rig.camera)
+	# 自检模式：等世界和各系统装配完，把关键状态打出来再退出。
+	# 放在截图逻辑之前：截图会把 _capture_frames 递减，两者共用一个计数器容易打架。
+	if _verify:
+		_verify_frame += 1
+		# 分两段：装备格互斥的验证里会**换杖**，而 _fx 要等下一帧的 _place_head()
+		# 才建出来。同一帧里装备完立刻查 _fx 必然查到 null（第一版就这么误报过 FAIL）。
+		if _verify_frame == 40:
+			_run_verify()
+		elif _verify_frame >= 70:
+			_run_verify_late()
+			get_tree().quit()
+			return
+	# 连拍模式优先：一次运行内依次装备多根法杖，每根稳定 16 帧后存图
+	if _capture_frames > 0 and not _capture_seq.is_empty():
+		_run_capture_sequence()
+	if _capture_frames == 88 and _capture_staff != "":
+		var sys := get_node_or_null("/root/StaffSystem")
+		if sys != null:
+			sys.call("unlock", _capture_staff)
+			sys.call("equip", _capture_staff)
+			print("Capture | 已装备法杖 %s" % _capture_staff)
 	if _capture_frames > 0:
 		_apply_capture_view()
 		_capture_frames -= 1
 		if _capture_frames == 0:
-			var img := get_viewport().get_texture().get_image()
-			if img != null:
-				# 写到 user://：独立进程里 res:// 可能不可写，且 user:// 路径固定可查
-				var out_path := "user://screenshot_check.png"
-				for a in OS.get_cmdline_user_args():
-					if a.begins_with("--out="):
-						out_path = "user://%s" % a.split("=")[1]
-				var err := img.save_png(out_path)
-				print("Capture | 已保存 %s err=%d abs=%s" % [out_path, err, ProjectSettings.globalize_path(out_path)])
+			_save_capture("user://screenshot_check.png")
 			get_tree().quit()
+
+
+## 连拍：--staffseq=a,b,c  每根法杖占 SEQ_STEP 帧
+func _run_capture_sequence() -> void:
+	var elapsed := _capture_start - _capture_frames
+	var idx := elapsed / _seq_step
+	if idx >= _capture_seq.size():
+		return
+	if idx != _seq_idx:
+		_seq_idx = idx
+		var sys := get_node_or_null("/root/StaffSystem")
+		if sys != null:
+			sys.call("unlock", _capture_seq[idx])
+			sys.call("equip", _capture_seq[idx])
+			print("Capture | 已装备法杖 %s" % _capture_seq[idx])
+	if elapsed % _seq_step == _seq_step - 2:
+		var path := "user://screenshot_check.png"
+		for a in OS.get_cmdline_user_args():
+			if a.begins_with("--out="):
+				path = "user://%s" % a.split("=")[1]
+		var dot := path.rfind(".")
+		var out := ("%s_%s%s" % [path.substr(0, dot), _capture_seq[idx],
+				path.substr(dot)]) if dot > 0 else "%s_%s" % [path, _capture_seq[idx]]
+		_save_capture(out)
+
+
+func _save_capture(out_path: String) -> void:
+	var img := get_viewport().get_texture().get_image()
+	if img == null:
+		print("Capture | 取帧失败 %s" % out_path)
+		return
+	var err := img.save_png(out_path)
+	print("Capture | 已保存 %s err=%d abs=%s"
+			% [out_path, err, ProjectSettings.globalize_path(out_path)])
+
+## --verify：无人值守自检。
+##
+## 把法杖系统 / 装备格 / 手持模型 / 长老系统的关键状态打到 stdout。
+## 存在的理由：MCP 的 game_eval 需要游戏窗口**有焦点**才能推进主循环，
+## 而后台跑 CI / 截图时窗口一定是失焦的（实测反复 AppActivate 也不稳）。
+## 这条路径只依赖 stdout，headless 也能跑：
+##     godot --headless --path . -- --verify
+func _run_verify() -> void:
+	print("Verify | ==== Cozy Vale 自检 ====")
+	_verify_staff()
+
+
+## 自检的第二段：换杖那一帧之后才能查手持模型与粒子（见 _process 里的说明）
+func _run_verify_late() -> void:
+	_verify_held()
+	_verify_elders()
+	print("Verify | ==== 自检结束 ====")
+
+
+func _verify_staff() -> void:
+	var sys := get_node_or_null("/root/StaffSystem")
+	if sys == null:
+		print("Verify | [FAIL] StaffSystem 未注册")
+		return
+	var ids: Array = sys.call("all_ids")
+	var missing: Array = []
+	var by_elem := {}
+	for i in ids:
+		var d: Dictionary = sys.call("get_def", i)
+		if not ResourceLoader.exists(str(d.get("model", ""))):
+			missing.append(str(i))
+		var e := int(sys.call("element_of", i))
+		by_elem[e] = int(by_elem.get(e, 0)) + 1
+	var dist := {}
+	for e in by_elem.keys():
+		dist[str(sys.call("element_name", int(e)))] = by_elem[e]
+	print("Verify | 法杖注册=%d 格数=%d 格名=%s 缺模型=%d"
+			% [ids.size(), int(sys.get("SLOT_COUNT")), str(sys.get("SLOT_STAFF")),
+			   missing.size()])
+	if not missing.is_empty():
+		print("Verify | [FAIL] 缺模型: %s" % str(missing))
+	print("Verify | 元素分布(合计 %d)=%s" % [ids.size(), str(dist)])
+	# 装备格互斥：连装两根，第二根必须顶掉第一根
+	if ids.size() >= 2:
+		var a := str(ids[0])
+		var b := str(ids[min(5, ids.size() - 1)])
+		sys.call("unlock", a)
+		var ok1: bool = bool(sys.call("equip", a))
+		var held_a := _held_id()
+		sys.call("unlock", b)
+		var ok2: bool = bool(sys.call("equip", b))
+		var held_b := _held_id()
+		var cur := str(sys.get("equipped"))
+		print("Verify | 装备 %s -> %s (手里 %s) ; 再装 %s -> %s (手里 %s)"
+				% [a, ok1, held_a, b, ok2, held_b])
+		var exclusive := ok1 and ok2 and cur == b and held_b == b and held_a == a
+		print("Verify | %s 单格互斥（第二根顶掉第一根，手里同步）"
+				% ["[OK]" if exclusive else "[FAIL]"])
+
+
+func _held_id() -> String:
+	var hs = player.get("held_staff")
+	if hs == null:
+		return "-"
+	return str(hs.get("staff_id"))
+
+
+func _verify_held() -> void:
+	var hs = player.get("held_staff")
+	if hs == null:
+		print("Verify | [FAIL] 手里没有 HeldStaff")
+		return
+	var n: Node3D = hs as Node3D
+	print("Verify | 手持 id=%s 元素=%s 世界长度=%.3f 子节点=%d"
+			% [str(hs.get("staff_id")), str(sys_elem_name(int(hs.get("element")))),
+			   float(hs.get("_head_top")), n.get_child_count()])
+	var fx: Node3D = hs.get("_fx") as Node3D
+	if fx == null:
+		print("Verify | [FAIL] 法杖没有动态效果节点 _fx")
+	else:
+		var names := PackedStringArray()
+		for c in fx.get_children():
+			names.append(c.name)
+		print("Verify | %s 动态效果 %d 组: %s"
+				% [("[OK]" if fx.get_child_count() > 0 else "[FAIL]"),
+				   fx.get_child_count(), ", ".join(names)])
+
+
+func sys_elem_name(e: int) -> String:
+	var sys := get_node_or_null("/root/StaffSystem")
+	if sys == null:
+		return "?"
+	return str(sys.call("element_name", e))
+
+
+func _verify_elders() -> void:
+	var el := get_node_or_null("/root/Elders")
+	if el == null:
+		print("Verify | [FAIL] Elders 未注册")
+		return
+	var defs: Dictionary = el.get("DEFS")
+	print("Verify | 长老定义=%d" % defs.size())
+	var alive := 0
+	var first := ""
+	for id in defs.keys():
+		var n: Node3D = el.call("npc_node", str(id))
+		var pos := "-"
+		if n != null:
+			alive += 1
+			pos = "(%.1f, %.1f)" % [n.global_position.x, n.global_position.z]
+		if first == "":
+			first = str(id)
+		print("Verify |   长老 %s / %s 已生成=%s 位置=%s 好感=%d"
+				% [str(id), str(el.call("elder_name", str(id))), str(n != null), pos,
+				   int(el.call("favor_of", str(id)))])
+	print("Verify | %s 长老实体 %d/%d"
+			% ["[OK]" if alive == defs.size() else "[FAIL]", alive, defs.size()])
+	if first == "":
+		return
+	# 走一遍"对话涨好感 -> 到阈值送杖并祝福"的完整链路，确认长老系统真的接通了
+	var f0 := int(el.call("favor_of", first))
+	var line := str(el.call("talk", first))
+	var f1 := int(el.call("favor_of", first))
+	print("Verify | 对话 %s: 好感 %d -> %d, 台词非空=%s"
+			% [first, f0, f1, str(line != "")])
+	print("Verify | %s 对话涨好感" % ["[OK]" if f1 > f0 else "[FAIL]"])
+	var need := int(el.call("next_threshold", first))
+	var ng := str(el.call("next_gift", first))
+	print("Verify | 下一份赠礼=%s 还差好感%d（当前 %d）" % [ng, need - f1, f1])
+	# 直接把好感刷到阈值，验证送杖 + 祝福是否真的改到 StaffSystem
+	for _i in range(maxi(0, need - f1)):
+		el.call("talk", first)
+	var f2 := int(el.call("favor_of", first))
+	var got := int(el.call("gifted_count", first))
+	print("Verify | 刷到好感 %d 后：已赠 %d 根, 下一份=%s"
+			% [f2, got, str(el.call("next_gift", first))])
+	print("Verify | %s 达到阈值即赠杖" % ["[OK]" if got > 0 else "[FAIL]"])
+
 
 ## 解析 --cam=x,y,z / --look=x,y,z
 func _parse_vec3(t: String) -> Vector3:
@@ -268,6 +483,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			set_tool(tool_by_key[event.keycode])
 			return
 		if event.keycode == KEY_E:
+			# 长老优先：站在长老旁边按 E 是交谈，不是用家具
+			if _try_talk_elder():
+				return
 			_try_interact()
 			return
 		if event.keycode == KEY_V:
@@ -301,6 +519,59 @@ func _cycle_weather() -> void:
 		% [Weather.weather_name(), Weather.wind, str(Weather.wind_dir)])
 	_variant_hint_time = 1.6
 	print("Weather | 手动切换 -> %s (wind=%.2f)" % [Weather.weather_name(), Weather.wind])
+
+## ---------- 长辈（长老） ----------
+
+## 附近有长老就交谈一次；返回 true 表示这次 E 被长老吃掉了
+func _try_talk_elder() -> bool:
+	var elders := get_node_or_null("/root/Elders")
+	if elders == null or player == null:
+		return false
+	var id: String = str(elders.call("nearest", player.global_position))
+	if id == "":
+		return false
+	var line: String = str(elders.call("talk", id))
+	ui.show_interact_hint(line)
+	_variant_hint_time = 2.6
+	player.play_cast_gesture()
+	return true
+
+
+## 长老头顶常驻提示：靠近时告诉玩家按 E
+func _update_elder_hint() -> void:
+	var elders := get_node_or_null("/root/Elders")
+	if elders == null or player == null or ui == null:
+		return
+	var id: String = str(elders.call("nearest", player.global_position))
+	if id == "":
+		return
+	var nm: String = str(elders.call("elder_name", id))
+	var favor: int = int(elders.call("favor_of", id))
+	var thresholds: int = int(elders.call("next_threshold", id))
+	var nxt: String = str(elders.call("next_gift", id))
+	var tip := "按 E 与 %s 交谈 · 声望 %d" % [nm, favor]
+	if nxt != "":
+		tip += "（%d 时赠杖）" % thresholds
+	ui.show_interact_hint(tip)
+
+
+func _on_elder_spoke(_id: String, line: String) -> void:
+	print("[elder] %s" % line)
+
+
+func _on_staff_granted(id: String, staff_id: String) -> void:
+	var elders := get_node_or_null("/root/Elders")
+	var nm := id if elders == null else str(elders.call("elder_name", id))
+	print("[elder] %s 赠予 %s" % [nm, staff_id])
+	# 立刻换上，让玩家马上看到效果
+	var sys := get_node_or_null("/root/StaffSystem")
+	if sys != null:
+		sys.call("equip", staff_id)
+		staff_hint_staff = staff_id
+
+
+var staff_hint_staff := ""
+
 
 ## ---------- 家具互动（E 键触发） ----------
 

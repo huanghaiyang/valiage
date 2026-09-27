@@ -13,6 +13,9 @@ var action_panel: PanelContainer    # 动作列表面板
 var _action_visible := false
 var interact_label: Label        # 家具互动提示浮层
 var weather_label: Label         # 天气/风力信息（右上角）
+var staff_slot: PanelContainer   # 法杖装备格（右下角，武器单占一格）
+var staff_slot_label: Label
+var staff_slot_icon: ColorRect
 var _weather_accum := 0.0
 
 const TOOL_BUTTONS := [
@@ -124,6 +127,30 @@ func _build_ui() -> void:
 	hint_label.offset_bottom = -8
 	hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	add_child(hint_label)
+
+	# ---- 法杖装备格（右下角）----
+	# 设计参考：武器单占一格，格子里显示元素色条 + 名称，空手时格子变暗。
+	staff_slot = PanelContainer.new()
+	staff_slot.add_theme_stylebox_override("panel", _panel_style())
+	staff_slot.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	staff_slot.offset_left = -222
+	staff_slot.offset_right = -16
+	staff_slot.offset_top = -118
+	staff_slot.offset_bottom = -44
+	staff_slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(staff_slot)
+	var srow := HBoxContainer.new()
+	srow.add_theme_constant_override("separation", 8)
+	staff_slot.add_child(srow)
+	staff_slot_icon = ColorRect.new()
+	staff_slot_icon.custom_minimum_size = Vector2(10, 46)
+	staff_slot_icon.color = Color(0.5, 0.5, 0.5)
+	srow.add_child(staff_slot_icon)
+	staff_slot_label = Label.new()
+	staff_slot_label.text = "法杖 · 空"
+	staff_slot_label.add_theme_font_size_override("font_size", 15)
+	staff_slot_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	srow.add_child(staff_slot_label)
 
 	# 屏幕中央准星（不拦截鼠标）
 	var cross_container := CenterContainer.new()
@@ -293,6 +320,30 @@ func clear_interact_hint() -> void:
 	if interact_label:
 		interact_label.visible = false
 
+# ---------- 法杖装备格 ----------
+
+## 右下角显示当前装备的法杖：元素色条 + 名称 + 元素名。
+## 空手时色条压暗、文字提示"空"。
+func update_staff_slot() -> void:
+	if staff_slot_label == null:
+		return
+	var sys := get_node_or_null("/root/StaffSystem")
+	if sys == null:
+		return
+	var id := str(sys.get("equipped"))
+	if id == "":
+		staff_slot_label.text = "法杖 · 空\n（找长老领取）"
+		staff_slot_icon.color = Color(0.32, 0.34, 0.36)
+		return
+	var elem := int(sys.get("equipped_element"))
+	var col: Color = sys.call("element_color", elem)
+	staff_slot_icon.color = col
+	staff_slot_label.text = "%s\n%s · 长老石 %d" % [
+			str(sys.call("display_name", id)),
+			str(sys.call("element_name", elem)),
+			int(sys.call("stone_count", id))]
+
+
 # ---------- 天气信息 ----------
 
 ## 右上角常驻显示当前天气与风力（风向用箭头表示）
@@ -322,3 +373,4 @@ func _process(delta: float) -> void:
 		return
 	_weather_accum = 0.0
 	_update_weather_label()
+	update_staff_slot()

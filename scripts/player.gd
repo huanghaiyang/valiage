@@ -5,7 +5,11 @@ extends CharacterBody3D
 ## 动作系统：ACTION_LIB 动作注册表 + 一次性/循环动作播放 + 移动状态联动（走/跑/跳）
 
 var body: Node3D
-var anim_player: AnimationPlayer
+var anim_player: AnimationPlayer = null
+## 手持法杖（挂在右手 handslot_r 骨骼上，负责悬浮/自转/元素粒子）
+var held_staff: Node = null
+## 角色自带的手持道具节点（自带法杖/魔杖/法书，装自定义法杖时要藏起来）
+var _native_props: Array[Node3D] = []
 var _moving := false
 var _running := false
 var _action_active := false      # 正在播放非移动动作
@@ -350,7 +354,74 @@ func _instantiate_character() -> Node3D:
 	anim_player = _find_animation_player(inst)
 	if anim_player != null:
 		_play_anim(ANIM_IDLE)
+	_attach_held_staff(inst)
 	return inst
+
+## 把可替换的法杖挂到右手骨骼上。Mage 模型自带 1H_Wand / 2H_Staff / Spellbook，
+## 装自定义法杖时先把它们藏起来，避免两根杖叠在一起。
+func _attach_held_staff(inst: Node) -> void:
+	_native_props.clear()
+	for nm in ["1H_Wand", "2H_Staff", "Spellbook", "Spellbook_open"]:
+		var p := inst.find_child(nm, true, false)
+		if p is Node3D:
+			_native_props.append(p as Node3D)
+		elif p != null:
+			# Godot 的 find_child 只返回 Node，MeshInstance3D 也是 Node3D
+			pass
+	if _native_props.is_empty():
+		print("[staff] 未找到角色自带手持道具节点（不影响自定义法杖）")
+	var slot := inst.find_child("handslot_r", true, false)
+	if slot == null:
+		push_warning("[staff] 角色没有 handslot_r 骨骼，法杖无法挂载")
+		return
+	held_staff = load("res://scripts/held_staff.gd").new()
+	held_staff.name = "HeldStaff"
+	# 位置归零：尺寸与握点由 HeldStaff 自己的 _place_head() 按"目标世界长度 +
+	# 握点比例"在世界空间里算。之前在这里写死 Vector3(0,-0.30,0.08) 是有害的 ——
+	# handslot_r 的局部 Y 在世界里是**水平**的，这个偏移只是把法杖往旁边推了 0.3m。
+	held_staff.position = Vector3.ZERO
+	# handslot_r 骨骼的局部轴向实测结果：模型局部 +Z 是水平的，
+	# 而局部 Y/Z 都是水平的。靠推理很容易错（试了 -12° / -90° 都是横的），
+	# 最后是旁举扫描求解出来的：扫描一批旋转组合、量世界包围盒的竖直度，
+	# 最优解 (-90, 0, -90) 下包围盒 2.25m 高 × 0.39m 宽。
+	var flip := "--staff-flip" in OS.get_cmdline_user_args()
+	held_staff.rotation_degrees = Vector3.ZERO
+	slot.add_child(held_staff)
+	var sys := _staff_system()
+	if sys != null:
+		_apply_staff(str(sys.get("equipped")), int(sys.get("equipped_element")))
+		sys.connect("staff_equipped", _on_staff_equipped)
+
+
+## 切换手持法杖（id 为空表示收起）
+func _apply_staff(id: String, elem: int) -> void:
+	if held_staff == null:
+		return
+	held_staff.set_staff(id, elem)
+	# 有自定义法杖时藏掉模型自带的手持道具
+	var hide_native := id != ""
+	for p in _native_props:
+		if is_instance_valid(p):
+			p.visible = not hide_native
+
+
+## 运行期取法杖系统。**不要直接写 autoload 标识符 StaffSystem**：
+## 那样 player.gd 在 autoload 未注册的编译上下文里（--script 探针、依赖链编译）
+## 会直接编译失败，并连锁把 main.gd 也拖死（实测整棵依赖链报错）。
+func _staff_system() -> Node:
+	return get_node_or_null("/root/StaffSystem")
+
+
+func _on_staff_equipped(id: String) -> void:
+	var sys := _staff_system()
+	_apply_staff(id, int(sys.get("equipped_element")) if sys != null else 0)
+
+
+## 供外部（技能/长老仪式）触发杖头闪光
+func flash_staff(strength: float = 1.6) -> void:
+	if held_staff != null:
+		held_staff.flash(strength)
+
 
 func _find_animation_player(node: Node) -> AnimationPlayer:
 	if node is AnimationPlayer:

@@ -26,6 +26,8 @@ Game="*res://scripts/game.gd"
 Settings="*res://scripts/settings.gd"
 _mcp_game_helper="*res://addons/godot_ai/runtime/game_helper.gd"
 Weather="*res://scripts/world/weather.gd"
+StaffSystem="*res://scripts/staff_system.gd"
+Elders="*res://scripts/world/elders.gd"
 
 [display]
 

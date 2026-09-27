@@ -674,7 +674,8 @@ func _trim_block_collisions(bi: int) -> void:
 	var p := _collision_anchor()
 	var r2 := collision_radius * collision_radius
 	var n := bodies.size()
-	while n > 0:
+	while not bodies.is_empty():
+		n = bodies.size()
 		var pos: Vector3 = (queue[n - 1] as Dictionary)["pos"]
 		var dx := pos.x - p.x
 		var dz := pos.z - p.z
@@ -682,10 +683,13 @@ func _trim_block_collisions(bi: int) -> void:
 			break
 		var sb: Node = bodies[n - 1]
 		if is_instance_valid(sb):
+			# _erase_body_from_block 会把 sb 从本块的 col_bodies 里 erase 掉，而
+			# bodies 正是那个数组的别名 —— 这一句已经删掉了末尾元素。所以它删过之后
+			# 不能再用 n-1 去 remove_at：数组已经短了一格，index == size 直接越界。
 			_erase_body_from_block(sb)
 			sb.queue_free()
-		bodies.remove_at(n - 1)
-		n -= 1
+		if bodies.size() == n:
+			bodies.remove_at(n - 1)
 	block["col_built_n"] = bodies.size()
 	block["col_built"] = bodies.size() >= queue.size()
 
@@ -1335,7 +1339,9 @@ func _drop_queued_in_area(center: Vector3, radius: float) -> void:
 		var queue: Array = block["col_queue"]
 		if queue.is_empty():
 			continue
-		var bodies: Array = block["col_bodies"]
+		# 快照：_erase_body_from_block 改的就是 block["col_bodies"] 这个数组本身，
+		# 直接在活数组上按 i 索引会越走越偏（会漏释放 / 误保留）。
+		var bodies: Array = (block["col_bodies"] as Array).duplicate()
 		var kept: Array = []
 		var new_bodies: Array = []
 		var i := 0
