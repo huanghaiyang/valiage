@@ -160,6 +160,14 @@ func _setup_previews() -> void:
 	# 装配阶段即挂上半透明材质：即使当前没瞄到地面（落点更新会提前 return），
 	# 换模型后的预览也一定是"半透明真实模型"。
 	_apply_place_material(preview_place, PREVIEW_PLACE_OK)
+	# 预览偏移与放置一致（每个工具按各自分类应用一次）
+	for tool in _place_tools:
+		var cat := _tool_category(tool)
+		if cat.is_empty():
+			continue
+		var node := _preview_for_tool(tool)
+		if node != null:
+			_apply_preview_offset(node, cat)
 
 func _setup_input_actions() -> void:
 	# 快捷键：撤销
@@ -302,9 +310,8 @@ func _begin_tool() -> void:
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 			var cat := _tool_category(Game.current_tool)
 			var vi := _current_variant(cat)
-			# 楼梯类家具不生成三角网碰撞，交给自动抬步处理
-			var solid := not _model_basename(cat, vi).begins_with("stairs")
-			_set_used_variant(cat, vegetation.add_furniture(p + Vector3(0, 0.1, 0), 1.0, _place_yaw, solid, vi))
+			# 楼梯同样生成模型碰撞（可走上去由自动抬步处理）
+			_set_used_variant(cat, vegetation.add_furniture(p + Vector3(0, 0.1, 0), 1.0, _place_yaw, true, vi))
 			player.play_cast_gesture()
 		Game.Tool.MOUNTAIN:
 			if _is_occupied(p):
@@ -460,6 +467,7 @@ func _set_place_preview_mesh(cat: String) -> void:
 	var node := _preview_for_tool(Game.current_tool)
 	if node == null:
 		return
+	_apply_preview_offset(node, cat)
 	var path := vegetation.category_model_path(cat, _current_variant(cat))
 	if path.is_empty():
 		return
@@ -477,6 +485,26 @@ func _set_place_preview_mesh(cat: String) -> void:
 	# 换模型后立刻把半透明材质挂回去，不等下一帧的落点更新
 	node.material_override = PREVIEW_PLACE_OK
 	_apply_place_material(node, PREVIEW_PLACE_OK)
+
+
+## 预览也要用与放置相同的重定位偏移，否则点下去模型会"跳"（ghost 与实物不一致）
+## offset 在模型局部空间；预览父节点已按 _place_yaw 旋转，故无需再转。
+func _apply_preview_offset(node: MeshInstance3D, cat: String) -> void:
+	if cat.is_empty():
+		return
+	var variants := _tool_variant_count(cat)
+	if variants <= 0:
+		return
+	var path := vegetation.category_model_path(cat, _current_variant(cat))
+	if path.is_empty():
+		return
+	# 与放置完全同一个偏移（含底面抬升），否则模型底边会与预览差一点
+	node.position = vegetation.model_preview_offset(path)
+
+
+## 某分类的模型数量（无多变体时为 0）
+func _tool_variant_count(cat: String) -> int:
+	return vegetation.category_variant_count(cat)
 
 
 ## 各工具预览的基准缩放（与 _setup_previews 保持一致）
