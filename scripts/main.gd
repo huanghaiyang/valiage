@@ -26,6 +26,11 @@ const PREVIEW_PLACE_BLOCKED := preload("res://assets/materials/preview_place_blo
 
 # 单点放置工具（塔/屋/树/花/家具/山体：视野中心目标点的半透明模型，绿=可放置，红=占位）
 var _place_tools := [Game.Tool.TOWER, Game.Tool.ROOF, Game.Tool.TREE, Game.Tool.FLOWER, Game.Tool.DECOR, Game.Tool.MOUNTAIN]
+## 各分类当前选中的模型变体（滚轮切换）：{"tree": 0, "flower": 2, ...}
+## 按分类而非按工具保存，切回同类工具时保留上次的选择；场景重载后自动归零。
+var _variant_sel: Dictionary = {}
+## 变体提示的剩余显示时间（秒），避免被互动提示立刻覆盖
+var _variant_hint_time := 0.0
 var _place_yaw := 0.0  # 放置朝向（右键旋转）
 var _place_rot_accum := 0.0  # 按住右键旋转的累积时间（每 100ms +10°）
 const PLACE_OCCUPY_RADIUS := 0.9    # 占位检测球半径（建筑层）
@@ -80,10 +85,16 @@ func _process(delta: float) -> void:
 			_place_rot_accum -= 0.1
 			_place_yaw += deg_to_rad(10.0)
 	_update_place_preview()
+	var dt := delta if delta > 0.0 else 0.016
+	if _variant_hint_time > 0.0:
+		_variant_hint_time -= dt
 	_hint_timer -= delta
 	if _hint_timer <= 0.0:
 		_hint_timer = 0.15
-		_update_interact_hint()
+		if _variant_hint_time > 0.0:
+			pass    # 模型切换提示优先显示，短暂保留
+		else:
+			_update_interact_hint()
 	if _capture_frames > 0:
 		_capture_frames -= 1
 		if _capture_frames == 0:
@@ -146,6 +157,9 @@ func _setup_previews() -> void:
 	mountain_mi.mesh = _extract_mesh(load(VegetationSystem.MOUNTAIN_MODELS[0]))
 	mountain_mi.scale = Vector3.ONE * 4.0
 	preview_place.add_child(mountain_mi)
+	# 装配阶段即挂上半透明材质：即使当前没瞄到地面（落点更新会提前 return），
+	# 换模型后的预览也一定是"半透明真实模型"。
+	_apply_place_material(preview_place, PREVIEW_PLACE_OK)
 
 func _setup_input_actions() -> void:
 	# 快捷键：撤销
@@ -197,6 +211,11 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not camera_rig.is_mouse_captured():
 		return
 	if event is InputEventMouseButton:
+		# 滚轮：切换当前放置工具的模型变体（分类下有多个模型时）
+		if event.pressed and event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN] \
+				and Game.current_tool in _place_tools:
+			_cycle_variant(-1 if event.button_index == MOUSE_BUTTON_WHEEL_DOWN else 1)
+			return
 		if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed and Game.current_tool in _place_tools:
 			_place_yaw += deg_to_rad(10.0)
 			return
@@ -268,25 +287,30 @@ func _begin_tool() -> void:
 			if _is_occupied(p):
 				return
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
-			vegetation.add_tree(p + Vector3(0, 0.1, 0), 1.2, _place_yaw)
+			# 传入滚轮选中的变体；Placement 与半透明预览保证是同一个模型
+			_set_used_variant("tree", vegetation.add_tree(p + Vector3(0, 0.1, 0), 1.2, _place_yaw, _current_variant("tree")))
 			player.play_cast_gesture()
 		Game.Tool.FLOWER:
 			if _is_occupied(p):
 				return
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
-			vegetation.add_flower(p, 1.1, _place_yaw)
+			_set_used_variant("flower", vegetation.add_flower(p, 1.1, _place_yaw, _current_variant("flower")))
 			player.play_cast_gesture()
 		Game.Tool.DECOR:
 			if _is_occupied(p):
 				return
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
-			vegetation.add_furniture(p + Vector3(0, 0.1, 0), 1.0, _place_yaw)
+			var cat := _tool_category(Game.current_tool)
+			var vi := _current_variant(cat)
+			# 楼梯类家具不生成三角网碰撞，交给自动抬步处理
+			var solid := not _model_basename(cat, vi).begins_with("stairs")
+			_set_used_variant(cat, vegetation.add_furniture(p + Vector3(0, 0.1, 0), 1.0, _place_yaw, solid, vi))
 			player.play_cast_gesture()
 		Game.Tool.MOUNTAIN:
 			if _is_occupied(p):
 				return
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
-			vegetation.add_mountain(p + Vector3(0, 0.1, 0), 4.0, _place_yaw)
+			_set_used_variant("mountain", vegetation.add_mountain(p + Vector3(0, 0.1, 0), 4.0, _place_yaw, _current_variant("mountain")))
 			player.play_cast_gesture()
 		Game.Tool.TERRAIN_RAISE:
 			terrain.apply_brush(p, terrain.brush_radius, terrain.brush_strength)
@@ -372,8 +396,107 @@ func _update_place_preview() -> void:
 	var mat := PREVIEW_PLACE_BLOCKED if _is_occupied(p) else PREVIEW_PLACE_OK
 	var want := _place_node_name(Game.current_tool)
 	for child in preview_place.get_children():
-		child.visible = (child.name == want)
+		child.visible = (str(child.name) == want)
 		_apply_place_material(child, mat)
+
+## 工具 → 植被分类（无多模型可切换的工具返回空串）
+func _tool_category(tool: int) -> String:
+	match tool:
+		Game.Tool.TREE:
+			return "tree"
+		Game.Tool.FLOWER:
+			return "flower"
+		Game.Tool.DECOR:
+			return "furniture"
+		Game.Tool.MOUNTAIN:
+			return "mountain"
+	return ""
+
+
+## 当前选中的变体下标（越界自动夹回；无多模型时返回 -1）
+func _current_variant(cat: String) -> int:
+	var n := vegetation.category_variant_count(cat)
+	if n <= 1:
+		return -1
+	var vi := int(_variant_sel.get(cat, 0))
+	if vi < 0 or vi >= n:
+		vi = 0
+		_variant_sel[cat] = vi
+	return vi
+
+
+## 放置成功后把实际使用的变体记为当前选择（理论上与预览一致，这里兜底对齐）
+func _set_used_variant(cat: String, used: int) -> void:
+	if used >= 0:
+		_variant_sel[cat] = used
+
+
+## 滚轮切换：dir=+1 下一个模型，-1 上一个；只有一个模型时给出提示
+func _cycle_variant(dir: int) -> void:
+	var cat := _tool_category(Game.current_tool)
+	if cat.is_empty():
+		ui.show_interact_hint("该工具只有一种模型")
+		_variant_hint_time = 1.2
+		return
+	var n := vegetation.category_variant_count(cat)
+	if n <= 1:
+		ui.show_interact_hint("该工具只有一种模型")
+		_variant_hint_time = 1.2
+		return
+	var vi := posmod(_current_variant(cat) + dir, n)
+	_variant_sel[cat] = vi
+	_set_place_preview_mesh(cat)
+	ui.show_interact_hint("模型 %d/%d · %s" % [vi + 1, n, _model_basename(cat, vi)])
+	_variant_hint_time = 1.6
+
+
+## 按分类取模型文件名（不含扩展名），用于提示
+func _model_basename(cat: String, variant: int) -> String:
+	return vegetation.category_model_path(cat, variant).get_file().get_basename()
+
+
+## 把预览网格换成当前变体的真实模型（保留场景里那套半透明材质）
+func _set_place_preview_mesh(cat: String) -> void:
+	var node := _preview_for_tool(Game.current_tool)
+	if node == null:
+		return
+	var path := vegetation.category_model_path(cat, _current_variant(cat))
+	if path.is_empty():
+		return
+	var scene: Variant = load(path)
+	var mesh: Mesh = null
+	if scene is PackedScene:
+		mesh = _extract_mesh(scene)
+	elif scene is Mesh:
+		mesh = scene
+	if mesh != null:
+		node.mesh = mesh
+	var base := _preview_base_scale(Game.current_tool)
+	if base > 0.0:
+		node.scale = Vector3.ONE * base
+	# 换模型后立刻把半透明材质挂回去，不等下一帧的落点更新
+	node.material_override = PREVIEW_PLACE_OK
+	_apply_place_material(node, PREVIEW_PLACE_OK)
+
+
+## 各工具预览的基准缩放（与 _setup_previews 保持一致）
+func _preview_base_scale(tool: int) -> float:
+	match tool:
+		Game.Tool.TREE:
+			return 1.2
+		Game.Tool.FLOWER:
+			return 1.1
+		Game.Tool.DECOR:
+			return 1.0
+		Game.Tool.MOUNTAIN:
+			return 4.0
+	return -1.0
+
+
+## 取某工具对应的预览 MeshInstance3D（预览节点结构在场景中）
+func _preview_for_tool(tool: int) -> MeshInstance3D:
+	return preview_place.get_node_or_null(_place_node_name(tool)) as MeshInstance3D
+
 
 func _place_node_name(tool: int) -> String:
 	match tool:

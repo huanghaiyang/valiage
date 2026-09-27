@@ -520,15 +520,16 @@ func _random_in_block(terrain: TerrainSystem, bx: int, bz: int) -> Vector3:
 	return Vector3.INF
 
 ## 添加一棵树（随机变体 + 模型 trimesh 碰撞体；yaw>=0 指定朝向；满员时顶掉最近一棵保证可种）
-func add_tree(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
+## variant >= 0 时指定模型变体（滚轮选中的那一个），否则随机；返回实际使用的变体下标
+func add_tree(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> int:
 	if _category_total["tree"] >= MAX_TREES:
 		remove_last_tree()
 	if yaw < 0.0:
 		yaw = _rng.randf_range(0.0, TAU)
-	if not _add_instance("tree", pos, scale, _tree_hist, yaw):
-		return
+	if not _add_instance("tree", pos, scale, _tree_hist, yaw, variant):
+		return -1
 	if layout_mode:
-		return
+		return variant
 	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var block: Dictionary = _blocks[bz * _block_n + bx]
@@ -544,25 +545,30 @@ func add_tree(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
 	sb.position = pos
 	(block["collisions"] as Node3D).add_child(sb)
 	_tree_collision_nodes.append(sb)
+	return vi
 
 func add_bush(pos: Vector3, scale := 1.0) -> void:
 	_add_instance("bush", pos, scale, _bush_hist)
 
-func add_flower(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
+## variant >= 0 时指定模型变体；返回实际使用的变体下标
+func add_flower(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> int:
 	if _category_total["flower"] >= MAX_FLOWERS:
 		remove_last_flower()
-	_add_instance("flower", pos, scale, _flower_hist, yaw)
+	_add_instance("flower", pos, scale, _flower_hist, yaw, variant)
+	var vi := int(_flower_hist[_flower_hist.size() - 1].get("vi", variant))
+	return vi
 
 func add_grass(pos: Vector3, scale := 1.0) -> void:
 	_add_instance("grass", pos, scale, _grass_hist)
 
-func add_rock(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
+## variant >= 0 时指定模型变体；返回实际使用的变体下标
+func add_rock(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> int:
 	if yaw < 0.0:
 		yaw = _rng.randf_range(0.0, TAU)
-	if not _add_instance("rock", pos, scale, _rock_hist, yaw):
-		return
+	if not _add_instance("rock", pos, scale, _rock_hist, yaw, variant):
+		return -1
 	if layout_mode:
-		return
+		return variant
 	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var block: Dictionary = _blocks[bz * _block_n + bx]
@@ -578,6 +584,7 @@ func add_rock(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
 	sb.position = pos
 	(block["collisions"] as Node3D).add_child(sb)
 	_rock_collision_nodes.append(sb)
+	return vi
 
 ## 植被碰撞体：直接使用对应视觉模型的三角网格（共享 shape 资源），碰撞顶面与模型表面完全一致，避免踩上去浮空
 ## 收集场景内所有 MeshInstance3D 的 faces，并按节点变换到根空间，保证与视觉完全贴合
@@ -640,15 +647,16 @@ func add_stump(pos: Vector3, scale := 1.0) -> void:
 	_add_instance("stump", pos, scale, _stump_hist)
 
 ## 添加一件家具/梯子（随机变体 + 模型 trimesh 碰撞；yaw>=0 指定朝向；满员顶掉最近一件）
-func add_furniture(pos: Vector3, scale := 1.0, yaw := -1.0, with_collision := true) -> void:
+## variant >= 0 时指定模型变体；返回实际使用的变体下标
+func add_furniture(pos: Vector3, scale := 1.0, yaw := -1.0, with_collision := true, variant := -1) -> int:
 	if _category_total["furniture"] >= MAX_FURNITURE:
 		remove_last_furniture()
 	if yaw < 0.0:
 		yaw = _rng.randf_range(0.0, TAU)
-	if not _add_instance("furniture", pos, scale, _furniture_hist, yaw):
-		return
+	if not _add_instance("furniture", pos, scale, _furniture_hist, yaw, variant):
+		return -1
 	if layout_mode:
-		return
+		return variant
 	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var block: Dictionary = _blocks[bz * _block_n + bx]
@@ -670,6 +678,20 @@ func add_furniture(pos: Vector3, scale := 1.0, yaw := -1.0, with_collision := tr
 	else:
 		sb.free()
 	_rebuild_interactables()
+	return vi
+
+## 某分类的模型变体数量（供 UI 滚轮切换用）
+func category_variant_count(cat: String) -> int:
+	var models: Variant = _category_models.get(cat, null)
+	return (models as Array).size() if models is Array else 0
+
+## 某分类某个变体对应的模型路径（供预览加载真实模型）
+func category_model_path(cat: String, variant: int) -> String:
+	var models: Variant = _category_models.get(cat, null)
+	if not (models is Array) or (models as Array).is_empty():
+		return ""
+	var list: Array = models
+	return str(list[posmod(variant, list.size())])
 
 ## ---------- 家具互动（坐/睡/爬梯） ----------
 
@@ -743,15 +765,16 @@ func find_nearest_interactable(pos: Vector3, radius: float) -> Dictionary:
 	return res
 
 ## 添加一座山体（悬崖/岩壁随机变体 + 模型 trimesh 碰撞；yaw>=0 指定朝向；满员顶掉最近一座）
-func add_mountain(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
+## variant >= 0 时指定模型变体；返回实际使用的变体下标
+func add_mountain(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> int:
 	if _category_total["mountain"] >= MAX_MOUNTAIN:
 		remove_last_mountain()
 	if yaw < 0.0:
 		yaw = _rng.randf_range(0.0, TAU)
-	if not _add_instance("mountain", pos, scale, _mountain_hist, yaw):
-		return
+	if not _add_instance("mountain", pos, scale, _mountain_hist, yaw, variant):
+		return -1
 	if layout_mode:
-		return
+		return variant
 	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var block: Dictionary = _blocks[bz * _block_n + bx]
@@ -767,6 +790,7 @@ func add_mountain(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
 	sb.position = pos
 	(block["collisions"] as Node3D).add_child(sb)
 	_mountain_collision_nodes.append(sb)
+	return vi
 
 func remove_last_tree() -> void:
 	_remove_last("tree", _tree_hist)
