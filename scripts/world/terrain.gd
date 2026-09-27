@@ -21,6 +21,9 @@ var brush_radius := 4.0
 var brush_strength := 1.2
 
 # 噪声生成
+## 地形种子：固定值让高度场可复现（场景里烘焙的平台/建筑高度依赖它）
+var terrain_seed := 20260927
+
 var _noise: FastNoiseLite
 
 var _mesh_dirty := false
@@ -41,7 +44,7 @@ var _last_brush_time := 0   # 最近一次刷地时间（毫秒），供角色�
 
 func _init() -> void:
 	_noise = FastNoiseLite.new()
-	_noise.seed = randi()
+	_noise.seed = terrain_seed
 	# 地图放大后适当降低频率：山丘波长随地图一起放大，保持"同一个山谷"的开阔感
 	_noise.frequency = 0.006
 	_noise.fractal_octaves = 4
@@ -83,8 +86,8 @@ func _ready() -> void:
 		chunk_meshes.append(mi)
 
 func generate(seed_value: int = -1) -> void:
-	if seed_value >= 0:
-		_noise.seed = seed_value
+	# 未显式指定时使用场景声明的 terrain_seed，保证每次生成同一片山谷
+	_noise.seed = seed_value if seed_value >= 0 else terrain_seed
 	height_map.resize(RESOLUTION * RESOLUTION)
 	color_map.resize(RESOLUTION * RESOLUTION)
 	for z in RESOLUTION:

@@ -31,16 +31,18 @@ var interact_freeze := false    # 家具互动期间冻结角色物理驱动（�
 var ui_override := false     # UI（动作菜单等）占用时让出鼠标/键盘控制
 
 func _ready() -> void:
-	# 初始站在小屋旁，看向演示小屋（spawn 略高于地面，靠重力自然落位）
-	player.global_position = Vector3(6.0, 2.0, 11.0)
-	var look_target := Vector3(0.0, 1.0, 5.0)
-	var d := look_target - player.global_position
-	_current_yaw = atan2(-d.x, -d.z)
-	_current_pitch = 0.22
-	# 初始让角色面向看向的方向（背对第三人称相机，呈现背影）
+	# 玩家引用可能尚未注入（父节点 _ready() 晚于子节点）：先接管鼠标，
+	# 角色朝向与出生点由 main.gd 在装配阶段调用 aim_from_player() 完成。
+	_set_mouse_captured(true)
+	if player != null:
+		aim_from_player()
+
+## 依据当前 yaw/pitch 让角色面向镜头前方（出生时呈现背影）
+func aim_from_player() -> void:
+	if player == null:
+		return
 	var fwd := Vector3(-sin(_current_yaw), 0.0, -cos(_current_yaw))
 	player.face_direction(fwd)
-	_set_mouse_captured(true)
 
 func _set_mouse_captured(captured: bool) -> void:
 	_mouse_captured = captured
@@ -89,6 +91,8 @@ func _physics_process(delta: float) -> void:
 			_current_yaw = lerp_angle(_current_yaw, atan2(-face.x, -face.z), 8.0 * delta)
 
 	# 重力 + 跳跃：用物理引擎 is_on_floor 判断地面
+	# 注意：on_floor 为真时必须把垂直速度归零。旧写法保留上一帧的负值，
+	# 会和贴地吸附互相拉扯，导致上坡/上台阶被"拽住"。
 	if not player.is_on_floor():
 		_velocity_y -= gravity * delta
 	else:
@@ -104,10 +108,19 @@ func _physics_process(delta: float) -> void:
 	var was_air := not player.is_on_floor()
 	player.velocity = Vector3(move_xz.x, _velocity_y, move_xz.z)
 	player.move_and_slide()
+
+	# 自动抬步：被低台阶挡住时跨上去（楼梯无需按 E；E 只留给梯子）
+	if moved and move_xz.length_squared() > 0.001 and player.is_on_floor():
+		if player.try_step_up(move_xz):
+			_velocity_y = 0.0
+
 	if player.is_on_floor():
 		_velocity_y = 0.0
 		if was_air:
 			player.on_land()
+	elif player.in_step_grace():
+		# 抬步后短暂无接触帧：抑制重力，避免刚上踏面就被拉回
+		_velocity_y = 0.0
 
 	# 地形高度同步与防穿透
 	# 1) 刷地同步：仅在刷地后短暂窗口内（0.5s），且角色位于刷地影响范围且接近地面时，

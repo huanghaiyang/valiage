@@ -29,6 +29,25 @@ const COLLIDER_OFFSET_Y := 0.54
 # 必须很薄——太高会在坡面/物体边缘把角色垫起造成浮空
 const COLLIDER_FOOT_HEIGHT := 0.05
 
+# ---- 自动抬步（上楼梯/上台沿）----
+## 可自动跨上的最大台阶高度（米）。楼梯单级踏面约 0.2~0.25m，留出余量。
+const MAX_STEP_HEIGHT := 0.45
+## 探针水平前探距离：站在本级踏面上时下一级踏面约在 0.85~0.9m 处，
+## 取 0.45m 正好落在下一级踏面中段（起点已抬高 MAX_STEP_HEIGHT，斜向前下方找面）。
+const STEP_PROBE_AHEAD := 0.45
+## 探针向下探测长度；起点高度为 MAX_STEP_HEIGHT + 该值
+const STEP_DROP := 0.9
+## 台阶顶面之上需要的净空（米）：角色站立高度 + 余量
+const STEP_HEADROOM := 1.25
+## 抬步后短暂忽略重力，避免上台阶瞬间被拉回
+const STEP_GRACE_TIME := 0.1
+
+## 上一次成功抬步的时间点（毫秒），供相机控制器抑制瞬间重力
+var last_step_msec := 0
+## 统计信息（测试/调试用）
+var step_count := 0
+var step_debug := false
+
 # 移动动画
 const ANIM_IDLE := "Idle"
 const ANIM_WALK := "Walking_A"
@@ -119,8 +138,9 @@ func _ready() -> void:
 	# 碰撞：层1=玩家；mask 与地形(2)/建筑(4)/植被(8)碰撞
 	collision_layer = 1
 	collision_mask = 2 | 4 | 8
-	floor_snap_length = 0.3
-	floor_max_angle = deg_to_rad(50.0)
+	# 贴地长度给足：走缓坡与刚跨上台阶时都保持贴地，不被小幅落差抛起
+	floor_snap_length = 0.5
+	floor_max_angle = deg_to_rad(52.0)
 
 func _physics_process(delta: float) -> void:
 	# 施法手势计时：到时自动停止并恢复移动/Idle
@@ -142,6 +162,62 @@ func _physics_process(delta: float) -> void:
 		global_position.y = ny
 		if ny >= _interact_top_y:
 			stop_interact()
+
+# ---------- 自动抬步（上楼梯） ----------
+
+## 尝试跨上正前方的低台阶：在移动后调用。
+## force=true 供无物理步进的环境（headless 脚本测试）驱动：跳过贴地判定。
+## move_dir 为本帧期望的水平移动方向。
+## 返回 true 表示成功抬步（调用方应据此抑制重力/重置贴地）。
+func try_step_up(move_dir: Vector3, force: bool = false) -> bool:
+	if move_dir.length_squared() < 0.0001:
+		return false
+	if not force and not is_on_floor():
+		return false
+	var dir := Vector3(move_dir.x, 0.0, move_dir.z).normalized()
+	var space := get_world_3d().direct_space_state
+	var origin := global_position
+
+	# 单个"前下方"探针，从垫脚高度斜着向前找落脚面：
+	# 起点抬高到 MAX_STEP_HEIGHT，向下打 STEP_DROP，水平前探 0.45m。
+	# 这样"站在本级踏面上找下一级"与"地面找第一级"是同一种几何，判定一致。
+	var probe_from := origin + Vector3.UP * MAX_STEP_HEIGHT + dir * STEP_PROBE_AHEAD
+	var down := _cast(space, probe_from, Vector3.DOWN, MAX_STEP_HEIGHT + STEP_DROP)
+	if down.is_empty():
+		return false
+	var step_top: Vector3 = down.position
+	var step_normal: Vector3 = down.normal
+	var rise := step_top.y - origin.y
+	if rise <= 0.02 or rise > MAX_STEP_HEIGHT:
+		return false
+	if step_normal.angle_to(Vector3.UP) > floor_max_angle:
+		return false
+	# 净空：踏面之上要有角色身高的空间，否则是头顶被挡的缝隙
+	var up := _cast(space, step_top + Vector3.UP * 0.12, Vector3.UP, STEP_HEADROOM)
+	if not up.is_empty():
+		return false
+
+	# 抬上去：先升后前移，move_and_slide 的贴地会把角色吸回踏面
+	global_position = Vector3(
+			origin.x + dir.x * 0.22,
+			step_top.y + 0.02,
+			origin.z + dir.z * 0.22)
+	last_step_msec = Time.get_ticks_msec()
+	step_count += 1
+	return true
+
+## 抬步后的短暂窗口内抑制重力（避免刚上台阶就被拉回）
+func in_step_grace() -> bool:
+	return Time.get_ticks_msec() - last_step_msec < int(STEP_GRACE_TIME * 1000.0)
+
+
+func _cast(space: PhysicsDirectSpaceState3D, from: Vector3, dir: Vector3,
+		length: float = STEP_PROBE_AHEAD) -> Dictionary:
+	var q := PhysicsRayQueryParameters3D.create(from, from + dir * length)
+	q.collision_mask = collision_mask
+	q.exclude = [get_rid()]
+	return space.intersect_ray(q)
+
 
 func _instantiate_character() -> Node3D:
 	var scene: PackedScene = load(CHARACTER_SCENE)

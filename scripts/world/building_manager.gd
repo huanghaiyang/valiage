@@ -25,9 +25,12 @@ const WALL_HEIGHT_SCALE := 1.8  # 墙放大到 ~2m 高
 
 func _ready() -> void:
 	_rng.randomize()
-	container = Node3D.new()
-	container.name = "Placed"
-	add_child(container)
+	# Placed 容器由场景声明（Main/Buildings/Placed）；缺失时兜底新建
+	container = get_node_or_null("Placed")
+	if container == null:
+		container = Node3D.new()
+		container.name = "Placed"
+		add_child(container)
 	wall_scene = load("res://assets/models/buildings/buildings/neutral/wall_straight.gltf")
 	tower_scene = load("res://assets/models/buildings/buildings/red/building_tower_A_red.gltf")
 	house_scene = load("res://assets/models/buildings/buildings/red/building_home_A_red.gltf")
@@ -68,11 +71,11 @@ func _find_mesh_instance(node: Node) -> MeshInstance3D:
 			return r
 	return null
 
-func _instantiate(scene: PackedScene) -> Node3D:
+func _instantiate(scene: PackedScene, target: Node3D = null) -> Node3D:
 	if scene == null:
 		return null
 	var inst := scene.instantiate()
-	container.add_child(inst)
+	(target if target != null else container).add_child(inst)
 	return inst
 
 ## 给建筑实例加模型三角网格碰撞（ConcavePolygonShape3D）
@@ -117,7 +120,7 @@ func add_wall(a: Vector3, b: Vector3, _height: float, _thickness: float, _crenel
 	_place_wall(a, b)
 	_undo_stack.append({"type": "wall", "a": a, "b": b})
 
-func _place_wall(a: Vector3, b: Vector3) -> void:
+func _place_wall(a: Vector3, b: Vector3, target: Node3D = null) -> void:
 	var seg := a.distance_to(b)
 	if seg < 0.5:
 		return
@@ -130,7 +133,7 @@ func _place_wall(a: Vector3, b: Vector3) -> void:
 	var n := maxi(1, int(round(seg / _wall_len)))
 	for i in n:
 		var p := a + dir * (seg * float(i) / float(n))
-		var inst := _instantiate(wall_scene)
+		var inst := _instantiate(wall_scene, target)
 		if inst == null:
 			return
 		inst.global_position = Vector3(p.x, p.y, p.z)
@@ -143,8 +146,8 @@ func add_tower(center: Vector3, radius: float, _height: float, _with_roof := tru
 	_place_tower(center, radius, yaw)
 	_undo_stack.append({"type": "tower", "c": center, "r": radius, "y": yaw})
 
-func _place_tower(center: Vector3, radius: float, yaw: float) -> void:
-	var inst := _instantiate(tower_scene)
+func _place_tower(center: Vector3, radius: float, yaw: float, target: Node3D = null) -> void:
+	var inst := _instantiate(tower_scene, target)
 	if inst == null:
 		return
 	var s := maxf(0.35, radius * 2.0 / _tower_base)
@@ -159,8 +162,8 @@ func add_house(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
 	_place_house(pos, scale, yaw)
 	_undo_stack.append({"type": "house", "p": pos, "s": scale, "y": yaw})
 
-func _place_house(pos: Vector3, scale: float, yaw: float) -> void:
-	var inst := _instantiate(house_scene)
+func _place_house(pos: Vector3, scale: float, yaw: float, target: Node3D = null) -> void:
+	var inst := _instantiate(house_scene, target)
 	if inst == null:
 		return
 	inst.global_position = Vector3(pos.x, pos.y, pos.z)
@@ -194,6 +197,12 @@ func get_undo_count() -> int:
 	return _undo_stack.size()
 
 func _rebuild_from_history() -> void:
+	# 重建到临时容器后整体替换 Placed；历史里已包含场景件（build_from_scene 写入）。
+	# 注意：cache 必须挂进树里——实例的 global_position/global_transform 只在树内有效，
+	# 否则 Godot 会报 "!is_inside_tree()" 并把所有墙段放在原点。
+	var cache := Node3D.new()
+	cache.name = "PlacedRebuild"
+	add_child(cache)
 	var history: Array[Dictionary] = []
 	for op in _undo_stack:
 		history.append(op.duplicate(true))
@@ -201,13 +210,50 @@ func _rebuild_from_history() -> void:
 	for op in history:
 		match op.type:
 			"wall":
-				_place_wall(op.a, op.b)
+				_place_wall(op.a, op.b, cache)
 			"tower":
-				_place_tower(op.c, op.r, op.get("y", -1.0))
+				_place_tower(op.c, op.r, op.get("y", -1.0), cache)
 			"house":
-				_place_house(op.p, op.s, op.get("y", -1.0))
+				_place_house(op.p, op.s, op.get("y", -1.0), cache)
 	_undo_stack = history
+	for c in cache.get_children():
+		cache.remove_child(c)
+		container.add_child(c)
+	remove_child(cache)
+	cache.free()
 
 func _clear_all() -> void:
 	for c in container.get_children():
+		container.remove_child(c)
 		c.queue_free()
+
+
+## 从场景布局节点重建全部建筑：Buildings/Layout 下每个子节点用 meta 描述一个构建件
+## （kind=wall/house/tower，配合 a/b 或 scale/radius/yaw 等参数）。
+## 布局节点始终保留在场景中，构建实例进 Buildings/Placed；
+## 写回历史栈后，撤销/重建都能原样复现场景件与玩家后续放置。
+func build_from_scene() -> void:
+	_undo_stack.clear()
+	var layout := get_node_or_null("Layout")
+	if layout != null:
+		for c in layout.get_children():
+			if not (c is Node3D):
+				continue
+			var node := c as Node3D
+			if not node.has_meta("kind"):
+				continue
+			var kind := str(node.get_meta("kind"))
+			var yaw := float(node.get_meta("yaw", -1.0))
+			match kind:
+				"wall":
+					var a := node.get_meta("a", node.position) as Vector3
+					var b := node.get_meta("b", node.position) as Vector3
+					_undo_stack.append({"type": "wall", "a": a, "b": b})
+				"house":
+					_undo_stack.append({"type": "house", "p": node.position,
+							"s": float(node.get_meta("scale", 1.0)), "y": yaw})
+				"tower":
+					_undo_stack.append({"type": "tower", "c": node.position,
+							"r": float(node.get_meta("radius", 1.4)), "y": yaw})
+	print("Buildings | 从场景重建 %d 个构建件" % _undo_stack.size())
+	_rebuild_from_history()

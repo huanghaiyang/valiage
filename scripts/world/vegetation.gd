@@ -149,6 +149,12 @@ const COLORED_CATEGORIES := ["flower", "grass", "mushroom", "stump"]
 const SHADOW_CATEGORIES := ["tree", "bush", "furniture", "mountain"]
 
 var _rng := RandomNumberGenerator.new()
+## 场景播种种子：固定后自动撒点布局可复现（烘焙与运行时一致）
+var scene_seed := 20260927
+## 布局模式：只记录落点、不建碰撞体（供烘焙导出布局）
+var layout_mode := false
+## 布局模式下收集的落点
+var plan_items: Array = []
 
 # 块数据：_blocks 为一维数组，index = bz * _block_n + bx
 # 每个元素 Dictionary：
@@ -327,7 +333,7 @@ func _hist_for(cat: String) -> Array:
 
 ## 通用添加：定位所在块 → 随机模型变体 → 指定/随机旋转 → 随机缩放 → 可选实例色
 ## yaw >= 0 使用指定朝向（玩家放置旋转），-1 随机朝向
-func _add_instance(cat: String, pos: Vector3, scale: float, hist: Array, yaw: float = -1.0) -> bool:
+func _add_instance(cat: String, pos: Vector3, scale: float, hist: Array, yaw: float = -1.0, force_variant: int = -1) -> bool:
 	var max_total: int = _category_max[cat]
 	if _category_total[cat] >= max_total:
 		return false
@@ -338,8 +344,8 @@ func _add_instance(cat: String, pos: Vector3, scale: float, hist: Array, yaw: fl
 	var mmis: Array = block["mmis"][cat]
 	var counts: Array = block["counts"][cat]
 	var cap: int = mmis[0].multimesh.instance_count
-	# 随机起始变体；该块该模型满则顺延其他变体
-	var start := _rng.randi_range(0, mmis.size() - 1)
+	# 指定变体（场景烘焙）优先，否则随机起始变体
+	var start: int = force_variant if force_variant >= 0 and force_variant < mmis.size() else _rng.randi_range(0, mmis.size() - 1)
 	var vi := -1
 	for k in mmis.size():
 		var cand := (start + k) % mmis.size()
@@ -353,12 +359,24 @@ func _add_instance(cat: String, pos: Vector3, scale: float, hist: Array, yaw: fl
 	var rot := _rng.randf_range(0.0, TAU) if yaw < 0.0 else yaw
 	var basis := Basis.IDENTITY.rotated(Vector3.UP, rot).scaled(Vector3.ONE * scale)
 	mm.set_instance_transform(idx, Transform3D(basis, pos))
+	var tint := Color.WHITE
 	if cat in COLORED_CATEGORIES:
-		mm.set_instance_color(idx, _random_plant_color(cat))
+		tint = _random_plant_color(cat)
+		mm.set_instance_color(idx, tint)
 	counts[vi] += 1
 	mm.visible_instance_count = counts[vi]
 	_category_total[cat] += 1
-	hist.append([bx, bz, vi])
+	# 历史项携带复原所需全部数据（块坐标/变体/位置/缩放/朝向/配色），
+	# 使场景烘焙出的布局与玩家放置都能按原样重建。
+	hist.append({
+		"bx": bx, "bz": bz, "vi": vi, "pos": pos,
+		"scale": scale, "yaw": rot, "color": tint, "cat": cat,
+	})
+	if layout_mode:
+		plan_items.append({
+			"cat": cat, "pos": pos, "scale": scale, "yaw": rot,
+			"variant": vi, "color": tint, "bx": bx, "bz": bz,
+		})
 	return true
 
 ## 随机植被配色（让花/草/蘑菇/树桩观感更丰富）
@@ -391,10 +409,45 @@ func _random_plant_color(cat: String) -> Color:
 				0.16 + _rng.randf_range(0.0, 0.08))
 	return Color.WHITE
 
+## 按场景节点重建一株植被（不写入玩家历史，只铺底）
+func place_scene_item(node: Node3D, cat: String) -> bool:
+	var p := Vector3(node.get_meta("px", node.position.x),
+			node.get_meta("py", node.position.y),
+			node.get_meta("pz", node.position.z))
+	var s := float(node.get_meta("scale", 1.0))
+	var yaw := float(node.get_meta("yaw", 0.0))
+	var vi := int(node.get_meta("variant", 0))
+	return _add_instance(cat, p, s, _hist_for(cat), yaw, vi)
+
+
+## 从场景节点重建全部植被（Vegetation/Spawned/<cat> 下的子节点）
+## 位置在烘焙时已固化；地形被刷改后由 sync_heights() 重新贴合。
+func build_from_scene() -> void:
+	var spawned := get_node_or_null("Spawned")
+	if spawned == null:
+		return
+	_ensure_blocks()
+	var placed := 0
+	var failed := 0
+	for cat in _category_models.keys():
+		var holder := spawned.get_node_or_null(str(cat))
+		if holder == null:
+			continue
+		for c in holder.get_children():
+			if c is Node3D and place_scene_item(c, str(cat)):
+				placed += 1
+			else:
+				failed += 1
+	_rebuild_interactables()
+	print("Vegetation | 从场景重建 %d 株（跳过 %d）" % [placed, failed])
+
+
 ## 场景自动撒点（铺满全图：每块均匀分配，保证远处也有植被）
 func populate_auto(terrain: TerrainSystem, count_trees: int = 3200, count_flowers: int = 12000, count_grass: int = 32000, count_bushes: int = 3200, count_rocks: int = 1400, count_mushrooms: int = 1000, count_stumps: int = 600) -> void:
 	_terrain = terrain
 	_terrain_half = terrain.HALF
+	if scene_seed > 0:
+		_rng.seed = scene_seed
 	_ensure_blocks()
 	var plan := {
 		"tree": count_trees,
@@ -405,6 +458,11 @@ func populate_auto(terrain: TerrainSystem, count_trees: int = 3200, count_flower
 		"mushroom": count_mushrooms,
 		"stump": count_stumps,
 	}
+	_run_scatter(terrain, plan)
+
+
+## 按计划撒点（populate_auto 与 plan_layout 共用同一条路径，保证结果一致）
+func _run_scatter(terrain: TerrainSystem, plan: Dictionary) -> void:
 	for cat in plan:
 		var per_block := ceili(plan[cat] / float(_block_n * _block_n))
 		var sr: Array = _scale_ranges[cat]
@@ -413,15 +471,40 @@ func populate_auto(terrain: TerrainSystem, count_trees: int = 3200, count_flower
 			var bz := bi / _block_n
 			for _i in per_block:
 				var p := _random_in_block(terrain, bx, bz)
-				if p != Vector3.INF:
-					var s := _rng.randf_range(sr[0], sr[1])
-					match cat:
-						"tree":
-							add_tree(p, s)   # 带树干胶囊碰撞
-						"rock":
-							add_rock(p, s)   # 带石头盒碰撞
-						_:
-							_add_instance(cat, p, s, _hist_for(cat))
+				if p == Vector3.INF:
+					continue
+				var s := _rng.randf_range(sr[0], sr[1])
+				match cat:
+					"tree":
+						add_tree(p, s)   # 带树干胶囊碰撞
+					"rock":
+						add_rock(p, s)   # 带石头盒碰撞
+					_:
+						_add_instance(cat, p, s, _hist_for(cat))
+
+
+## 烘焙用：跑一次撒点并把落点导出为纯数据（不建碰撞体，可由场景节点取代）
+func plan_layout(terrain: TerrainSystem, counts: Dictionary) -> Dictionary:
+	_terrain = terrain
+	_terrain_half = terrain.HALF
+	layout_mode = true
+	plan_items = []
+	_reset_totals()
+	if scene_seed > 0:
+		_rng.seed = scene_seed
+	_ensure_blocks()
+	_run_scatter(terrain, counts)
+	var out := {"counts": counts, "items": plan_items, "seed": scene_seed,
+			"placed": _category_total.duplicate()}
+	layout_mode = false
+	plan_items = []
+	return out
+
+
+## 清空各类计数（烘焙前复位）
+func _reset_totals() -> void:
+	for cat in _category_total.keys():
+		_category_total[cat] = 0
 
 func _random_in_block(terrain: TerrainSystem, bx: int, bz: int) -> Vector3:
 	var margin := 4.0
@@ -444,10 +527,12 @@ func add_tree(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
 		yaw = _rng.randf_range(0.0, TAU)
 	if not _add_instance("tree", pos, scale, _tree_hist, yaw):
 		return
+	if layout_mode:
+		return
 	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var block: Dictionary = _blocks[bz * _block_n + bx]
-	var vi: int = _tree_hist[_tree_hist.size() - 1][2]
+	var vi: int = int(_tree_hist[_tree_hist.size() - 1].get("vi", 0))
 	var sb := StaticBody3D.new()
 	sb.collision_layer = 8
 	sb.collision_mask = 0
@@ -476,10 +561,12 @@ func add_rock(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
 		yaw = _rng.randf_range(0.0, TAU)
 	if not _add_instance("rock", pos, scale, _rock_hist, yaw):
 		return
+	if layout_mode:
+		return
 	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var block: Dictionary = _blocks[bz * _block_n + bx]
-	var vi: int = _rock_hist[_rock_hist.size() - 1][2]
+	var vi: int = int(_rock_hist[_rock_hist.size() - 1].get("vi", 0))
 	var sb := StaticBody3D.new()
 	sb.collision_layer = 8
 	sb.collision_mask = 0
@@ -553,17 +640,19 @@ func add_stump(pos: Vector3, scale := 1.0) -> void:
 	_add_instance("stump", pos, scale, _stump_hist)
 
 ## 添加一件家具/梯子（随机变体 + 模型 trimesh 碰撞；yaw>=0 指定朝向；满员顶掉最近一件）
-func add_furniture(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
+func add_furniture(pos: Vector3, scale := 1.0, yaw := -1.0, with_collision := true) -> void:
 	if _category_total["furniture"] >= MAX_FURNITURE:
 		remove_last_furniture()
 	if yaw < 0.0:
 		yaw = _rng.randf_range(0.0, TAU)
 	if not _add_instance("furniture", pos, scale, _furniture_hist, yaw):
 		return
+	if layout_mode:
+		return
 	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var block: Dictionary = _blocks[bz * _block_n + bx]
-	var vi: int = _furniture_hist[_furniture_hist.size() - 1][2]
+	var vi: int = int(_furniture_hist[_furniture_hist.size() - 1].get("vi", 0))
 	var sb := StaticBody3D.new()
 	sb.collision_layer = 8
 	sb.collision_mask = 0
@@ -573,8 +662,13 @@ func add_furniture(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
 	col.scale = Vector3.ONE * scale
 	sb.add_child(col)
 	sb.position = pos
-	(block["collisions"] as Node3D).add_child(sb)
-	_furniture_collision_nodes.append(sb)
+	if with_collision:
+		# 楼梯等可走上去的家具不生成模型网格碰撞：避免踏面被判成墙而卡住，
+		# 台阶由角色的自动抬步处理。
+		(block["collisions"] as Node3D).add_child(sb)
+		_furniture_collision_nodes.append(sb)
+	else:
+		sb.free()
 	_rebuild_interactables()
 
 ## ---------- 家具互动（坐/睡/爬梯） ----------
@@ -586,7 +680,7 @@ func _furniture_kind(path: String) -> String:
 		return "sit"
 	if n.begins_with("bed"):
 		return "sleep"
-	if n.begins_with("stairs") or n == "dungeon":
+	if n.begins_with("ladder"):
 		return "climb"
 	return ""
 
@@ -656,10 +750,12 @@ func add_mountain(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
 		yaw = _rng.randf_range(0.0, TAU)
 	if not _add_instance("mountain", pos, scale, _mountain_hist, yaw):
 		return
+	if layout_mode:
+		return
 	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var block: Dictionary = _blocks[bz * _block_n + bx]
-	var vi: int = _mountain_hist[_mountain_hist.size() - 1][2]
+	var vi: int = int(_mountain_hist[_mountain_hist.size() - 1].get("vi", 0))
 	var sb := StaticBody3D.new()
 	sb.collision_layer = 8
 	sb.collision_mask = 0
@@ -715,13 +811,13 @@ func remove_last_stump() -> void:
 func _remove_last(cat: String, hist: Array) -> void:
 	if hist.is_empty():
 		return
-	var entry: Array = hist.pop_back()
-	var bx: int = entry[0]
-	var bz: int = entry[1]
-	var vi: int = entry[2]
+	var raw: Variant = hist.pop_back()
+	var bx: int = int(raw.get("bx", 0)) if raw is Dictionary else int(raw[0])
+	var bz: int = int(raw.get("bz", 0)) if raw is Dictionary else int(raw[1])
+	var vi: int = int(raw.get("vi", -1)) if raw is Dictionary else int(raw[2])
 	var block: Dictionary = _blocks[bz * _block_n + bx]
 	var counts: Array = block["counts"][cat]
-	if counts[vi] > 0:
+	if vi >= 0 and vi < counts.size() and counts[vi] > 0:
 		counts[vi] -= 1
 		var mm: MultiMesh = (block["mmis"][cat] as Array)[vi].multimesh
 		mm.visible_instance_count = counts[vi]
@@ -830,7 +926,8 @@ func _rebuild_all_hist() -> void:
 			var hist: Array = _hist_for(cat)
 			for vi in counts.size():
 				for _j in counts[vi]:
-					hist.append([bx, bz, vi])
+					hist.append({"bx": bx, "bz": bz, "vi": vi, "pos": Vector3.ZERO,
+							"scale": 1.0, "yaw": 0.0, "color": Color.WHITE, "cat": cat})
 
 ## 绑定相机（由 main 注入），立即做一次视野剔除
 func set_camera(cam: Camera3D) -> void:
