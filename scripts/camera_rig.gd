@@ -75,6 +75,7 @@ func _physics_process(delta: float) -> void:
 	var dir := _get_move_input()
 	var move_xz := Vector3.ZERO
 	var running := Input.is_key_pressed(KEY_SHIFT)
+	var yaw_before: float = player.get_facing_yaw()
 	player.set_running(running)
 	if dir.x != 0.0 or dir.y != 0.0:
 		moved = true
@@ -113,6 +114,12 @@ func _physics_process(delta: float) -> void:
 	if moved and move_xz.length_squared() > 0.001 and player.is_on_floor():
 		if player.try_step_up(move_xz):
 			_velocity_y = 0.0
+
+	# 转向过渡：侧向速度 → 侧移动画；朝向突变 → 转向动画 + 压弯
+	var yaw_after: float = player.get_facing_yaw()
+	player.notify_facing_change(angle_difference(yaw_before, yaw_after))
+	player.set_lateral(_lateral_speed(move_xz, yaw_after))
+	player.update_turn(delta, moved, running)
 
 	if player.is_on_floor():
 		_velocity_y = 0.0
@@ -156,18 +163,21 @@ func _physics_process(delta: float) -> void:
 	_current_pitch = clampf(_current_pitch, min_pitch_dyn, max_pitch)
 
 	# 相机定位 + 角色模型显隐（第一人称隐藏身体，避免相机卡进头部）
+	# 相机跟 visual_height()：抬步时根部瞬间上到台阶顶、模型缓动追上去，
+	# 若跟根节点，上台阶瞬间镜头会先猛跳一下再被模型追平。
+	var eye_y := player.visual_height()
 	if third_person:
 		player.set_body_visible(true)
 		var yaw_vec := Vector3(sin(_current_yaw), 0.0, cos(_current_yaw))
 		var dist_h := cos(_current_pitch) * tps_distance
 		var dist_v := sin(_current_pitch) * tps_distance
-		var cam_pos := player.global_position + yaw_vec * dist_h + Vector3(0.0, tps_height + dist_v, 0.0)
+		var cam_pos := Vector3(player.global_position.x, eye_y, player.global_position.z) + yaw_vec * dist_h + Vector3(0.0, tps_height + dist_v, 0.0)
 		camera.global_position = cam_pos
-		camera.look_at(player.global_position + Vector3(0.0, 1.05, 0.0), Vector3.UP)
+		camera.look_at(Vector3(player.global_position.x, eye_y + 1.05, player.global_position.z), Vector3.UP)
 	else:
 		player.set_body_visible(false)
 		var rot := Basis.from_euler(Vector3(_current_pitch, _current_yaw, 0.0))
-		camera.global_transform = Transform3D(rot, player.global_position + Vector3(0.0, eye_height, 0.0))
+		camera.global_transform = Transform3D(rot, Vector3(player.global_position.x, eye_y + eye_height, player.global_position.z))
 
 ## 只返回水平移动方向（x=左右，y=前后）。跳跃在 _physics_process 单独处理。
 ## 互动冻结期间仅更新相机（跟随玩家位置/朝向）
@@ -185,7 +195,21 @@ func _update_camera_only() -> void:
 		var rot := Basis.from_euler(Vector3(_current_pitch, _current_yaw, 0.0))
 		camera.global_transform = Transform3D(rot, player.global_position + Vector3(0.0, eye_height, 0.0))
 
+## 朝向坐标系下的侧向速度分量（右为正）：用于选择侧移动画与压弯方向
+func _lateral_speed(move_xz: Vector3, facing_yaw: float) -> float:
+	if move_xz.length_squared() < 0.0001:
+		return 0.0
+	var right := Vector3(cos(facing_yaw), 0.0, -sin(facing_yaw))
+	return move_xz.dot(right)
+
+
+## 自动化测试用：非零时替代键盘输入（headless 探测无法模拟按键）
+var test_move_override := Vector2.ZERO
+
+
 func _get_move_input() -> Vector2:
+	if test_move_override != Vector2.ZERO:
+		return test_move_override.normalized()
 	var dir := Vector2.ZERO
 	if Input.is_key_pressed(KEY_W):
 		dir.y += 1.0

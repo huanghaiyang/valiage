@@ -41,6 +41,33 @@ const STEP_DROP := 0.9
 const STEP_HEADROOM := 1.25
 ## 抬步后短暂忽略重力，避免上台阶瞬间被拉回
 const STEP_GRACE_TIME := 0.1
+## 抬步的视觉平滑时长：根部在 smoothstep 曲线上升完这段距离所需时间。
+## 20cm 台阶约 0.30s，越大台阶越慢。
+const STEP_RISE_PER_METER := 1.5
+const STEP_MIN_TIME := 0.24
+const STEP_MAX_TIME := 0.55
+## 一次抬步的前移量（米）。必须明显小于台阶进深，否则每帧都能探到下一级、
+## 接连瞬移，观感就是"飞"上楼梯（旧值 0.22 偏大）。
+const STEP_ADVANCE := 0.10
+## 两次抬步之间的最小间隔（秒）。0.26s/级 ≈ 0.96m/s 的爬升速度，接近步行。
+const STEP_COOLDOWN := 0.26
+
+## 距离上一次成功抬步的时间（秒）
+var _step_cooldown := 0.0
+## 滞空计时（秒）。落地检测万一漏掉（例如卡在斜坡/物体边缘 is_on_floor 一直为假），
+## _jump_air 会永远为真，动画与移动状态机就彻底卡死（"跑一段就推不动了"）。
+## 超过这个时长无条件复位。
+const AIR_TIMEOUT := 1.4
+var _air_time := 0.0
+
+## 抬步平滑：根部已抬到台阶顶，模型的"额外下移量"（米），按缓动曲线收回 0
+var _step_visual_offset := 0.0
+## 本次抬步平滑的进度（秒）与总时长
+var _step_smooth_t := 0.0
+var _step_smooth_dur := 0.0
+var _step_smooth_start := 0.0
+## 本帧抬升的高度（供相机/动画参考）
+var last_step_rise := 0.0
 
 ## 上一次成功抬步的时间点（毫秒），供相机控制器抑制瞬间重力
 var last_step_msec := 0
@@ -48,10 +75,37 @@ var last_step_msec := 0
 var step_count := 0
 var step_debug := false
 
+# ---- 转向过渡状态 ----
+## 本帧水平速度中相对朝向的侧向分量（>0 向右）
+var _lateral := 0.0
+## 当前侧倾角（弧度），正=向右压弯
+var _lean := 0.0
+## 转向动画剩余时间
+var _turn_timer := 0.0
+## 转向动画方向（+1 右 / -1 左）
+var _turn_dir := 1.0
+## 当前播放的移动动画名（避免每帧重播）
+var _move_anim := ""
+
 # 移动动画
 const ANIM_IDLE := "Idle"
 const ANIM_WALK := "Walking_A"
 const ANIM_RUN := "Running_A"
+# 转向/侧移过渡动画（KayKit 库：Strafe_Left/Strafe_Right/DashLeft/DashRight）
+const ANIM_STRAFE_L := "kaykit/Strafe_Left"
+const ANIM_STRAFE_R := "kaykit/Strafe_Right"
+const ANIM_TURN_L := "kaykit/DashLeft"
+const ANIM_TURN_R := "kaykit/DashRight"
+## 侧向速度超过该值改用侧移动画（米/秒）
+const LATERAL_ANIM_THRESHOLD := 0.6
+## 朝向变化超过该角度（弧度）触发转向动画；越小越敏感
+const TURN_ANIM_ANGLE := deg_to_rad(45.0)
+## 转向动画/倾斜持续时长（秒）
+const TURN_ANIM_TIME := 0.25
+## 转向时的最大侧倾角（弧度）——压弯手感
+const TURN_LEAN_MAX := deg_to_rad(14.0)
+## 侧倾回正速度（弧度/秒）
+const TURN_LEAN_RECOVER := 6.0
 # 放置物体时施法手势时长（挥舞法杖 loop 动画限时播放）
 const CAST_DURATION := 0.9
 const CLIMB_SPEED := 1.3          # 爬梯上升速度（米/秒）
@@ -143,6 +197,28 @@ func _ready() -> void:
 	floor_max_angle = deg_to_rad(52.0)
 
 func _physics_process(delta: float) -> void:
+	if _step_cooldown > 0.0:
+		_step_cooldown = maxf(0.0, _step_cooldown - delta)
+	# 滞空兜底：长时间处于跳跃状态说明落地事件漏了，强制复位状态机
+	if _jump_air:
+		_air_time += delta
+		if _air_time > AIR_TIMEOUT:
+			_jump_air = false
+			_air_time = 0.0
+			_update_move_anim()
+	else:
+		_air_time = 0.0
+	# 抬步视觉平滑：根部已经站上台阶，模型按 smoothstep 缓动追上去。
+	# 缓动而非线性衰减：起步慢、中间快、收尾慢 —— 上台阶不再"闪"。
+	if _step_smooth_dur > 0.0:
+		_step_smooth_t = minf(_step_smooth_t + delta, _step_smooth_dur)
+		var st := _step_smooth_t / _step_smooth_dur
+		_step_visual_offset = _step_smooth_start * (1.0 - smoothstep(0.0, 1.0, st))
+		if _step_smooth_t >= _step_smooth_dur:
+			_step_smooth_dur = 0.0
+			_step_visual_offset = 0.0
+	if body != null:
+		body.position.y = -_step_visual_offset
 	# 施法手势计时：到时自动停止并恢复移动/Idle
 	if _cast_timer > 0.0:
 		_cast_timer -= delta
@@ -172,6 +248,9 @@ func _physics_process(delta: float) -> void:
 func try_step_up(move_dir: Vector3, force: bool = false) -> bool:
 	if move_dir.length_squared() < 0.0001:
 		return false
+	# 节流：连级台阶一次只上一级，否则探针每帧都能探到下一级、一路瞬移上去
+	if _step_cooldown > 0.0:
+		return false
 	if not force and not is_on_floor():
 		return false
 	var dir := Vector3(move_dir.x, 0.0, move_dir.z).normalized()
@@ -197,18 +276,42 @@ func try_step_up(move_dir: Vector3, force: bool = false) -> bool:
 	if not up.is_empty():
 		return false
 
-	# 抬上去：先升后前移，move_and_slide 的贴地会把角色吸回踏面
+	# 抬上去：物理立即上台（保证碰撞正确），模型用视觉偏移"滑"上去
 	global_position = Vector3(
-			origin.x + dir.x * 0.22,
+			origin.x + dir.x * STEP_ADVANCE,
 			step_top.y + 0.02,
-			origin.z + dir.z * 0.22)
+			origin.z + dir.z * STEP_ADVANCE)
+	last_step_rise = rise
+	_step_cooldown = STEP_COOLDOWN
+	# 根部立即落到台阶顶保证碰撞正确；模型压低 rise，再按缓动曲线收回。
+	# 平滑时长按抬升高度换算（越高越慢），上限避免大台阶拖得太久。
+	_step_visual_offset = rise
+	_step_smooth_t = 0.0
+	_step_smooth_start = rise
+	_step_smooth_dur = clampf(rise * STEP_RISE_PER_METER, STEP_MIN_TIME, STEP_MAX_TIME)
 	last_step_msec = Time.get_ticks_msec()
 	step_count += 1
+	if step_debug:
+		print("[step] rise=%.3f smooth=%.2fs" % [rise, _step_smooth_dur])
 	return true
 
 ## 抬步后的短暂窗口内抑制重力（避免刚上台阶就被拉回）
 func in_step_grace() -> bool:
 	return Time.get_ticks_msec() - last_step_msec < int(STEP_GRACE_TIME * 1000.0)
+
+## 视觉上模型所在的世界高度。
+## 抬步是把根部瞬移到台阶顶、再把模型压下去缓动追上来，所以模型真正的
+## 高度是 global_position.y + body.position.y（body.position.y 为负）。
+## 相机必须跟这个值，否则上台阶时镜头会先猛跳一下再被模型追平。
+func visual_height() -> float:
+	var off := 0.0
+	if body != null:
+		off = body.position.y
+	return global_position.y + off
+
+## 是否正在抬步缓动中（供相机/动画判断）
+func is_step_smoothing() -> bool:
+	return _step_smooth_dur > 0.0
 
 
 func _cast(space: PhysicsDirectSpaceState3D, from: Vector3, dir: Vector3,
@@ -254,6 +357,67 @@ func face_direction(face: Vector3) -> void:
 	if body != null:
 		body.rotation.y = atan2(face.x, face.z)
 
+# ---------- 转向过渡 ----------
+
+## 由相机控制器每帧告知：相对朝向的侧向速度（右为正）与朝向变化量（弧度，右为正）
+func set_lateral(lateral: float) -> void:
+	_lateral = lateral
+
+
+## 朝向发生明显变化时调用（由相机控制器在转身时触发）
+func notify_facing_change(angle_delta: float) -> void:
+	if absf(angle_delta) < TURN_ANIM_ANGLE:
+		return
+	_turn_dir = signf(angle_delta)
+	_turn_timer = TURN_ANIM_TIME
+	# 转向瞬间给一个侧倾冲量，随后回正
+	_lean = clampf(_lean - _turn_dir * TURN_LEAN_MAX, -TURN_LEAN_MAX, TURN_LEAN_MAX)
+	# 移动中才播转向动作，站立转向只靠侧倾
+	if _moving and not _action_active and not _jump_air:
+		_play_move_anim(ANIM_TURN_L if _turn_dir > 0.0 else ANIM_TURN_R)
+
+
+## 每帧推进转向状态：计时衰减 + 侧倾回正 + 应用到模型
+func update_turn(delta: float, moving: bool, running: bool) -> void:
+	if _turn_timer > 0.0:
+		_turn_timer -= delta
+	# 侧倾回正
+	_lean = move_toward(_lean, 0.0, TURN_LEAN_RECOVER * delta)
+	if body != null:
+		body.rotation.z = _lean
+	# 转向动画结束后回到正常移动动画
+	if _turn_timer <= 0.0 and moving and not _action_active and not _jump_air:
+		var want := ANIM_RUN if running else ANIM_WALK
+		if absf(_lateral) > LATERAL_ANIM_THRESHOLD:
+			want = ANIM_STRAFE_R if _lateral > 0.0 else ANIM_STRAFE_L
+		_play_move_anim(want)
+
+
+## 播放移动类动画（同名前不重播，避免动画抖动）
+## 缺失的剪辑回退到 Idle，绝不能"什么都不播" —— 否则角色会定格成滑行。
+func _play_move_anim(name: String) -> void:
+	if _move_anim == name:
+		return
+	if anim_player != null and not anim_player.has_animation(name):
+		if anim_player.has_animation(ANIM_WALK):
+			name = ANIM_WALK
+		elif anim_player.has_animation(ANIM_IDLE):
+			name = ANIM_IDLE
+		else:
+			return
+	_move_anim = name
+	_play_anim(name)
+
+
+## 当前侧倾角（供测试/调试）
+func get_lean() -> float:
+	return _lean
+
+
+## 当前模型朝向 yaw（供相机控制器检测转身）
+func get_facing_yaw() -> float:
+	return body.rotation.y if body != null else rotation.y
+
 # ---------- 移动状态联动 ----------
 
 func set_moving(m: bool) -> void:
@@ -274,8 +438,12 @@ func set_running(r: bool) -> void:
 
 func _update_move_anim() -> void:
 	if _moving:
-		_play_anim(ANIM_RUN if _running else ANIM_WALK)
+		if absf(_lateral) > LATERAL_ANIM_THRESHOLD and _turn_timer <= 0.0:
+			_play_move_anim(ANIM_STRAFE_R if _lateral > 0.0 else ANIM_STRAFE_L)
+		else:
+			_play_move_anim(ANIM_RUN if _running else ANIM_WALK)
 	else:
+		_move_anim = ANIM_IDLE
 		_play_anim(ANIM_IDLE)
 
 ## 起跳：播放跳跃动画，滞空期间保持

@@ -12,6 +12,8 @@ var action_button: Button           # 动作菜单开关按钮
 var action_panel: PanelContainer    # 动作列表面板
 var _action_visible := false
 var interact_label: Label        # 家具互动提示浮层
+var weather_label: Label         # 天气/风力信息（右上角）
+var _weather_accum := 0.0
 
 const TOOL_BUTTONS := [
 	["墙壁", Game.Tool.WALL],
@@ -97,9 +99,24 @@ func _build_ui() -> void:
 	Game.biomass_changed.connect(_on_biomass_changed)
 	Game.stone_changed.connect(_on_biomass_changed)
 
+	# 天气信息（右上角，生物质下方）
+	weather_label = Label.new()
+	weather_label.text = "晴朗"
+	weather_label.add_theme_font_size_override("font_size", 16)
+	weather_label.add_theme_color_override("font_color", Color(0.82, 0.90, 1.0))
+	weather_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.7))
+	weather_label.add_theme_constant_override("outline_size", 5)
+	weather_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	weather_label.offset_left = -260
+	weather_label.offset_right = -16
+	weather_label.offset_top = 70
+	weather_label.offset_bottom = 116
+	weather_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	add_child(weather_label)
+
 	# 底部提示
 	hint_label = Label.new()
-	hint_label.text = "左键搭建/涂抹 · WASD 移动 · 鼠标旋转视角 · Shift 加速 · Space/C 升降 · T 切换视角 · Esc 释放鼠标"
+	hint_label.text = "左键搭建/涂抹 · WASD 移动 · 鼠标旋转视角 · Shift 加速 · Space/C 升降 · T 切换视角 · V 切换天气 · Esc 释放鼠标"
 	hint_label.add_theme_font_size_override("font_size", 14)
 	hint_label.add_theme_color_override("font_color", Color(0.95, 0.95, 0.9, 0.9))
 	hint_label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
@@ -275,3 +292,33 @@ func show_interact_hint(text: String) -> void:
 func clear_interact_hint() -> void:
 	if interact_label:
 		interact_label.visible = false
+
+# ---------- 天气信息 ----------
+
+## 右上角常驻显示当前天气与风力（风向用箭头表示）
+func _update_weather_label() -> void:
+	if weather_label == null:
+		return
+	var w: float = float(Weather.wind)
+	var arrow := "→"
+	var d: Vector2 = Weather.wind_dir
+	if absf(d.x) > absf(d.y):
+		arrow = "→" if d.x > 0.0 else "←"
+	else:
+		arrow = "↓" if d.y > 0.0 else "↑"
+	var level := "微风"
+	if w >= 0.85:
+		level = "大风"
+	elif w >= 0.5:
+		level = "有风"
+	elif w >= 0.3:
+		level = "轻风"
+	weather_label.text = "%s\n风力 %.2f %s %s" % [Weather.weather_name(), w, level, arrow]
+
+
+func _process(delta: float) -> void:
+	_weather_accum += delta
+	if _weather_accum < 0.2:
+		return
+	_weather_accum = 0.0
+	_update_weather_label()

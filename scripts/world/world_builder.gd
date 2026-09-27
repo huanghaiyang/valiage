@@ -52,6 +52,9 @@ static func build(main: Node3D, terrain: TerrainSystem, vegetation: VegetationSy
 	report["clear_zones"] = _clear_zones(main, vegetation)
 
 	print("WorldBuilder | 5/6 清场 %d 处，植被 %s" % [report["clear_zones"], str(vegetation._category_total)])
+	# 地形起伏重做后，把烘焙进场景的植被重新贴回新地表（否则山坡长高会埋住植被）
+	var resynced := vegetation.sync_heights()
+	print("WorldBuilder | 5b/6 植被贴地修正 %d 株" % resynced)
 	# ---- 6. 地形网格/碰撞重建，保证与高度数据一致 ----
 	terrain.rebuild()
 

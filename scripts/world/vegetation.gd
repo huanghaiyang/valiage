@@ -204,6 +204,10 @@ var _collision_nodes: Dictionary = {}
 ## 每块待建碰撞的实例描述（懒加载队列），碰撞体随块进出视野创建/释放
 var _pending_blocks: Array = []          # 需要补建碰撞的块下标
 var _stream_budget_ms := 12.0            # 每帧用于建碰撞的时间预算（分摊，避免卡顿）
+## 碰撞体只在这个半径内建。必须**远小于** view_radius：视野 220m 内的块有几十个，
+## 按 12ms/帧的预算根本追不上玩家前进速度 —— 于是"视野外走进来"的树到了跟前
+## 还没建好碰撞，表现就是穿模。60m 内通常 2~3 个块，一两帧就建完。
+var collision_radius := 60.0
 var _interactables: Array = []          # 可交互家具注册表（kind/pos/yaw/height）
 var _furniture_height_cache: Dictionary = {}  # 家具模型路径 -> 站立面/爬升高度缓存
 
@@ -253,10 +257,58 @@ var _scale_ranges := {
 	"mountain": [1.0, 1.0],
 }
 
+## 共享的风摇材质：所有植被实例共用同一份材质资源。
+## 风向/风力由 Weather 每帧写进这份材质的 uniform（不能用全局着色器参数 —— 见
+## assets/shaders/vegetation_wind.gdshader 顶部说明）。
+const WIND_MATERIAL := preload("res://assets/materials/vegetation_wind.tres")
+
+## 各分类的摆幅系数（每米高度的水平位移量），按实测标定：
+##   0.35 → 6m 高物体在大风下横向摆 3~5px（12m 外看约 0.5m 幅度，明显但不夸张）
+##   0.20 → 同样条件下只有 3px，远看几乎看不出（旧默认 0.06 完全不可见）
+## 越低矮越贴地的越不该乱晃：草只是轻轻抖，树冠要明显摆。
+const SWAY_BY_CATEGORY := {
+	"tree": 0.35,
+	"bush": 0.26,
+	"flower": 0.24,
+	"grass": 0.20,
+	"mushroom": 0.08,
+	"stump": 0.04,
+	"rock": 0.0,
+	"furniture": 0.0,
+	"mountain": 0.0,
+}
+## 运行时生成的风摇材质（每分类一份，只改 sway_scale）。
+## 必须保留引用，否则材质会被回收；天气系统要同时更新所有分类。
+var _wind_materials: Array[ShaderMaterial] = []
+
 func _ready() -> void:
 	_rng.randomize()
 
+
+## 取某分类的风摇材质；首次访问时复制一份并把 sway_scale 设成该分类的值
+func _wind_material_for(cat: String) -> ShaderMaterial:
+	if WIND_MATERIAL == null:
+		return null
+	for m in _wind_materials:
+		if str(m.get_meta("cat", "")) == cat:
+			return m
+	var m: ShaderMaterial = WIND_MATERIAL.duplicate() as ShaderMaterial
+	m.set_meta("cat", cat)
+	m.set_shader_parameter("sway_scale", float(SWAY_BY_CATEGORY.get(cat, 0.10)))
+	_wind_materials.append(m)
+	return m
+
+
+## 供天气系统接管风参数：返回所有分类的风摇材质（风参数相同，sway_scale 各异）
+func wind_materials() -> Array[ShaderMaterial]:
+	return _wind_materials
+
 ## 从 glb 场景中提取第一个 MeshInstance3D 的 Mesh（提取后释放临时实例，Mesh 为共享资源）
+##
+## 关键：KayKit 的自然模型**没有贴图**，颜色全靠每个 surface 的 albedo_color。
+## 植被为了风摇用了 material_override，而 material_override 会把原材质整个换掉 ——
+## 于是所有模型都变成白模。解决办法是把每个 surface 的 albedo 颜色烘进顶点色
+## （Mesh.ARRAY_COLOR），风摇着色器用 albedo_color * COLOR 取样，颜色就回来了。
 func _load_glb_mesh(path: String) -> Mesh:
 	var scene: PackedScene = load(path)
 	if scene == null:
@@ -264,7 +316,35 @@ func _load_glb_mesh(path: String) -> Mesh:
 	var inst := scene.instantiate()
 	var m := _find_mesh(inst)
 	inst.free()
+	if m is ArrayMesh:
+		m = _bake_surface_colors(m as ArrayMesh)
 	return m
+
+
+## 把每个 surface 的材质基色写进该 surface 的顶点色，返回新的 ArrayMesh。
+## 已带顶点色的模型原样返回（避免重复烘）。
+func _bake_surface_colors(src: ArrayMesh) -> ArrayMesh:
+	var out := ArrayMesh.new()
+	for si in src.get_surface_count():
+		var arrays: Array = src.surface_get_arrays(si)
+		var fmt: int = src.surface_get_format(si)
+		var base := Color(1, 1, 1, 1)
+		var mat := src.surface_get_material(si)
+		if mat is StandardMaterial3D:
+			base = (mat as StandardMaterial3D).albedo_color
+		if (fmt & Mesh.ARRAY_FORMAT_COLOR) != 0:
+			out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+			out.surface_set_material(out.get_surface_count() - 1, mat)
+			continue
+		var vcount: int = (arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+		var cols := PackedColorArray()
+		cols.resize(vcount)
+		for i in vcount:
+			cols[i] = base
+		arrays[Mesh.ARRAY_COLOR] = cols
+		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		out.surface_set_material(out.get_surface_count() - 1, mat)
+	return out
 
 ## 供预览使用：与放置完全一致的偏移（水平居中 + 底面抬升）
 func model_preview_offset(model_path: String) -> Vector3:
@@ -368,6 +448,8 @@ func _create_block(bx: int, bz: int) -> Dictionary:
 	}
 	for cat in _category_models:
 		var models: Array = _category_models[cat]
+		# 每分类一份材质，只为让 sway_scale 不同（树摆得多、草摆得少）
+		var cat_mat: ShaderMaterial = _wind_material_for(cat)
 		var cap_per := ceili(_category_max[cat] / float(_block_n * _block_n * models.size()))
 		var use_color: bool = cat in COLORED_CATEGORIES
 		var use_shadow: bool = cat in SHADOW_CATEGORIES
@@ -381,10 +463,10 @@ func _create_block(bx: int, bz: int) -> Dictionary:
 			if use_color:
 				# Godot 4.5：实例颜色通过 use_colors + set_instance_color 启用
 				mmi.multimesh.use_colors = true
-				var mat := StandardMaterial3D.new()
-				mat.vertex_color_use_as_albedo = true
-				mat.roughness = 1.0
-				mmi.material_override = mat
+			# 风摇材质：顶点随风摆动由 Weather 每帧写入材质 uniform 驱动
+			# （不能用全局着色器参数，见 assets/shaders/vegetation_wind.gdshader）
+			if cat_mat != null:
+				mmi.material_override = cat_mat
 			if not use_shadow:
 				mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			mmi.multimesh.instance_count = cap_per
@@ -453,7 +535,7 @@ func _is_block_active(bi: int) -> bool:
 	var p := _camera.global_position
 	var dx := cx - p.x
 	var dz := cz - p.z
-	var active_r := view_radius + CHUNK_SIZE * 0.5
+	var active_r := collision_radius + CHUNK_SIZE * 0.5
 	return dx * dx + dz * dz <= active_r * active_r
 
 
@@ -722,6 +804,68 @@ func build_from_scene() -> void:
 				failed += 1
 	_rebuild_interactables()
 	print("Vegetation | 从场景重建 %d 株（跳过 %d）" % [placed, failed])
+
+
+## 地形高度改变后，把所有已放置实例重新贴合到新地表。
+##
+## 场景烘焙的 py 是当时的地形高度，地形起伏被重做（或玩家用刷子推土）之后
+## 这些 y 就全部作废 —— 山坡长高会把植被埋进地里，山坡挖低会让植被浮空。
+## 这里按每个实例的模型偏移反推原始放置点，再用当前地形高度重新贴回地表。
+func sync_heights() -> int:
+	if _terrain == null:
+		return 0
+	_ensure_blocks()
+	var moved := 0
+	var off_cache := {}
+	for block in _blocks:
+		var mmis_by_cat: Dictionary = block["mmis"]
+		var counts_by_cat: Dictionary = block["counts"]
+		for cat in mmis_by_cat.keys():
+			var mmis: Array = mmis_by_cat[cat]
+			var counts: Array = counts_by_cat[cat]
+			var models: Array = _category_models[cat]
+			for vi in mmis.size():
+				var n: int = counts[vi]
+				if n <= 0:
+					continue
+				var model_path := str(models[vi])
+				var off: Vector3 = off_cache.get(model_path, Vector3.INF)
+				if off == Vector3.INF:
+					off = _model_place_offset(model_path)
+					off_cache[model_path] = off
+				var mm: MultiMesh = mmis[vi].multimesh
+				# 用 while 而不是 for：河道剔除会在循环里做 O(1) 交换删除
+				var i := 0
+				while i < n:
+					var xf := mm.get_instance_transform(i)
+					var origin := xf.origin
+					# 反推原始放置点（抵消缩放后的模型偏移）
+					var sc := xf.basis.get_scale().x
+					var yaw := xf.basis.get_euler().y
+					var raw := origin - off.rotated(Vector3.UP, yaw) * sc
+					var h := _terrain.get_height_at(raw.x, raw.z)
+					# 河道里的植被要清掉：地形被挖下去以后，原本长在这里的草树会半淹在水里
+					if _terrain.has_method("is_in_river") and _terrain.is_in_river(raw.x, raw.z):
+						# 与末尾元素交换后缩短可见数量（不保留顺序，O(1) 删除）
+						var last := n - 1
+						if i != last:
+							var lxf := mm.get_instance_transform(last)
+							mm.set_instance_transform(i, lxf)
+						n -= 1
+						i -= 1
+						continue
+					if absf(h - raw.y) < 0.005:
+						i += 1          # while 循环必须手动推进，否则原地死循环
+						continue
+					xf.origin = Vector3(raw.x, h, raw.z) + off.rotated(Vector3.UP, yaw) * sc
+					mm.set_instance_transform(i, xf)
+					moved += 1
+					i += 1
+				if n < counts[vi]:
+					counts[vi] = n
+					mm.visible_instance_count = n
+			pass
+	return moved
 
 
 ## 场景自动撒点（铺满全图：每块均匀分配，保证远处也有植被）
@@ -1253,8 +1397,13 @@ func _update_visibility() -> void:
 			var grass_mmis: Array = block["mmis"]["grass"]
 			for gmmi in grass_mmis:
 				(gmmi as MultiMeshInstance3D).visible = _grass_visible
-		# 碰撞流式化：进入视野的块排队补建，离开视野的块立即释放碰撞体
-		if active:
+		# 碰撞流式化：用更小的 collision_radius 决定何时建体。
+		# 视野剔除（渲染）继续用 view_radius，两者必须分开。
+		var cdx := cx - p.x
+		var cdz := cz - p.z
+		var col_r := collision_radius + CHUNK_SIZE * 0.5
+		var near := cdx * cdx + cdz * cdz <= col_r * col_r
+		if near:
 			if not block["col_built"] and not _pending_blocks.has(bi):
 				_pending_blocks.append(bi)
 		elif not (block["col_bodies"] as Array).is_empty():

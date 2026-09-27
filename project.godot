@@ -25,6 +25,7 @@ config/icon="res://icon.svg"
 Game="*res://scripts/game.gd"
 Settings="*res://scripts/settings.gd"
 _mcp_game_helper="*res://addons/godot_ai/runtime/game_helper.gd"
+Weather="*res://scripts/world/weather.gd"
 
 [display]
 
@@ -52,3 +53,26 @@ ui_cancel={
 textures/vram_compression/import_etc2_astc=true
 environment/defaults/default_clear_color=Color(0.62, 0.78, 0.88, 1)
 renderer/anti_aliasing/quality/msaa_3d=1
+
+[shader_globals]
+
+wind_direction={
+"type": "vec2",
+"value": Vector2(1, 0)
+}
+wind_strength={
+"type": "float",
+"value": 0.18
+}
+wind_gust={
+"type": "float",
+"value": 0.15
+}
+wind_speed={
+"type": "float",
+"value": 1.4
+}
+wind_turbulence={
+"type": "float",
+"value": 0.3
+}

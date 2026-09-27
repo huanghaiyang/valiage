@@ -1,0 +1,11 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3]
+
+[ext_resource type="Shader" path="res://assets/shaders/vegetation_wind.gdshader" id="1_wind"]
+
+[resource]
+shader = ExtResource("1_wind")
+shader_parameter/albedo_color = Color(1, 1, 1, 1)
+shader_parameter/roughness = 0.95
+shader_parameter/sway_scale = 0.06
+shader_parameter/bend_bias = 0.35
+shader_parameter/shadow_color = Color(0.32, 0.55, 0.28, 1)

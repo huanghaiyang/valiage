@@ -25,6 +25,35 @@ var brush_strength := 1.2
 var terrain_seed := 20260927
 
 var _noise: FastNoiseLite
+## 大尺度山脊噪声（山脉/丘陵分布）
+var _mountain_noise: FastNoiseLite
+## 中尺度起伏（山体形状）
+var _hill_noise: FastNoiseLite
+## 细节噪声（草坡纹理，幅度很小）
+var _detail_noise: FastNoiseLite
+## 面片色彩变化噪声（低多边形手绘感；平滑变化，绝不能按网格坐标取，否则是棋盘格）
+var _facet_noise: FastNoiseLite
+## 河流中心线（world XZ 折线）。generate() 时按此开挖河道并生成水面。
+var river_points: PackedVector2Array = PackedVector2Array()
+## 每段的包围盒（minx, minz, maxx, maxz），用来快速跳过远离河流的格子。
+## 没有这个缓存时光是 1024² 次折线距离计算就要 6 秒。
+var _river_boxes: PackedVector4Array = PackedVector4Array()
+## 河面高度（低于两岸、高于河床）
+var river_level := 0.0
+## 水面网格实例
+var river_mesh: MeshInstance3D = null
+## 河底碰撞体
+var river_collision: StaticBody3D = null
+
+## 河流参数：半宽（水面宽度的一半）、河床比水面低多少、两岸过渡带宽度
+## 12m 宽的水面从地面看才有河的分量；先前 10.4m 且过渡带太窄，看着像水沟。
+const RIVER_HALF_WIDTH := 6.0
+const RIVER_BED_DROP := 1.8
+## 过渡带要够宽，河岸才会是缓坡而不是台阶
+const RIVER_BANK := 10.0
+## 河面高度：谷底 h=0.40，水面比谷底低 0.95 —— 河道是下沉的，
+## 从岸上看得到水，但水不会漫到草地上。
+const RIVER_LEVEL := -0.55
 
 var _mesh_dirty := false
 var _collision_dirty := false
@@ -51,6 +80,33 @@ func _init() -> void:
 	_noise.fractal_gain = 0.5
 	_noise.fractal_lacunarity = 2.0
 	_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	# 山脉：极低频、多倍频，形成连片山脊而不是孤立土包
+	_mountain_noise = FastNoiseLite.new()
+	_mountain_noise.seed = terrain_seed + 101
+	_mountain_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	_mountain_noise.frequency = 0.0026
+	_mountain_noise.fractal_octaves = 5
+	_mountain_noise.fractal_gain = 0.5
+	_mountain_noise.fractal_lacunarity = 2.1
+	# 丘陵：中频，决定近处草坡的起伏
+	_hill_noise = FastNoiseLite.new()
+	_hill_noise.seed = terrain_seed + 202
+	_hill_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	_hill_noise.frequency = 0.0042
+	_hill_noise.fractal_octaves = 4
+	_hill_noise.fractal_gain = 0.45
+	# 细节：幅度压得很小，只做草坡表面的轻微起伏
+	_detail_noise = FastNoiseLite.new()
+	_detail_noise.seed = terrain_seed + 303
+	_detail_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	_detail_noise.frequency = 0.02
+	_detail_noise.fractal_octaves = 2
+	# 面片明暗：中低频、单倍频，做柔和的手绘色块起伏
+	_facet_noise = FastNoiseLite.new()
+	_facet_noise.seed = terrain_seed + 404
+	_facet_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	_facet_noise.frequency = 0.05
+	_facet_noise.fractal_octaves = 1
 
 func _ready() -> void:
 	mesh_instance = MeshInstance3D.new()
@@ -74,8 +130,17 @@ func _ready() -> void:
 	# 地形高度图网格绕序可能与默认背面剔除方向相反，开双面渲染确保地面可见
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mat.roughness = 1.0
+	# 中世纪低多边形：逐像素卡通分段光照。
+	# 网格本身是 flat-shaded 面片（每面独立法线），逐像素卡通化后每个面片是一块
+	# 干净色块，明暗界线清楚；之前用 PER_VERTEX 顶点光照会把面片感和层次一起糊掉。
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-	mat.diffuse_mode = BaseMaterial3D.DIFFUSE_LAMBERT
+	mat.diffuse_mode = BaseMaterial3D.DIFFUSE_TOON
+	mat.specular_mode = BaseMaterial3D.SPECULAR_TOON
+	# 注意：Godot 3 的 diffuse_toon_size / diffuse_toon_softness 在 Godot 4
+	# 已经不存在（会打 WARNING: SpatialMaterial remapped parameter not found），
+	# 卡通分段由 DIFFUSE_TOON + SPECULAR_TOON 自动处理。
+	mat.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
+	mat.metallic_specular = 0.0
 	mesh_instance.material_override = mat
 	# 分块网格实例（7×7 块，共享同一材质，刷地只重建受影响块）
 	for ci in CHUNKS * CHUNKS:
@@ -97,45 +162,186 @@ func generate(seed_value: int = -1) -> void:
 			var h := _sample_noise_height(wx, wz)
 			height_map[z * RESOLUTION + x] = h
 			color_map[z * RESOLUTION + x] = _color_for_height(h, wx, wz)
+	_build_river_centerline()
+	_carve_river()
 	rebuild()
+	rebuild_river_mesh()
 
+## 河流中心线：一条从西侧入、东南侧出的蜿蜒河，特意绕开出生点与聚落。
+## 出生点平台半径 18m、聚落清场半径 52m 都在原点附近，河道最近处约 32m。
+func _build_river_centerline() -> void:
+	# 明显的蜿蜒：每 ~90m 摆动 ±35m，才有河的样子而不是一条运河。
+	# 最近处到原点约 34m，仍在聚落清场半径（52m）之外。
+	river_points = PackedVector2Array([
+		Vector2(-450.0, -96.0),
+		Vector2(-372.0, -70.0),
+		Vector2(-300.0, -22.0),
+		Vector2(-232.0, -34.0),
+		Vector2(-166.0, -78.0),
+		Vector2(-104.0, -70.0),
+		Vector2(-56.0, -34.0),
+		Vector2(-6.0, -30.0),
+		Vector2(40.0, -52.0),
+		Vector2(86.0, -96.0),
+		Vector2(136.0, -104.0),
+		Vector2(190.0, -78.0),
+		Vector2(246.0, -92.0),
+		Vector2(304.0, -140.0),
+		Vector2(368.0, -166.0),
+		Vector2(450.0, -196.0),
+	])
+	river_level = RIVER_LEVEL
+	# 预计算每段包围盒（含开挖外扩量）
+	_river_boxes = PackedVector4Array()
+	var pad := RIVER_HALF_WIDTH + RIVER_BANK + 1.0
+	for i in range(river_points.size() - 1):
+		var a := river_points[i]
+		var b := river_points[i + 1]
+		_river_boxes.append(Vector4(
+			minf(a.x, b.x) - pad,
+			minf(a.y, b.y) - pad,
+			maxf(a.x, b.x) + pad,
+			maxf(a.y, b.y) + pad))
+
+
+## 点到河流中心线的最近距离（对折线逐段求投影）
+func _river_distance(wx: float, wz: float) -> float:
+	var best := 1.0e9
+	for i in range(river_points.size() - 1):
+		var a := river_points[i]
+		var b := river_points[i + 1]
+		var ab := b - a
+		var len2 := ab.length_squared()
+		var t := 0.0
+		if len2 > 0.0001:
+			t = clampf(((Vector2(wx, wz) - a).dot(ab)) / len2, 0.0, 1.0)
+		var d := (Vector2(wx, wz) - (a + ab * t)).length()
+		best = minf(best, d)
+	return best
+
+
+## 按中心线开挖河道：河床下沉、两岸平滑过渡，并把河床染成湿泥/卵石色。
+## 必须在 height_map 生成完之后、rebuild() 之前调用。
+func _carve_river() -> void:
+	if height_map.is_empty() or river_points.is_empty():
+		return
+	var inner := RIVER_HALF_WIDTH
+	var outer := RIVER_HALF_WIDTH + RIVER_BANK
+	# 整条河的包围盒：整行/整列在盒外就直接跳过，避免 1024² 次距离计算
+	var bmin_z := 1.0e9
+	var bmax_z := -1.0e9
+	for b in _river_boxes:
+		bmin_z = minf(bmin_z, b.y)
+		bmax_z = maxf(bmax_z, b.w)
+	var z_lo := maxi(0, int(floor((bmin_z + HALF) / CELL)))
+	var z_hi := mini(GRID, int(ceil((bmax_z + HALF) / CELL)))
+	for z in range(z_lo, z_hi + 1):
+		var wz := -HALF + z * CELL
+		# 本行的河段 x 范围
+		var x_lo := 1.0e9
+		var x_hi := -1.0e9
+		for b in _river_boxes:
+			if wz < b.y or wz > b.w:
+				continue
+			x_lo = minf(x_lo, b.x)
+			x_hi = maxf(x_hi, b.z)
+		if x_lo > x_hi:
+			continue
+		var cx_lo := maxi(0, int(floor((x_lo + HALF) / CELL)))
+		var cx_hi := mini(GRID, int(ceil((x_hi + HALF) / CELL)))
+		for x in range(cx_lo, cx_hi + 1):
+			var wx := -HALF + x * CELL
+			var d := _river_distance(wx, wz)
+			if d > outer:
+				continue
+			var idx := z * RESOLUTION + x
+			# 0 = 河心，1 = 过渡带外缘
+			var t := clampf((d - inner) / (outer - inner), 0.0, 1.0)
+			var blend := t * t * (3.0 - 2.0 * t)   # smoothstep
+			var bed := river_level - RIVER_BED_DROP
+			# 河心压到河床，向外平滑回到原地形
+			var h: float = height_map[idx]
+			var target := lerpf(bed, h, blend)
+			# 只下挖不抬升：避免河道在起伏地形上变成一道坝
+			height_map[idx] = minf(h, target)
+			color_map[idx] = _color_for_river(height_map[idx], d, wx, wz)
+
+
+## 河床/河岸配色：水下湿泥 → 卵石滩 → 干草，与地形色带衔接
+func _color_for_river(h: float, d: float, wx: float, wz: float) -> Color:
+	var gravel := Color(0.451, 0.435, 0.396)
+	var wet_mud := Color(0.310, 0.302, 0.243)
+	var shallow := Color(0.392, 0.451, 0.361)
+	if h < river_level - 0.55:
+		return wet_mud
+	if h < river_level + 0.05:
+		return wet_mud.lerp(shallow, clampf((h - (river_level - 0.55)) / 0.6, 0.0, 1.0))
+	if h < river_level + 0.55:
+		return shallow.lerp(gravel, clampf((h - river_level) / 0.55, 0.0, 1.0))
+	# 河岸外缘渐变回草地
+	var grass := _color_for_height(h, wx, wz)
+	return gravel.lerp(grass, clampf((d - RIVER_HALF_WIDTH) / RIVER_BANK, 0.0, 1.0))
+
+
+## 地形高度：中世纪山谷
+##
+## 布局：中央是平坦的聚落谷地（h≈0.4m，与场景烘焙的建筑/平台高度一致），
+## 向外过渡到起伏草坡，中环是森林丘陵，外环与地图边缘隆起为山脉屏障。
+##
+## 注意：出生点平台、全部建筑、道路都是按 h=0.4m 烘焙进 scenes/main.tscn 的，
+## 所以半径 62m 内的谷底必须严格保持 0.4m；山体从 62m 外才开始抬升。
 func _sample_noise_height(wx: float, wz: float) -> float:
-	# 大尺度区域噪声：划分开阔平原带与低矮丘陵带（参考复古战棋大地图的分层地形）
-	var region := _noise.get_noise_2d(wx * 0.0022 + 31.7, wz * 0.0022 + 31.7)
-	var hill_w := smoothstep(-0.55, 0.75, region)
-	var h := _noise.get_noise_2d(wx, wz)
-	# 平原带起伏平缓（开阔草地），丘陵带起伏明显（低矮丘陵），振幅随区域权重过渡
-	var amp := lerpf(0.35, 1.25, hill_w)
-	# 边缘压低，形成山谷盆地感；整体压低起伏，避免地形起伏掩盖建筑
-	var edge := clampf(1.0 - (absf(wx) / HALF + absf(wz) / HALF) * 0.5, 0.0, 1.0)
-	return h * amp * edge + 0.4
+	const PLAIN := 0.40
+	# 到地图中心的径向距离（归一化到 0..1，1 = 地图边缘中点）
+	var r := sqrt(wx * wx + wz * wz) / HALF
+	# 谷底压平：62m 内完全平地，到 150m 平滑过渡到自然起伏
+	var flat := smoothstep(62.0, 150.0, r * HALF)
+	# 山脊权重：山噪声大于 0.04 的地方起山，越靠边越容易起山
+	var m := _mountain_noise.get_noise_2d(wx, wz)
+	m = m * lerpf(0.65, 1.45, clampf(r * 1.15, 0.0, 1.0))
+	var ridge := smoothstep(0.04, 0.72, m)
+	# 边缘抬升：接近地图边界时整体抬高，形成合围的山脉屏障
+	var rim := smoothstep(240.0, 452.0, r * HALF)
+	var hills := (_hill_noise.get_noise_2d(wx, wz) * 0.5 + 0.5) * 5.2
+	var mountains := pow(ridge, 1.8) * 52.0 + rim * rim * 38.0
+	var detail := _detail_noise.get_noise_2d(wx, wz) * 0.32
+	return PLAIN + flat * (hills + mountains + detail)
 
+## 中世纪低多边形配色：按海拔 + 坡度 + 斑块分层，色带干净不脏。
+##
+## 分带（对应 _sample_noise_height 的地貌）：
+##   < 1.2   谷地草地   明亮草绿，聚落所在
+##   1.2~6   缓坡草甸   偏黄绿的干草色
+##   6~22    森林土坡   土棕 + 苔绿混合
+##   22~42   裸岩高地   冷灰岩
+##   > 42    山顶       积雪白，只在地图边缘山脉出现
 func _color_for_height(h: float, wx: float, wz: float) -> Color:
-	# 黄绿混染做旧配色（复古战棋大地图）：低处深橄榄绿湿地，中部黄绿草地，高处橄榄黄丘陵
-	var c := Color(0.48, 0.58, 0.14)
-	if h < 0.35:
-		c = Color(0.32, 0.42, 0.16)
-	elif h < 0.9:
-		c = Color(0.48, 0.58, 0.14)
-	elif h < 1.5:
-		c = Color(0.62, 0.62, 0.14)
+	var c: Color
+	if h < 1.2:
+		c = Color(0.298, 0.478, 0.235)          # 谷地草地（饱和偏深的草绿）
+	elif h < 7.0:
+		c = Color(0.298, 0.478, 0.235).lerp(Color(0.427, 0.533, 0.259), smoothstep(1.2, 7.0, h))
+	elif h < 24.0:
+		c = Color(0.427, 0.533, 0.259).lerp(Color(0.310, 0.365, 0.212), smoothstep(7.0, 24.0, h))
+	elif h < 52.0:
+		c = Color(0.310, 0.365, 0.212).lerp(Color(0.451, 0.439, 0.404), smoothstep(24.0, 52.0, h))
+	elif h < 68.0:
+		c = Color(0.451, 0.439, 0.404).lerp(Color(0.573, 0.573, 0.573), smoothstep(52.0, 68.0, h))
 	else:
-		c = Color(0.64, 0.68, 0.22)
-	# 岩石点缀：高海拔区域出现灰岩（暖灰，融入做旧色调）
-	var rock_n := _noise.get_noise_2d(wx * 1.6 + 7.0, wz * 1.6 + 7.0)
-	if h > 1.6 and rock_n > 0.28:
-		c = c.lerp(Color(0.60, 0.60, 0.52), clampf((rock_n - 0.28) * 2.2, 0.0, 0.75))
-	# 草地斑块：低频噪声产生亮黄绿草色变化（参考图草灌铺底的明暗斑驳）
-	var patch := _noise.get_noise_2d(wx * 0.3 + 50.0, wz * 0.3 + 50.0)
-	if patch > 0.35:
-		c = c.lerp(Color(0.56, 0.66, 0.16), clampf((patch - 0.35) * 1.8, 0.0, 0.45))
-	# 边缘暗化：接近地图边界时压暗（参考图边缘深灰云雾的未探索感）
-	var edgef := clampf(1.0 - (absf(wx) / HALF + absf(wz) / HALF) * 0.5, 0.0, 1.0)
-	if edgef < 0.8:
-		c = c.lerp(Color(0.24, 0.30, 0.20), minf((0.8 - edgef) * 1.8, 0.85))
-	# 轻微做旧噪声扰动（暖黄倾向），避免单调
-	var jitter := _noise.get_noise_2d(wx * 2.0 + 100.0, wz * 2.0 + 100.0) * 0.03
-	c.r += jitter; c.g += jitter * 0.8; c.b += jitter * 0.3
+		c = Color(0.573, 0.573, 0.573).lerp(Color(0.902, 0.925, 0.949), smoothstep(68.0, 88.0, h))
+	# 草甸斑块：两层不同频率的噪声叠加，做出细碎的草色变化而不是大色块
+	var p1 := _detail_noise.get_noise_2d(wx * 0.6 + 11.0, wz * 0.6 + 11.0)
+	var p2 := _hill_noise.get_noise_2d(wx * 2.2 + 90.0, wz * 2.2 + 90.0)
+	if h < 10.0:
+		var pv := p1 * 0.55 + p2 * 0.45
+		if pv > 0.2:
+			c = c.lerp(Color(0.451, 0.596, 0.278), clampf((pv - 0.2) * 1.3, 0.0, 0.30))
+		elif pv < -0.22:
+			c = c.lerp(Color(0.235, 0.396, 0.243), clampf((-pv - 0.22) * 1.4, 0.0, 0.30))
+	# 裸岩露头：陡坡/高处按噪声点缀岩石色
+	var rock_n := _noise.get_noise_2d(wx * 0.9 + 7.0, wz * 0.9 + 7.0)
+	if h > 12.0 and rock_n > 0.10:
+		c = c.lerp(Color(0.478, 0.463, 0.435), clampf((rock_n - 0.10) * 1.9, 0.0, 0.85))
 	return c
 
 ## 获取指定世界坐标的地形高度（含插值）
@@ -201,7 +407,7 @@ func apply_brush(world_pos: Vector3, radius: float, delta: float) -> void:
 			var idx := z * RESOLUTION + x
 			var new_h := height_map[idx] + delta * falloff
 			# 无限下陷：下限放宽到 -100m（上限 8m 防飞天），可挖出任意深坑
-			height_map[idx] = clampf(new_h, -100.0, 8.0)
+			height_map[idx] = clampf(new_h, -100.0, 60.0)
 			color_map[idx] = _color_for_height(height_map[idx], wx, wz)
 	# 轻量局部平滑：抹平抬升叠加产生的"山尖尖"，让地形变化圆润
 	_smooth_region(start_x, end_x, start_z, end_z)
@@ -290,7 +496,29 @@ func rebuild_mesh_around(center: Vector3, radius: float) -> void:
 			_build_chunk(cbx, cbz)
 
 ## 构建单个网格块（批量数组构造 + 中心差分法线）
+## 面片色彩微调：按世界坐标做**平滑**噪声采样。
+##
+## 曾经按网格下标 (x,z) 做 hash 取随机明度 —— 结果每格独立随机，
+## 从天上/远处看就是一整片规则的**棋盘格**。改成噪声场后才是柔和的手绘色块。
+## 幅度也必须小：±6% 明度 + ±3% 冷暖，只是打散大平面，不能变成花纹。
+## x = 明度系数，y = 冷暖偏移(-0.5..0.5)
+func _facet_variation(wx: float, wz: float) -> Vector2:
+	var n := _facet_noise.get_noise_2d(wx, wz)
+	var m := _facet_noise.get_noise_2d(wx + 137.0, wz - 91.0)
+	return Vector2(1.0 + clampf(n, -1.0, 1.0) * 0.06, clampf(m, -1.0, 1.0) * 0.5)
+
+
+## 按面片系数微调一个顶点色：明度缩放 + 极轻的冷暖偏移
+func _facet_tint(c: Color, scale: float, warm: float) -> Color:
+	return Color(
+		clampf(c.r * scale * (1.0 + warm * 0.03), 0.0, 1.0),
+		clampf(c.g * scale, 0.0, 1.0),
+		clampf(c.b * scale * (1.0 - warm * 0.03), 0.0, 1.0),
+		c.a)
+
+
 func _build_chunk(cbx: int, cbz: int) -> void:
+
 	var x_start := cbx * CHUNK_GRID
 	var z_start := cbz * CHUNK_GRID
 	var x_end := x_start + CHUNK_GRID
@@ -319,6 +547,17 @@ func _build_chunk(cbx: int, cbz: int) -> void:
 			var n := Vector3(-dh_dx, 1.0, -dh_dz).normalized()
 			var c00 := color_map[i00]; var c10 := color_map[i10]
 			var c01 := color_map[i01]; var c11 := color_map[i11]
+			# 低多边形手绘感：每个面片按网格坐标做一次确定性微调（明度 + 轻微冷暖偏移）。
+			# 网格本身是 flat-shaded，整面同色，所以这点面片级差异就能把一大片死绿
+			# 打散成手绘色块拼贴的观感 —— 这是 poly 风格最关键的廉价技巧。
+			# 用 hash 而不是随机数：同一坐标每次重建得到同一颜色，刷地重建不会闪烁。
+			# 每个顶点取自己位置上的噪声值：平滑过渡，又保留面片内的细微差异
+			var f00 := _facet_variation(p00.x, p00.z)
+			var f10 := _facet_variation(p10.x, p10.z)
+			var f01 := _facet_variation(p01.x, p01.z)
+			var f11 := _facet_variation(p11.x, p11.z)
+			c00 = _facet_tint(c00, f00.x, f00.y); c10 = _facet_tint(c10, f10.x, f10.y)
+			c01 = _facet_tint(c01, f01.x, f01.y); c11 = _facet_tint(c11, f11.x, f11.y)
 			verts[vi] = p00; norms[vi] = n; cols[vi] = c00; vi += 1
 			verts[vi] = p01; norms[vi] = n; cols[vi] = c01; vi += 1
 			verts[vi] = p10; norms[vi] = n; cols[vi] = c10; vi += 1
@@ -333,6 +572,98 @@ func _build_chunk(cbx: int, cbz: int) -> void:
 	var m := ArrayMesh.new()
 	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	chunk_meshes[cbz * CHUNKS + cbx].mesh = m
+
+## 某个世界坐标是否落在河里（用于把植被从河道里清掉）
+func is_in_river(wx: float, wz: float) -> bool:
+	if river_points.is_empty():
+		return false
+	return _river_distance(wx, wz) < RIVER_HALF_WIDTH - 0.3
+
+
+## 水面：沿中心线扫出的带状网格，顶面在 river_level。
+## 单独一个 MeshInstance3D（不参与地形 chunk 重建），材质是流动的水着色器。
+func rebuild_river_mesh() -> void:
+	if river_points.size() < 2:
+		return
+	if river_mesh == null:
+		river_mesh = MeshInstance3D.new()
+		river_mesh.name = "River"
+		add_child(river_mesh)
+	var verts := PackedVector3Array()
+	var norms := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var indices := PackedInt32Array()
+	var run := 0.0
+	var prev := Vector3.ZERO
+	for i in river_points.size():
+		var p := river_points[i]
+		# 切线方向：相邻点差分，端点取单侧
+		var t0 := river_points[maxi(i - 1, 0)]
+		var t1 := river_points[mini(i + 1, river_points.size() - 1)]
+		var tangent := (t1 - t0).normalized()
+		var side := Vector2(-tangent.y, tangent.x)
+		var w := RIVER_HALF_WIDTH * 0.97
+		var l := Vector2(p.x, p.y) - side * w
+		var r := Vector2(p.x, p.y) + side * w
+		var cur := Vector3(p.x, river_level, p.y)
+		if i > 0:
+			run += cur.distance_to(prev)
+		prev = cur
+		verts.append(Vector3(l.x, river_level, l.y))
+		verts.append(Vector3(r.x, river_level, r.y))
+		norms.append(Vector3.UP)
+		norms.append(Vector3.UP)
+		uvs.append(Vector2(0.0, run * 0.06))
+		uvs.append(Vector2(1.0, run * 0.06))
+	for i in river_points.size() - 1:
+		var b := i * 2
+		indices.append(b); indices.append(b + 1); indices.append(b + 2)
+		indices.append(b + 1); indices.append(b + 3); indices.append(b + 2)
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = norms
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var m := ArrayMesh.new()
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mat := ShaderMaterial.new()
+	mat.shader = load("res://assets/shaders/river_water.gdshader")
+	mat.set_shader_parameter("water_color", Color(0.153, 0.353, 0.404))
+	mat.set_shader_parameter("deep_color", Color(0.067, 0.192, 0.251))
+	m.surface_set_material(0, mat)
+	river_mesh.mesh = m
+	river_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# 水面碰撞：沿中心线铺一排薄盒子，顶面刚好在河面下方一点点。
+	# 玩家走进去会站在水里（不会被水挡住），掉下去也有底。
+	_rebuild_river_collision()
+
+
+## 水底碰撞：每条河段一个薄长方体，避免玩家掉进河道后穿到地图下面。
+func _rebuild_river_collision() -> void:
+	if river_collision != null and is_instance_valid(river_collision):
+		river_collision.queue_free()
+	river_collision = StaticBody3D.new()
+	river_collision.name = "RiverBed"
+	river_collision.collision_layer = 2
+	river_collision.collision_mask = 0
+	add_child(river_collision)
+	for i in range(river_points.size() - 1):
+		var a := river_points[i]
+		var b := river_points[i + 1]
+		var len := a.distance_to(b)
+		if len < 0.01:
+			continue
+		var mid := (a + b) * 0.5
+		var cs := CollisionShape3D.new()
+		var box := BoxShape3D.new()
+		box.size = Vector3(RIVER_HALF_WIDTH * 2.0, 1.0, len + 1.0)
+		cs.shape = box
+		cs.position = Vector3(mid.x, river_level - 0.5, mid.y)
+		var ang := atan2(b.x - a.x, b.y - a.y)
+		cs.rotation = Vector3(0.0, ang, 0.0)
+		river_collision.add_child(cs)
+
 
 ## 重建地形碰撞（内联双线性采样；采样间隔 2m，碰撞体 XZ 放大 2 倍覆盖 900m，Y 不变）
 func rebuild_collision() -> void:

@@ -14,6 +14,10 @@ extends Node3D
 @onready var ui: CanvasLayer = $UI
 @onready var _minimap: CanvasLayer = $Minimap
 var _hint_timer := 0.0            # 家具互动提示节流
+var _capture_aerial := false      # 调试截图：俯视全景
+var _capture_free := false        # 调试截图：--cam=x,y,z --look=x,y,z 自由机位
+var _capture_cam := Vector3.ZERO
+var _capture_look := Vector3.ZERO
 
 # 预览节点（结构在场景中，材质为可复用资源）
 @onready var preview_wall: MeshInstance3D = $PreviewWall
@@ -63,6 +67,8 @@ func _ready() -> void:
 	_setup_ui()
 	_setup_input_actions()
 	vegetation.set_camera(camera_rig.camera)
+	# 天气系统：绑定太阳/环境/雨，并订阅相机跟随
+	Weather.bind_world(sun, env, self, vegetation.wind_materials())
 	Game.world = self
 	Settings.world_environment = env
 	Settings.vegetation_root = vegetation
@@ -70,9 +76,27 @@ func _ready() -> void:
 	print("World | 场景组装 平台=%d 建筑=%d 道路=%d 清场=%d 出生点=%s 地形=%dms"
 			% [report["platforms"], report["buildings"], report["roads"],
 			report["clear_zones"], str(report["spawn"]), report["generated_ms"]])
+	# 命令行指定初始天气：--weather=0..5（配合 --capture 做截图验证）
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--weather="):
+			var k := int(a.split("=")[1])
+			if k >= 0 and k < Weather.KIND_NAMES.size():
+				Weather.auto_change = false
+				Weather.set_weather(k, true)
+				print("Weather | 启动指定 -> %s (wind=%.2f)" % [Weather.weather_name(), Weather.wind])
 	# 调试截图模式：渲染稳定后保存画面并退出
 	if "--capture" in OS.get_cmdline_user_args():
 		_capture_frames = 90
+		_capture_aerial = "--aerial" in OS.get_cmdline_user_args()
+		for a in OS.get_cmdline_user_args():
+			if a.begins_with("--cam="):
+				_capture_free = true
+				_capture_cam = _parse_vec3(a.split("=")[1])
+			if a.begins_with("--look="):
+				_capture_look = _parse_vec3(a.split("=")[1])
+		if "--no-ui" in OS.get_cmdline_user_args():
+			ui.visible = false
+			_minimap.visible = false
 
 func _process(delta: float) -> void:
 	# 拖拽预览跟随准星持续更新（第一人称下相机在移动）
@@ -95,13 +119,45 @@ func _process(delta: float) -> void:
 			pass    # 模型切换提示优先显示，短暂保留
 		else:
 			_update_interact_hint()
+	# 雨盒跟随相机
+	Weather.follow_camera(camera_rig.camera)
 	if _capture_frames > 0:
+		_apply_capture_view()
 		_capture_frames -= 1
 		if _capture_frames == 0:
 			var img := get_viewport().get_texture().get_image()
 			if img != null:
-				img.save_png("res://screenshot_check.png")
+				# 写到 user://：独立进程里 res:// 可能不可写，且 user:// 路径固定可查
+				var out_path := "user://screenshot_check.png"
+				for a in OS.get_cmdline_user_args():
+					if a.begins_with("--out="):
+						out_path = "user://%s" % a.split("=")[1]
+				var err := img.save_png(out_path)
+				print("Capture | 已保存 %s err=%d abs=%s" % [out_path, err, ProjectSettings.globalize_path(out_path)])
 			get_tree().quit()
+
+## 解析 --cam=x,y,z / --look=x,y,z
+func _parse_vec3(t: String) -> Vector3:
+	var p: PackedStringArray = t.split(",")
+	if p.size() < 3:
+		return Vector3.ZERO
+	return Vector3(float(p[0]), float(p[1]), float(p[2]))
+
+
+## 调试截图：俯视全景（--aerial）或自由机位（--cam/--look）
+func _apply_capture_view() -> void:
+	if not _capture_aerial and not _capture_free:
+		return
+	camera_rig.interact_freeze = true
+	if _capture_aerial:
+		camera.global_position = Vector3(0.0, 430.0, 480.0)
+		camera.look_at(Vector3(0.0, 0.0, 40.0), Vector3.UP)
+		camera.fov = 58.0
+	else:
+		camera.global_position = _capture_cam
+		if _capture_look != _capture_cam:
+			camera.look_at(_capture_look, Vector3.UP)
+
 
 func _setup_ui() -> void:
 	# UI 层在场景中声明（含脚本），这里只注入主场景引用
@@ -214,6 +270,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.keycode == KEY_E:
 			_try_interact()
 			return
+		if event.keycode == KEY_V:
+			_cycle_weather()
+			return
 
 	# 第一人称：仅在鼠标捕获时响应左键搭建
 	if not camera_rig.is_mouse_captured():
@@ -231,6 +290,17 @@ func _unhandled_input(event: InputEvent) -> void:
 			_begin_tool()
 		elif event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
 			_end_tool()
+
+## V 键：按顺序切换天气（晴朗 → 多云 → 阴天 → 小雨 → 雷雨 → 大风）
+## 切换立即生效（force），并暂停自动天气一段时间，方便观察风摇效果。
+func _cycle_weather() -> void:
+	var n := Weather.KIND_NAMES.size()
+	var next: int = (Weather.target + 1) % n
+	Weather.set_weather(next, true)
+	ui.show_interact_hint("天气：%s · 风力 %.2f · 风向 %s"
+		% [Weather.weather_name(), Weather.wind, str(Weather.wind_dir)])
+	_variant_hint_time = 1.6
+	print("Weather | 手动切换 -> %s (wind=%.2f)" % [Weather.weather_name(), Weather.wind])
 
 ## ---------- 家具互动（E 键触发） ----------
 
