@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode cull_disabled, depth_draw_always, diffuse_toon, specular_disabled, fog_disabled;
+render_mode cull_disabled, diffuse_toon, specular_disabled, fog_disabled;
 
 // ============================================================
 // 河流水面（低多边形风格）
@@ -7,12 +7,12 @@ render_mode cull_disabled, depth_draw_always, diffuse_toon, specular_disabled, f
 // 颜色偏青绿，与谷地草绿形成对比但不过饱和（中世纪做旧色调）。
 // ============================================================
 
-uniform vec3 water_color : source_color = vec3(0.153, 0.353, 0.404);
-uniform vec3 deep_color : source_color = vec3(0.067, 0.192, 0.251);
+uniform vec3 water_color : source_color = vec3(0.239, 0.475, 0.541);
+uniform vec3 deep_color : source_color = vec3(0.098, 0.278, 0.333);
 uniform vec3 crest_color : source_color = vec3(0.639, 0.784, 0.804);
 uniform float flow_speed = 0.35;      // 沿 UV.y（流向）滚动速度
 uniform float wave_scale = 3.0;       // 波纹密度
-uniform float alpha : hint_range(0.0, 1.0) = 0.86;
+uniform float alpha : hint_range(0.0, 1.0) = 0.68;   // 半透明：能看见水下河床
 
 float hash(vec2 p) {
 	p = fract(p * vec2(123.34, 456.21));

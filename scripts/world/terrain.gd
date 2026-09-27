@@ -48,7 +48,10 @@ var river_collision: StaticBody3D = null
 ## 河流参数：半宽（水面宽度的一半）、河床比水面低多少、两岸过渡带宽度
 ## 12m 宽的水面从地面看才有河的分量；先前 10.4m 且过渡带太窄，看着像水沟。
 const RIVER_HALF_WIDTH := 6.0
-const RIVER_BED_DROP := 1.8
+## 河床比水面低多少。不能太深：旧值 1.8 时水下还有一层河底碰撞板，
+## 角色一旦进去就会被夹在地形与这块板之间出不来（试玩实测卡死）。
+## 现在把河道做成可以踚过去的浅滩：水深约 0.8m，角色站得住、走得动。
+const RIVER_BED_DROP := 0.8
 ## 过渡带要够宽，河岸才会是缓坡而不是台阶
 const RIVER_BANK := 10.0
 ## 河面高度：谷底 h=0.40，水面比谷底低 0.95 —— 河道是下沉的，
@@ -269,18 +272,22 @@ func _carve_river() -> void:
 
 ## 河床/河岸配色：水下湿泥 → 卵石滩 → 干草，与地形色带衔接
 func _color_for_river(h: float, d: float, wx: float, wz: float) -> Color:
-	var gravel := Color(0.451, 0.435, 0.396)
-	var wet_mud := Color(0.310, 0.302, 0.243)
-	var shallow := Color(0.392, 0.451, 0.361)
+	var gravel := Color(0.478, 0.463, 0.412)
+	var wet_mud := Color(0.333, 0.302, 0.239)
+	var shallow := Color(0.416, 0.478, 0.365)
+	var sand := Color(0.573, 0.533, 0.435)
 	if h < river_level - 0.55:
 		return wet_mud
 	if h < river_level + 0.05:
 		return wet_mud.lerp(shallow, clampf((h - (river_level - 0.55)) / 0.6, 0.0, 1.0))
-	if h < river_level + 0.55:
-		return shallow.lerp(gravel, clampf((h - river_level) / 0.55, 0.0, 1.0))
-	# 河岸外缘渐变回草地
+	if h < river_level + 0.9:
+		# 水线以上是一条明显的浅色卵石/沙岸，把水与草分开
+			return shallow.lerp(sand, clampf((h - river_level) / 0.9, 0.0, 1.0))
+	# 岸边：沙色 → 卵石 → 草地，过渡带给足宽度
+	var t := clampf((d - RIVER_HALF_WIDTH) / maxf(1.0, RIVER_BANK * 0.55), 0.0, 1.0)
+	var shore := sand.lerp(gravel, clampf(t * 1.6, 0.0, 1.0))
 	var grass := _color_for_height(h, wx, wz)
-	return gravel.lerp(grass, clampf((d - RIVER_HALF_WIDTH) / RIVER_BANK, 0.0, 1.0))
+	return shore.lerp(grass, clampf((t - 0.45) / 0.55, 0.0, 1.0))
 
 
 ## 地形高度：中世纪山谷
@@ -589,36 +596,68 @@ func rebuild_river_mesh() -> void:
 		river_mesh = MeshInstance3D.new()
 		river_mesh.name = "River"
 		add_child(river_mesh)
+
+	# ---- 1. 把折线超采样成平滑曲线 ----
+	# 直接拿控制点扫带状网格的话，转弯处采样太稀 —— 直边切过弯道，
+	# 水面会露出硬邦邦的折线边界（试玩截图里非常明显）。
+	var pts := _river_polyline(6)
+	var n := pts.size()
+
+	# ---- 2. 已开挖河道的真实半宽：由地形高度场反查，而不是假定等于 RIVER_HALF_WIDTH ----
+	# 地形是按 smoothstep(d) 开挖的，d 处河床高度 = lerp(bed, 原高, blend)。
+	# 这里取"地面刚好回到水面高度"的那个 d 作为水面半宽，水面就永远盖住河床。
+	var w_sum := 0.0
+	for i in n:
+		w_sum += _river_bed_halfwidth_at(pts[i])
+	var half_w := w_sum / float(maxi(1, n))
+
 	var verts := PackedVector3Array()
 	var norms := PackedVector3Array()
 	var uvs := PackedVector2Array()
 	var indices := PackedInt32Array()
 	var run := 0.0
 	var prev := Vector3.ZERO
-	for i in river_points.size():
-		var p := river_points[i]
-		# 切线方向：相邻点差分，端点取单侧
-		var t0 := river_points[maxi(i - 1, 0)]
-		var t1 := river_points[mini(i + 1, river_points.size() - 1)]
-		var tangent := (t1 - t0).normalized()
+	for i in n:
+		var p: Vector2 = pts[i]
+		var t0: Vector2 = pts[maxi(i - 1, 0)]
+		var t1: Vector2 = pts[mini(i + 1, n - 1)]
+		var tangent := (t1 - t0)
+		if tangent.length_squared() < 0.000001:
+			tangent = Vector2.RIGHT
+		tangent = tangent.normalized()
 		var side := Vector2(-tangent.y, tangent.x)
-		var w := RIVER_HALF_WIDTH * 0.97
-		var l := Vector2(p.x, p.y) - side * w
-		var r := Vector2(p.x, p.y) + side * w
 		var cur := Vector3(p.x, river_level, p.y)
 		if i > 0:
 			run += cur.distance_to(prev)
 		prev = cur
-		verts.append(Vector3(l.x, river_level, l.y))
-		verts.append(Vector3(r.x, river_level, r.y))
-		norms.append(Vector3.UP)
-		norms.append(Vector3.UP)
-		uvs.append(Vector2(0.0, run * 0.06))
-		uvs.append(Vector2(1.0, run * 0.06))
-	for i in river_points.size() - 1:
-		var b := i * 2
-		indices.append(b); indices.append(b + 1); indices.append(b + 2)
-		indices.append(b + 1); indices.append(b + 3); indices.append(b + 2)
+		# 水面横向铺到 half_w，边缘再抬高一点点做出一层薄岸，遮住硬边
+		for k in 3:
+			var off: float
+			var lift: float
+			match k:
+				0:
+					off = -half_w
+					lift = 0.0
+				1:
+					off = 0.0
+					lift = 0.0
+				_:
+					off = half_w
+					lift = 0.0
+			var q := p + side * off
+			verts.append(Vector3(q.x, river_level + lift, q.y))
+			norms.append(Vector3.UP)
+			uvs.append(Vector2(float(k) * 0.5, run * 0.05))
+	for i in n - 1:
+		var b := i * 3
+		for k in 2:
+			indices.append(b + k)
+			indices.append(b + k + 1)
+			indices.append(b + 3 + k)
+			indices.append(b + k + 1)
+			indices.append(b + 4 + k)
+			indices.append(b + 3 + k)
+
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
@@ -629,14 +668,63 @@ func rebuild_river_mesh() -> void:
 	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	var mat := ShaderMaterial.new()
 	mat.shader = load("res://assets/shaders/river_water.gdshader")
-	mat.set_shader_parameter("water_color", Color(0.153, 0.353, 0.404))
-	mat.set_shader_parameter("deep_color", Color(0.067, 0.192, 0.251))
+	mat.set_shader_parameter("water_color", Color(0.239, 0.475, 0.541))
+	mat.set_shader_parameter("deep_color", Color(0.098, 0.278, 0.333))
+	mat.set_shader_parameter("alpha", 0.68)
 	m.surface_set_material(0, mat)
 	river_mesh.mesh = m
 	river_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	# 水面碰撞：沿中心线铺一排薄盒子，顶面刚好在河面下方一点点。
-	# 玩家走进去会站在水里（不会被水挡住），掉下去也有底。
-	_rebuild_river_collision()
+	# 不再单独给河底做碰撞：河道是把地形高度图挖下去的，地形 HeightMapShape3D
+	# 本身就提供了河床地面。之前额外铺的一层薄盒子会和地形碰撞重叠成夹层，
+	# 角色一旦进去就卡在板下出不来。
+
+
+## 把控制点折线按每段 subdiv 段做 Catmull-Rom 平滑，返回采样点。
+func _river_polyline(subdiv: int) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	var m := river_points.size()
+	if m < 2:
+		return out
+	for i in range(m - 1):
+		var p0: Vector2 = river_points[maxi(i - 1, 0)]
+		var p1: Vector2 = river_points[i]
+		var p2: Vector2 = river_points[i + 1]
+		var p3: Vector2 = river_points[mini(i + 2, m - 1)]
+		for j in subdiv:
+			var t := float(j) / float(subdiv)
+			var t2 := t * t
+			var t3 := t2 * t
+			var q := 0.5 * ((2.0 * p1)
+					+ (-p0 + p2) * t
+					+ (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+					+ (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
+			out.append(q)
+	out.append(river_points[m - 1])
+	return out
+
+
+## 河道横断面：在离中心线 d 处，地形被挖到的深度。
+## 与原地形高度无关的部分（开挖量）只取决于 d，所以这里用谷底基准估算，
+## 再用它反推"地面重新高过水面"的那个 d，作为水面半宽。
+func _river_bed_halfwidth_at(center: Vector2) -> float:
+	var inner := RIVER_HALF_WIDTH
+	var outer := RIVER_HALF_WIDTH + RIVER_BANK
+	var bed := river_level - RIVER_BED_DROP
+	var plain := 0.40
+	# 逐步外扩找水面与河床的交叉点
+	var lo := inner * 0.5
+	var hi := outer
+	for _k in 24:
+		var mid := (lo + hi) * 0.5
+		var t := clampf((mid - inner) / (outer - inner), 0.0, 1.0)
+		var blend := t * t * (3.0 - 2.0 * t)
+		var h := lerpf(bed, plain, blend)
+		if h < river_level:
+			lo = mid
+		else:
+			hi = mid
+	# 加一点余量盖住 mesh 离散化误差
+	return lo + 0.35
 
 
 ## 水底碰撞：每条河段一个薄长方体，避免玩家掉进河道后穿到地图下面。

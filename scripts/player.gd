@@ -276,11 +276,16 @@ func try_step_up(move_dir: Vector3, force: bool = false) -> bool:
 	if not up.is_empty():
 		return false
 
-	# 抬上去：物理立即上台（保证碰撞正确），模型用视觉偏移"滑"上去
-	global_position = Vector3(
+	# 落点净空检查：抬步是直接 teleport 的，如果落点被夹在两块碰撞体之间
+	# （楔形缝隙），角色会被永久卡死 —— 试玩里实测过。落点不干净就放弃这次抬步。
+	var land := Vector3(
 			origin.x + dir.x * STEP_ADVANCE,
 			step_top.y + 0.02,
 			origin.z + dir.z * STEP_ADVANCE)
+	if not _landing_clear(space, land):
+		return false
+	# 抬上去：物理立即上台（保证碰撞正确），模型用视觉偏移"滑"上去
+	global_position = land
 	last_step_rise = rise
 	_step_cooldown = STEP_COOLDOWN
 	# 根部立即落到台阶顶保证碰撞正确；模型压低 rise，再按缓动曲线收回。
@@ -312,6 +317,19 @@ func visual_height() -> float:
 ## 是否正在抬步缓动中（供相机/动画判断）
 func is_step_smoothing() -> bool:
 	return _step_smooth_dur > 0.0
+
+
+## 抬步落点是否干净：用一个略瘦的胶囊做形状查询，碰到墙就不算干净。
+func _landing_clear(space: PhysicsDirectSpaceState3D, land: Vector3) -> bool:
+	var shape := CapsuleShape3D.new()
+	shape.radius = COLLIDER_RADIUS * 0.85
+	shape.height = maxf(shape.radius * 2.0 + 0.05, COLLIDER_HEIGHT * 0.85)
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = shape
+	q.collision_mask = collision_mask
+	q.exclude = [get_rid()]
+	q.transform = Transform3D(Basis.IDENTITY, land + Vector3(0.0, shape.height * 0.5, 0.0))
+	return space.intersect_shape(q, 1).is_empty()
 
 
 func _cast(space: PhysicsDirectSpaceState3D, from: Vector3, dir: Vector3,

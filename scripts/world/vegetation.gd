@@ -203,6 +203,9 @@ var _collision_nodes: Dictionary = {}
 ## ---- 碰撞流式化：只给视野内的块建碰撞体 ----
 ## 每块待建碰撞的实例描述（懒加载队列），碰撞体随块进出视野创建/释放
 var _pending_blocks: Array = []          # 需要补建碰撞的块下标
+var _requeue_timer := 0                  # 重新排队的节流计数（帧）
+## 上次给队列排序时用的参考位置；玩家离它超过阈值就让排序失效并重排
+var _sort_anchor := Vector3.INF
 var _stream_budget_ms := 12.0            # 每帧用于建碰撞的时间预算（分摊，避免卡顿）
 ## 碰撞体只在这个半径内建。必须**远小于** view_radius：视野 220m 内的块有几十个，
 ## 按 12ms/帧的预算根本追不上玩家前进速度 —— 于是"视野外走进来"的树到了跟前
@@ -444,6 +447,10 @@ func _create_block(bx: int, bz: int) -> Dictionary:
 		# 该块待建/已建的碰撞体：queue 是描述（懒加载），bodies 是已创建实例
 		"col_queue": [],
 		"col_bodies": [],
+		# 已建项永远是 col_queue 的前缀，col_built_n 是前缀长度
+		"col_built_n": 0,
+		# 队列需要按到相机的距离重排（玩家放置会插入队首，导致顺序失效）
+		"col_order_dirty": false,
 		"col_built": false,
 	}
 	for cat in _category_models:
@@ -479,8 +486,12 @@ func _create_block(bx: int, bz: int) -> Dictionary:
 	return block
 
 ## 登记一处需要模型碰撞的实例。
-## immediate=true（玩家放置）时立刻建体，不等帧预算与视野判断——否则放置太快
-## 或所在块恰在视野半径外时，会出现"有的物体没有碰撞"。
+##
+## 碰撞体是**按实例距离**流式建的，不按块。原因：
+## 渲染块 CHUNK_SIZE = 150m，6×6 = 36 块覆盖 900m 地图，于是"块中心"之间隔 225m。
+## 按块中心判断是否在碰撞半径内时，**玩家附近根本没有块中心** —— 全图 9044 条碰撞
+## 队列里只有 1020 条被建出来（相差 8024 条），表现就是"远处的物体走过去没有碰撞"。
+## 现在每条队列项带自己的位置，按到相机的距离排序，只在 collision_radius 内的建体。
 func _queue_collision(cat: String, model_path: String, pos: Vector3, scale: float, yaw: float,
 		immediate := false) -> void:
 	if _blocks.is_empty():
@@ -489,21 +500,27 @@ func _queue_collision(cat: String, model_path: String, pos: Vector3, scale: floa
 	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var bi := bz * _block_n + bx
 	var block: Dictionary = _blocks[bi]
-	(block["col_queue"] as Array).append({
+	var queue: Array = block["col_queue"]
+	queue.append({
 		"cat": cat, "path": model_path, "pos": pos, "scale": scale, "yaw": yaw,
 	})
+	block["col_order_dirty"] = true
 	block["col_built"] = false
 	if immediate:
-		# 玩家放置：同步建体（该块若在视野外，也给它的这一件建上，保证手感一致）
-		_build_one_collision(bi, (block["col_queue"] as Array).size() - 1)
+		# 玩家放置：立刻建体。插到"已建前缀"的下一位，保证已建项永远是队列前缀。
+		var idx := int(block["col_built_n"])
+		queue.insert(idx, queue[queue.size() - 1])
+		queue.remove_at(queue.size() - 1)
+		block["col_order_dirty"] = true
+		_build_collision_at(bi, idx)
 		return
-	if _is_block_active(bi) or _camera == null:
-		if not _pending_blocks.has(bi):
-			_pending_blocks.append(bi)
+	if not _pending_blocks.has(bi):
+		_pending_blocks.append(bi)
 
 
-## 为某块的队列中指定下标的一项建体（玩家放置用，立即生效）
-func _build_one_collision(bi: int, queue_index: int) -> void:
+## 为某块的队列中指定下标的一项建体（玩家放置用，立即生效）。
+## 已建项必须是队列的**前缀**（_build_prefix 从 0 顺序建），所以这里只能建下一位。
+func _build_collision_at(bi: int, queue_index: int) -> void:
 	if bi < 0 or bi >= _blocks.size():
 		return
 	var block: Dictionary = _blocks[bi]
@@ -511,10 +528,6 @@ func _build_one_collision(bi: int, queue_index: int) -> void:
 	var bodies: Array = block["col_bodies"]
 	if queue_index < 0 or queue_index >= queue.size():
 		return
-	# 该下标若已建过（bodies 与 queue 一一对应），跳过
-	if queue_index < bodies.size():
-		return
-	# 队列中间可能有未建项：先把 [bodies.size(), queue_index] 都建出来
 	while bodies.size() <= queue_index:
 		var idx := bodies.size()
 		var d: Dictionary = queue[idx]
@@ -522,66 +535,159 @@ func _build_one_collision(bi: int, queue_index: int) -> void:
 				d["pos"] as Vector3, float(d["scale"]), float(d["yaw"]))
 		sb.set_meta("veg_block", bi)
 		bodies.append(sb)
+	block["col_built_n"] = bodies.size()
 
 
+## 供"已建前缀"重建：把队列按到相机的位置排序，已建的保持在前。
+## 排序键是到相机的水平距离 —— 先建最近的，玩家往哪走都能优先拿到碰撞。
+func _resort_block_queue(bi: int) -> void:
+	var block: Dictionary = _blocks[bi]
+	var queue: Array = block["col_queue"]
+	var built := int(block["col_built_n"])
+	if queue.size() <= 1:
+		block["col_order_dirty"] = false
+		return
+	var p := _collision_anchor()
+	# 只对未建部分排序：已建的是前缀，打乱它们会破坏 bodies 与 queue 的对应关系
+	var head: Array = queue.slice(0, built)
+	var tail: Array = queue.slice(built)
+	tail.sort_custom(func(a, b):
+		var pa: Vector3 = a["pos"]
+		var pb: Vector3 = b["pos"]
+		var da := (pa.x - p.x) * (pa.x - p.x) + (pa.z - p.z) * (pa.z - p.z)
+		var db := (pb.x - p.x) * (pb.x - p.x) + (pb.z - p.z) * (pb.z - p.z)
+		return da < db)
+	block["col_queue"] = head + tail
+	block["col_order_dirty"] = false
+
+
+## 碰撞判断用的参考点：优先相机，其次玩家
+func _collision_anchor() -> Vector3:
+	if _camera != null:
+		return _camera.global_position
+	return Vector3.ZERO
+
+
+## 兼容旧调用：这个块现在需不需要（继续）建碰撞体
 func _is_block_active(bi: int) -> bool:
+	return _block_needs_collision(bi)
+
+
+## 该块里有没有"还没建且进入半径"的项（决定要不要排队建体）
+func _block_needs_collision(bi: int) -> bool:
+	var block: Dictionary = _blocks[bi]
+	var queue: Array = block["col_queue"]
+	var built := int(block["col_built_n"])
+	if built >= queue.size():
+		return false
 	if _camera == null:
 		return true
-	var block: Dictionary = _blocks[bi]
-	var bx := bi % _block_n
-	var bz := bi / _block_n
-	var cx := -_terrain_half + (bx + 0.5) * CHUNK_SIZE
-	var cz := -_terrain_half + (bz + 0.5) * CHUNK_SIZE
-	var p := _camera.global_position
-	var dx := cx - p.x
-	var dz := cz - p.z
-	var active_r := collision_radius + CHUNK_SIZE * 0.5
-	return dx * dx + dz * dz <= active_r * active_r
+	var pos: Vector3 = (queue[built] as Dictionary)["pos"]
+	var p := _collision_anchor()
+	var dx := pos.x - p.x
+	var dz := pos.z - p.z
+	return dx * dx + dz * dz <= collision_radius * collision_radius
 
 
-## 在时间预算内为"已进入视野且尚未建体"的块补建碰撞体
+## 在时间预算内补建碰撞体。
+##
+## 队列按到相机的水平距离排序，"已建"永远是队列的前缀（col_built_n = 前缀长度），
+## 于是 bodies 与 queue 的下标天然一一对应，不需要额外的映射表。
+## 建到第一条超出 collision_radius 的项就停 —— 后面只会更远；
+## 这时**不能**把块标记为"建完"，否则玩家走近时它不会再入队，那些项就永远没有碰撞。
 func _stream_collisions() -> void:
 	if _camera == null or _pending_blocks.is_empty():
 		return
 	var t0 := Time.get_ticks_usec()
+	var p := _collision_anchor()
+	var r2 := collision_radius * collision_radius
 	var remaining: Array = []
-	for bi in _pending_blocks:
-		# 相机已接入后，只给仍在视野内的块建体；否则先释放已建的（若曾预建过）
-		if not _is_block_active(int(bi)):
-			_despawn_block_collisions(int(bi))
-			continue
+	for bi_v in _pending_blocks:
+		var bi := int(bi_v)
 		if (Time.get_ticks_usec() - t0) / 1000.0 >= _stream_budget_ms:
 			remaining.append(bi)
 			continue
-		if _spawn_block_collisions(int(bi)):
-			continue
-		remaining.append(bi)
+		var block: Dictionary = _blocks[bi]
+		if block["col_order_dirty"]:
+			_resort_block_queue(bi)
+		var queue: Array = block["col_queue"]
+		var bodies: Array = block["col_bodies"]
+		while bodies.size() < queue.size():
+			if bodies.size() % 16 == 0 					and (Time.get_ticks_usec() - t0) / 1000.0 >= _stream_budget_ms:
+				break
+			var pos: Vector3 = (queue[bodies.size()] as Dictionary)["pos"]
+			var dx := pos.x - p.x
+			var dz := pos.z - p.z
+			if dx * dx + dz * dz > r2:
+				break
+			var d: Dictionary = queue[bodies.size()]
+			var sb := _make_instance_collision(str(d["cat"]), str(d["path"]),
+					pos, float(d["scale"]), float(d["yaw"]))
+			sb.set_meta("veg_block", bi)
+			bodies.append(sb)
+		block["col_built_n"] = bodies.size()
+		# 只有整条队列都建完才算完成；否则留在待办里等玩家靠近
+		block["col_built"] = bodies.size() >= queue.size()
+		if not block["col_built"]:
+			remaining.append(bi)
 	_pending_blocks = remaining
 
 
-## 建立某块的全部碰撞体；返回 true 表示该块已完成（不再排队）
-func _spawn_block_collisions(bi: int) -> bool:
-	if bi < 0 or bi >= _blocks.size():
-		return true
+## 玩家移动后重排队列并补建。
+##
+## 队列的排序是相对某个位置算的（到相机距离升序），而"已建项"永远是队列前缀。
+## 玩家走远之后这个顺序就失效了：原本排在很后面的近处实例仍在队尾，而建体循环
+## 遇到第一条超出半径的项就停 —— 于是它们永远建不到。实测玩家身边 11.8m 的实例
+## 都没有碰撞体，正是这个原因（远处物体碰撞失效的真因）。
+## 所以一旦玩家移动超过阈值就让所有排序失效，并给队首仍在半径内的块重新排队。
+func _requeue_collision_blocks() -> void:
+	_requeue_timer -= 1
+	if _requeue_timer > 0:
+		return
+	_requeue_timer = 6
+	if _blocks.is_empty():
+		return
+	var p := _collision_anchor()
+	if _sort_anchor == Vector3.INF or p.distance_to(_sort_anchor) > 12.0:
+		_sort_anchor = p
+		for bi in _blocks.size():
+			var b0: Dictionary = _blocks[bi]
+			if (b0["col_bodies"] as Array).size() < (b0["col_queue"] as Array).size():
+				b0["col_order_dirty"] = true
+	for bi in _blocks.size():
+		var block: Dictionary = _blocks[bi]
+		var queue: Array = block["col_queue"]
+		if (block["col_bodies"] as Array).size() >= queue.size():
+			continue
+		if bool(block["col_order_dirty"]) or _block_needs_collision(bi):
+			if not _pending_blocks.has(bi):
+				_pending_blocks.append(bi)
+
+
+## 释放已经离开碰撞半径的已建体（从右往左，保持"已建是前缀"的不变式）
+func _trim_block_collisions(bi: int) -> void:
 	var block: Dictionary = _blocks[bi]
-	if block["col_built"]:
-		return true
-	var t0 := Time.get_ticks_usec()
 	var queue: Array = block["col_queue"]
 	var bodies: Array = block["col_bodies"]
-	while bodies.size() < queue.size():
-		# 每建若干个体检查一次预算，超出就下次继续（块保持未完成）
-		if bodies.size() % 24 == 0 and (Time.get_ticks_usec() - t0) / 1000.0 >= _stream_budget_ms:
-			return false
-		var d: Dictionary = queue[bodies.size()]
-		var cat := str(d["cat"])
-		var sb := _make_instance_collision(cat, str(d["path"]),
-				d["pos"] as Vector3, float(d["scale"]), float(d["yaw"]))
-		sb.set_meta("veg_block", bi)
-		bodies.append(sb)
-		block["col_built"] = false
-	block["col_built"] = true
-	return true
+	if bodies.is_empty():
+		return
+	var p := _collision_anchor()
+	var r2 := collision_radius * collision_radius
+	var n := bodies.size()
+	while n > 0:
+		var pos: Vector3 = (queue[n - 1] as Dictionary)["pos"]
+		var dx := pos.x - p.x
+		var dz := pos.z - p.z
+		if dx * dx + dz * dz <= r2:
+			break
+		var sb: Node = bodies[n - 1]
+		if is_instance_valid(sb):
+			_erase_body_from_block(sb)
+			sb.queue_free()
+		bodies.remove_at(n - 1)
+		n -= 1
+	block["col_built_n"] = bodies.size()
+	block["col_built"] = bodies.size() >= queue.size()
 
 
 ## 释放某块的全部碰撞体（离开视野）
@@ -591,6 +697,7 @@ func _despawn_block_collisions(bi: int) -> void:
 	var block: Dictionary = _blocks[bi]
 	var bodies: Array = block["col_bodies"]
 	if bodies.is_empty():
+		block["col_built_n"] = 0
 		return
 	for sb in bodies:
 		if not is_instance_valid(sb):
@@ -1213,7 +1320,12 @@ func _remove_last(cat: String, hist: Array) -> void:
 		mm.visible_instance_count = counts[vi]
 	_category_total[cat] = maxi(0, _category_total[cat] - 1)
 
-## 丢弃某块中落在圆形范围内的碰撞队列描述（清场/回收后不再补建）
+## 丢弃某块中落在圆形范围内的碰撞队列描述（清场/回收后不再补建）。
+##
+## 注意：队列被裁短时必须同步重建 col_bodies / col_built_n。
+## 裁剪率通常很高（清一个 52m 的村庄会砍掉几百条），而且被裁掉的项里
+## 可能已经有建好的碰撞体 —— 不同步的话下次 _resort_block_queue 会按
+## 残留的 col_built_n 去索引已经变短的队列，直接越界报错。
 func _drop_queued_in_area(center: Vector3, radius: float) -> void:
 	if _blocks.is_empty():
 		return
@@ -1223,16 +1335,34 @@ func _drop_queued_in_area(center: Vector3, radius: float) -> void:
 		var queue: Array = block["col_queue"]
 		if queue.is_empty():
 			continue
+		var bodies: Array = block["col_bodies"]
 		var kept: Array = []
+		var new_bodies: Array = []
+		var i := 0
+		var changed := false
 		for d in queue:
 			var p: Vector3 = (d as Dictionary).get("pos", Vector3.ZERO)
 			var dx := p.x - center.x
 			var dz := p.z - center.z
 			if dx * dx + dz * dz >= r2:
 				kept.append(d)
-		if kept.size() != queue.size():
+				# 这一项之前建过体就一并保留（保持 bodies 与 queue 前缀一一对应）
+				if i < bodies.size():
+					new_bodies.append(bodies[i])
+			else:
+				changed = true
+				# 这一项被丢掉：它若已建体，必须先释放掉
+				if i < bodies.size():
+					var sb: Node = bodies[i]
+					if is_instance_valid(sb):
+						_erase_body_from_block(sb)
+						sb.queue_free()
+			i += 1
+		if changed or kept.size() != queue.size():
 			block["col_queue"] = kept
-			block["col_built"] = false
+			block["col_bodies"] = new_bodies
+			block["col_built_n"] = new_bodies.size()
+			block["col_built"] = new_bodies.size() >= kept.size()
 
 
 ## 把碰撞体从它所属块的登记数组里摘掉
@@ -1371,6 +1501,8 @@ func _process(delta: float) -> void:
 		_update_visibility()
 	# 每帧分摊补建视野内块的碰撞体（与剔除频率解耦，避免一次性卡顿）
 	_stream_collisions()
+	# 玩家走远后，把最近的未建项又进入半径的块重新排队
+	_requeue_collision_blocks()
 
 ## 视野剔除：按块中心到相机的距离，激活 view_radius 内的块。
 ## 同时驱动碰撞流式化：块进入视野补建碰撞体，离开视野释放。
@@ -1397,14 +1529,12 @@ func _update_visibility() -> void:
 			var grass_mmis: Array = block["mmis"]["grass"]
 			for gmmi in grass_mmis:
 				(gmmi as MultiMeshInstance3D).visible = _grass_visible
-		# 碰撞流式化：用更小的 collision_radius 决定何时建体。
-		# 视野剔除（渲染）继续用 view_radius，两者必须分开。
-		var cdx := cx - p.x
-		var cdz := cz - p.z
-		var col_r := collision_radius + CHUNK_SIZE * 0.5
-		var near := cdx * cdx + cdz * cdz <= col_r * col_r
-		if near:
-			if not block["col_built"] and not _pending_blocks.has(bi):
+		# 碰撞流式化：**按实例距离**判断，不按块中心。
+		# 块是 150m 见方，块中心之间隔 225m —— 按块中心判断的话玩家附近根本没有
+		# "活跃块"，全图 9044 条碰撞队列只会建出 1020 条（远处物体没碰撞的真因）。
+		if _block_needs_collision(bi):
+			if not _pending_blocks.has(bi):
 				_pending_blocks.append(bi)
 		elif not (block["col_bodies"] as Array).is_empty():
-			_despawn_block_collisions(bi)
+			# 已建项全部离开碰撞半径：只裁掉远端那些，别整块释放
+			_trim_block_collisions(bi)
