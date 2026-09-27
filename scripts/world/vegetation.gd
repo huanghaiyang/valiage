@@ -187,14 +187,23 @@ var _mushroom_hist: Array = []
 var _stump_hist: Array = []
 var _furniture_hist: Array = []
 var _mountain_hist: Array = []
-var _tree_collision_nodes: Array = []   # 全局顺序，撤销删除最近一棵树的碰撞体
-var _rock_collision_nodes: Array = []   # 全局顺序，撤销删除最近一块石头的碰撞体
-var _furniture_collision_nodes: Array = []
-var _mountain_collision_nodes: Array = []
-var _tree_shapes: Dictionary = {}       # 树模型路径 → 共享 ConcavePolygonShape3D（贴合视觉模型）
-var _rock_shapes: Dictionary = {}       # 石头模型路径 → 共享 ConcavePolygonShape3D（贴合视觉模型）
-var _furniture_shapes: Dictionary = {}
-var _mountain_shapes: Dictionary = {}
+## 各类别的碰撞参数：形状缓存 + 按类别登记的碰撞体
+## 除花草外的所有类别都有模型三角网碰撞（与房屋一致：贴合视觉模型的多面体）
+const COLLISION_CATEGORIES := ["tree", "bush", "rock", "mushroom", "stump", "furniture", "mountain"]
+const COLLISION_LAYER := 8              # collision_mask 2|4|8 中的第 3 层（建筑/植被层）
+
+## 形状缓存：{cat: {model_path: ConcavePolygonShape3D}}
+var _shape_cache: Dictionary = {}
+## 模型局部 AABB 与放置偏移缓存（每模型一份，视觉与碰撞共用同一偏移）
+var _model_aabb_cache: Dictionary = {}
+var _model_offset_cache: Dictionary = {}
+## 已放置碰撞体：{cat: Array[StaticBody3D]}，与实例一一对应（顺序按类别）
+var _collision_nodes: Dictionary = {}
+
+## ---- 碰撞流式化：只给视野内的块建碰撞体 ----
+## 每块待建碰撞的实例描述（懒加载队列），碰撞体随块进出视野创建/释放
+var _pending_blocks: Array = []          # 需要补建碰撞的块下标
+var _stream_budget_ms := 12.0            # 每帧用于建碰撞的时间预算（分摊，避免卡顿）
 var _interactables: Array = []          # 可交互家具注册表（kind/pos/yaw/height）
 var _furniture_height_cache: Dictionary = {}  # 家具模型路径 -> 站立面/爬升高度缓存
 
@@ -257,6 +266,49 @@ func _load_glb_mesh(path: String) -> Mesh:
 	inst.free()
 	return m
 
+## 模型自身的局部包围盒（含子节点变换）：用于把模型"摆正"到放置点
+func _model_local_aabb(model_path: String) -> AABB:
+	if _model_aabb_cache.has(model_path):
+		return _model_aabb_cache[model_path]
+	var out := AABB()
+	var m: Variant = load(model_path)
+	if m is Mesh:
+		out = (m as Mesh).get_aabb()
+	elif m is PackedScene:
+		var inst := (m as PackedScene).instantiate()
+		if inst is Node3D:
+			var faces := PackedVector3Array()
+			_collect_mesh_faces(inst as Node3D, Transform3D.IDENTITY, faces)
+			if not faces.is_empty():
+				var mn := faces[0]
+				var mx := faces[0]
+				for v in faces:
+					mn = mn.min(v)
+					mx = mx.max(v)
+				out = AABB(mn, mx - mn)
+			inst.free()
+	_model_aabb_cache[model_path] = out
+	return out
+
+
+## 放置偏移：把模型"摆正"到放置点
+##  - 水平：模型 AABB 中心 → 放置点（准星点即模型中心）
+##  - 垂直：仅当模型底面低于原点时上抬，使模型底面正好落在放置高度上
+## 返回 (dx, dy, dz)；未缩放前调用方需乘实例缩放（线性）。视觉与碰撞共用同一值。
+func _model_place_offset(model_path: String) -> Vector3:
+	if _model_offset_cache.has(model_path):
+		return _model_offset_cache[model_path]
+	var box := _model_local_aabb(model_path)
+	var offset := Vector3.ZERO
+	if box.size.x > 0.0 or box.size.z > 0.0 or box.size.y > 0.0:
+		offset.x = -(box.position.x + box.size.x * 0.5)
+		offset.z = -(box.position.z + box.size.z * 0.5)
+		# 底面低于原点才上抬（不上抬本来就在原点之上的模型，避免悬空）
+		offset.y = maxf(0.0, -box.position.y)
+	_model_offset_cache[model_path] = offset
+	return offset
+
+
 func _find_mesh(node: Node) -> Mesh:
 	if node is MeshInstance3D:
 		return node.mesh
@@ -287,6 +339,10 @@ func _create_block(bx: int, bz: int) -> Dictionary:
 		"mmis": {},
 		"counts": {},
 		"collisions": collisions,
+		# 该块待建/已建的碰撞体：queue 是描述（懒加载），bodies 是已创建实例
+		"col_queue": [],
+		"col_bodies": [],
+		"col_built": false,
 	}
 	for cat in _category_models:
 		var models: Array = _category_models[cat]
@@ -318,6 +374,158 @@ func _create_block(bx: int, bz: int) -> Dictionary:
 		block["counts"][cat] = counts
 	return block
 
+## 登记一处需要模型碰撞的实例（不立即建体，随块进入视野再建）
+func _queue_collision(cat: String, model_path: String, pos: Vector3, scale: float, yaw: float) -> void:
+	if _blocks.is_empty():
+		return
+	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
+	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
+	var bi := bz * _block_n + bx
+	var block: Dictionary = _blocks[bi]
+	(block["col_queue"] as Array).append({
+		"cat": cat, "path": model_path, "pos": pos, "scale": scale, "yaw": yaw,
+	})
+	# 块当前在视野内 → 无需入队，直接建体（玩家放置的物体都在附近）
+	if _is_block_active(bi) or _camera == null:
+		block["col_built"] = false
+		if not _pending_blocks.has(bi):
+			_pending_blocks.append(bi)
+
+
+func _is_block_active(bi: int) -> bool:
+	if _camera == null:
+		return true
+	var block: Dictionary = _blocks[bi]
+	var bx := bi % _block_n
+	var bz := bi / _block_n
+	var cx := -_terrain_half + (bx + 0.5) * CHUNK_SIZE
+	var cz := -_terrain_half + (bz + 0.5) * CHUNK_SIZE
+	var p := _camera.global_position
+	var dx := cx - p.x
+	var dz := cz - p.z
+	var active_r := view_radius + CHUNK_SIZE * 0.5
+	return dx * dx + dz * dz <= active_r * active_r
+
+
+## 在时间预算内为"已进入视野且尚未建体"的块补建碰撞体
+func _stream_collisions() -> void:
+	if _camera == null or _pending_blocks.is_empty():
+		return
+	var t0 := Time.get_ticks_usec()
+	var remaining: Array = []
+	for bi in _pending_blocks:
+		if (Time.get_ticks_usec() - t0) / 1000.0 >= _stream_budget_ms:
+			remaining.append(bi)
+			continue
+		if _spawn_block_collisions(int(bi)):
+			continue
+		remaining.append(bi)
+	_pending_blocks = remaining
+
+
+## 建立某块的全部碰撞体；返回 true 表示该块已完成（不再排队）
+func _spawn_block_collisions(bi: int) -> bool:
+	if bi < 0 or bi >= _blocks.size():
+		return true
+	var block: Dictionary = _blocks[bi]
+	if block["col_built"]:
+		return true
+	var t0 := Time.get_ticks_usec()
+	var queue: Array = block["col_queue"]
+	var bodies: Array = block["col_bodies"]
+	while bodies.size() < queue.size():
+		# 每建若干个体检查一次预算，超出就下次继续（块保持未完成）
+		if bodies.size() % 24 == 0 and (Time.get_ticks_usec() - t0) / 1000.0 >= _stream_budget_ms:
+			return false
+		var d: Dictionary = queue[bodies.size()]
+		var cat := str(d["cat"])
+		var sb := _make_instance_collision(cat, str(d["path"]),
+				d["pos"] as Vector3, float(d["scale"]), float(d["yaw"]))
+		sb.set_meta("veg_block", bi)
+		bodies.append(sb)
+		block["col_built"] = false
+	block["col_built"] = true
+	return true
+
+
+## 释放某块的全部碰撞体（离开视野）
+func _despawn_block_collisions(bi: int) -> void:
+	if bi < 0 or bi >= _blocks.size():
+		return
+	var block: Dictionary = _blocks[bi]
+	var bodies: Array = block["col_bodies"]
+	if bodies.is_empty():
+		return
+	for sb in bodies:
+		if not is_instance_valid(sb):
+			continue
+		# 从按类别登记的数组里摘掉，避免悬空引用
+		for cat in _collision_nodes.keys():
+			(_collision_nodes[cat] as Array).erase(sb)
+		sb.queue_free()
+	bodies.clear()
+	block["col_built"] = false
+
+
+## 共享的模型三角网碰撞形状（每模型一份，与 building_manager 同样思路）
+func _shape_for(cat: String, model_path: String) -> ConcavePolygonShape3D:
+	if not _shape_cache.has(cat):
+		_shape_cache[cat] = {}
+	var cache: Dictionary = _shape_cache[cat]
+	if cache.has(model_path):
+		return cache[model_path]
+	var shape := ConcavePolygonShape3D.new()
+	var faces := PackedVector3Array()
+	var m: Variant = load(model_path)
+	if m is Mesh:
+		faces = (m as Mesh).get_faces()
+	elif m is PackedScene:
+		var inst := (m as PackedScene).instantiate()
+		if inst is Node3D:
+			_collect_mesh_faces(inst as Node3D, Transform3D.IDENTITY, faces)
+			inst.free()
+	if faces.is_empty():
+		# 兜底：极小三角片，避免空形状导致物理报错
+		faces.append(Vector3(-0.25, 0.0, -0.25))
+		faces.append(Vector3(0.25, 0.0, -0.25))
+		faces.append(Vector3(0.0, 0.05, 0.0))
+	shape.set_faces(faces)
+	cache[model_path] = shape
+	return shape
+
+
+## 为一个已放置实例建立模型碰撞：形状共享、朝向在 CollisionShape3D、位置与缩放在 body 上。
+## 返回该 body（已在树内），调用方可移动到别的父节点。
+func _make_instance_collision(cat: String, model_path: String, pos: Vector3,
+		scale: float, yaw: float) -> StaticBody3D:
+	var block_x := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
+	var block_z := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
+	var block: Dictionary = _blocks[block_z * _block_n + block_x]
+	var holder := block["collisions"] as Node3D
+	var sb := StaticBody3D.new()
+	sb.collision_layer = COLLISION_LAYER
+	sb.collision_mask = 0
+	var col := CollisionShape3D.new()
+	col.shape = _shape_for(cat, model_path)
+	col.rotation.y = yaw
+	sb.add_child(col)
+	holder.add_child(sb)
+	# 必须先入树再设 global_position，否则全局变换无效
+	sb.global_position = pos
+	sb.scale = Vector3.ONE * scale
+	if not _collision_nodes.has(cat):
+		_collision_nodes[cat] = []
+	(_collision_nodes[cat] as Array).append(sb)
+	return sb
+
+
+func _last_variant(cat: String) -> int:
+	var hist := _hist_for(cat)
+	if hist.is_empty():
+		return 0
+	return int(hist[hist.size() - 1].get("vi", 0))
+
+
 func _hist_for(cat: String) -> Array:
 	match cat:
 		"tree": return _tree_hist
@@ -332,11 +540,13 @@ func _hist_for(cat: String) -> Array:
 	return []
 
 ## 通用添加：定位所在块 → 随机模型变体 → 指定/随机旋转 → 随机缩放 → 可选实例色
-## yaw >= 0 使用指定朝向（玩家放置旋转），-1 随机朝向
-func _add_instance(cat: String, pos: Vector3, scale: float, hist: Array, yaw: float = -1.0, force_variant: int = -1) -> bool:
+## yaw >= 0 使用指定朝向（玩家放置旋转），-1 随机朝向。
+## 返回 {ok, vi, pos}：pos 是**已应用重定位偏移**的实际实例位置（Vector3 是值类型，
+## 调用方必须用回传值去建碰撞，否则碰撞会落在未偏移的准星点上）。
+func _add_instance(cat: String, pos: Vector3, scale: float, hist: Array, yaw: float = -1.0, force_variant: int = -1) -> Dictionary:
 	var max_total: int = _category_max[cat]
 	if _category_total[cat] >= max_total:
-		return false
+		return {"ok": false, "vi": -1, "pos": pos}
 	_ensure_blocks()
 	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
 	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
@@ -353,11 +563,17 @@ func _add_instance(cat: String, pos: Vector3, scale: float, hist: Array, yaw: fl
 			vi = cand
 			break
 	if vi == -1:
-		return false
+		return {"ok": false, "vi": -1, "pos": pos}
 	var mm: MultiMesh = mmis[vi].multimesh
 	var idx: int = counts[vi]
 	var rot := _rng.randf_range(0.0, TAU) if yaw < 0.0 else yaw
 	var basis := Basis.IDENTITY.rotated(Vector3.UP, rot).scaled(Vector3.ONE * scale)
+	# 把模型 AABB 的水平中心对到放置点：偏移在模型局部空间，
+	# 必须先用实例 yaw 旋转，再按缩放放大，最后加到世界放置点。
+	var model_path := str((_category_models[cat] as Array)[vi])
+	var offset := _model_place_offset(model_path)
+	if offset != Vector3.ZERO:
+		pos += offset.rotated(Vector3.UP, rot) * scale
 	mm.set_instance_transform(idx, Transform3D(basis, pos))
 	var tint := Color.WHITE
 	if cat in COLORED_CATEGORIES:
@@ -372,12 +588,17 @@ func _add_instance(cat: String, pos: Vector3, scale: float, hist: Array, yaw: fl
 		"bx": bx, "bz": bz, "vi": vi, "pos": pos,
 		"scale": scale, "yaw": rot, "color": tint, "cat": cat,
 	})
+	# 除花草外，所有类别都要模型碰撞（灌木/蘑菇/树桩也按模型面贴合）
+	# 这里只登记描述，碰撞体随块进入视野时再建（流式化）
+	if not layout_mode and cat in COLLISION_CATEGORIES \
+			and cat not in ["tree", "rock", "mountain", "furniture"]:
+		_queue_collision(cat, model_path, pos, scale, rot)
 	if layout_mode:
 		plan_items.append({
 			"cat": cat, "pos": pos, "scale": scale, "yaw": rot,
 			"variant": vi, "color": tint, "bx": bx, "bz": bz,
 		})
-	return true
+	return {"ok": true, "vi": vi, "pos": pos}
 
 ## 随机植被配色（让花/草/蘑菇/树桩观感更丰富）
 func _random_plant_color(cat: String) -> Color:
@@ -417,7 +638,8 @@ func place_scene_item(node: Node3D, cat: String) -> bool:
 	var s := float(node.get_meta("scale", 1.0))
 	var yaw := float(node.get_meta("yaw", 0.0))
 	var vi := int(node.get_meta("variant", 0))
-	return _add_instance(cat, p, s, _hist_for(cat), yaw, vi)
+	var placed: Dictionary = _add_instance(cat, p, s, _hist_for(cat), yaw, vi)
+	return bool(placed["ok"])
 
 
 ## 从场景节点重建全部植被（Vegetation/Spawned/<cat> 下的子节点）
@@ -526,25 +748,13 @@ func add_tree(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> int:
 		remove_last_tree()
 	if yaw < 0.0:
 		yaw = _rng.randf_range(0.0, TAU)
-	if not _add_instance("tree", pos, scale, _tree_hist, yaw, variant):
+	var placed: Dictionary = _add_instance("tree", pos, scale, _tree_hist, yaw, variant)
+	if not placed["ok"]:
 		return -1
+	var vi: int = int(placed["vi"])
 	if layout_mode:
-		return variant
-	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
-	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
-	var block: Dictionary = _blocks[bz * _block_n + bx]
-	var vi: int = int(_tree_hist[_tree_hist.size() - 1].get("vi", 0))
-	var sb := StaticBody3D.new()
-	sb.collision_layer = 8
-	sb.collision_mask = 0
-	var col := CollisionShape3D.new()
-	col.shape = _mesh_shape(TREE_MODELS[vi], _tree_shapes)
-	col.rotation.y = yaw
-	col.scale = Vector3.ONE * scale
-	sb.add_child(col)
-	sb.position = pos
-	(block["collisions"] as Node3D).add_child(sb)
-	_tree_collision_nodes.append(sb)
+		return vi
+	_queue_collision("tree", TREE_MODELS[vi], placed["pos"] as Vector3, scale, yaw)
 	return vi
 
 func add_bush(pos: Vector3, scale := 1.0) -> void:
@@ -554,9 +764,8 @@ func add_bush(pos: Vector3, scale := 1.0) -> void:
 func add_flower(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> int:
 	if _category_total["flower"] >= MAX_FLOWERS:
 		remove_last_flower()
-	_add_instance("flower", pos, scale, _flower_hist, yaw, variant)
-	var vi := int(_flower_hist[_flower_hist.size() - 1].get("vi", variant))
-	return vi
+	var placed: Dictionary = _add_instance("flower", pos, scale, _flower_hist, yaw, variant)
+	return int(placed["vi"])
 
 func add_grass(pos: Vector3, scale := 1.0) -> void:
 	_add_instance("grass", pos, scale, _grass_hist)
@@ -565,51 +774,17 @@ func add_grass(pos: Vector3, scale := 1.0) -> void:
 func add_rock(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> int:
 	if yaw < 0.0:
 		yaw = _rng.randf_range(0.0, TAU)
-	if not _add_instance("rock", pos, scale, _rock_hist, yaw, variant):
+	var placed: Dictionary = _add_instance("rock", pos, scale, _rock_hist, yaw, variant)
+	if not placed["ok"]:
 		return -1
+	var vi: int = int(placed["vi"])
 	if layout_mode:
-		return variant
-	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
-	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
-	var block: Dictionary = _blocks[bz * _block_n + bx]
-	var vi: int = int(_rock_hist[_rock_hist.size() - 1].get("vi", 0))
-	var sb := StaticBody3D.new()
-	sb.collision_layer = 8
-	sb.collision_mask = 0
-	var col := CollisionShape3D.new()
-	col.shape = _mesh_shape(ROCK_MODELS[vi], _rock_shapes)
-	col.rotation.y = yaw
-	col.scale = Vector3.ONE * scale
-	sb.add_child(col)
-	sb.position = pos
-	(block["collisions"] as Node3D).add_child(sb)
-	_rock_collision_nodes.append(sb)
+		return vi
+	_queue_collision("rock", ROCK_MODELS[vi], placed["pos"] as Vector3, scale, yaw)
 	return vi
 
 ## 植被碰撞体：直接使用对应视觉模型的三角网格（共享 shape 资源），碰撞顶面与模型表面完全一致，避免踩上去浮空
 ## 收集场景内所有 MeshInstance3D 的 faces，并按节点变换到根空间，保证与视觉完全贴合
-func _mesh_shape(model_path: String, cache: Dictionary) -> ConcavePolygonShape3D:
-	if cache.has(model_path):
-		return cache[model_path]
-	var shape := ConcavePolygonShape3D.new()
-	var faces := PackedVector3Array()
-	var m: Variant = load(model_path)
-	if m is Mesh:
-		faces = (m as Mesh).get_faces()
-	elif m is PackedScene:
-		var inst := (m as PackedScene).instantiate()
-		if inst is Node3D:
-			_collect_mesh_faces(inst as Node3D, Transform3D.IDENTITY, faces)
-			inst.free()
-	if faces.is_empty():
-		faces.append(Vector3(-0.5, 0.0, -0.5))
-		faces.append(Vector3(0.5, 0.0, -0.5))
-		faces.append(Vector3(0.0, 0.1, 0.0))
-	shape.set_faces(faces)
-	cache[model_path] = shape
-	return shape
-
-## 递归收集场景内所有 MeshInstance3D 的顶点，变换到根空间（考虑每个节点的局部 transform）
 func _collect_mesh_faces(n: Node3D, xform: Transform3D, out: PackedVector3Array) -> void:
 	var t: Transform3D = xform * n.transform
 	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
@@ -640,11 +815,13 @@ func _find_first_mesh(n: Node) -> MeshInstance3D:
 			return r
 	return null
 
-func add_mushroom(pos: Vector3, scale := 1.0) -> void:
-	_add_instance("mushroom", pos, scale, _mushroom_hist)
+func add_mushroom(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> int:
+	_add_instance("mushroom", pos, scale, _mushroom_hist, yaw, variant)
+	return _last_variant("mushroom")
 
-func add_stump(pos: Vector3, scale := 1.0) -> void:
-	_add_instance("stump", pos, scale, _stump_hist)
+func add_stump(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> int:
+	_add_instance("stump", pos, scale, _stump_hist, yaw, variant)
+	return _last_variant("stump")
 
 ## 添加一件家具/梯子（随机变体 + 模型 trimesh 碰撞；yaw>=0 指定朝向；满员顶掉最近一件）
 ## variant >= 0 时指定模型变体；返回实际使用的变体下标
@@ -653,30 +830,15 @@ func add_furniture(pos: Vector3, scale := 1.0, yaw := -1.0, with_collision := tr
 		remove_last_furniture()
 	if yaw < 0.0:
 		yaw = _rng.randf_range(0.0, TAU)
-	if not _add_instance("furniture", pos, scale, _furniture_hist, yaw, variant):
+	var placed: Dictionary = _add_instance("furniture", pos, scale, _furniture_hist, yaw, variant)
+	if not placed["ok"]:
 		return -1
+	var vi: int = int(placed["vi"])
 	if layout_mode:
-		return variant
-	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
-	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
-	var block: Dictionary = _blocks[bz * _block_n + bx]
-	var vi: int = int(_furniture_hist[_furniture_hist.size() - 1].get("vi", 0))
-	var sb := StaticBody3D.new()
-	sb.collision_layer = 8
-	sb.collision_mask = 0
-	var col := CollisionShape3D.new()
-	col.shape = _mesh_shape(FURNITURE_MODELS[vi], _furniture_shapes)
-	col.rotation.y = yaw
-	col.scale = Vector3.ONE * scale
-	sb.add_child(col)
-	sb.position = pos
+		return vi
 	if with_collision:
-		# 楼梯等可走上去的家具不生成模型网格碰撞：避免踏面被判成墙而卡住，
-		# 台阶由角色的自动抬步处理。
-		(block["collisions"] as Node3D).add_child(sb)
-		_furniture_collision_nodes.append(sb)
-	else:
-		sb.free()
+		_queue_collision("furniture", FURNITURE_MODELS[vi], placed["pos"] as Vector3, scale, yaw)
+	# 楼梯等可走上去的家具不生成碰撞：避免踏面被判成墙而卡住，台阶交给自动抬步
 	_rebuild_interactables()
 	return vi
 
@@ -771,35 +933,44 @@ func add_mountain(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> int
 		remove_last_mountain()
 	if yaw < 0.0:
 		yaw = _rng.randf_range(0.0, TAU)
-	if not _add_instance("mountain", pos, scale, _mountain_hist, yaw, variant):
+	var placed: Dictionary = _add_instance("mountain", pos, scale, _mountain_hist, yaw, variant)
+	if not placed["ok"]:
 		return -1
+	var vi: int = int(placed["vi"])
 	if layout_mode:
-		return variant
-	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
-	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
-	var block: Dictionary = _blocks[bz * _block_n + bx]
-	var vi: int = int(_mountain_hist[_mountain_hist.size() - 1].get("vi", 0))
-	var sb := StaticBody3D.new()
-	sb.collision_layer = 8
-	sb.collision_mask = 0
-	var col := CollisionShape3D.new()
-	col.shape = _mesh_shape(MOUNTAIN_MODELS[vi], _mountain_shapes)
-	col.rotation.y = yaw
-	col.scale = Vector3.ONE * scale
-	sb.add_child(col)
-	sb.position = pos
-	(block["collisions"] as Node3D).add_child(sb)
-	_mountain_collision_nodes.append(sb)
+		return vi
+	_queue_collision("mountain", MOUNTAIN_MODELS[vi], placed["pos"] as Vector3, scale, yaw)
 	return vi
 
+## 顶掉某类别最后放置的一个实例（含其模型碰撞体）
+func _remove_last_with_collision(cat: String, hist: Array) -> void:
+	if hist.is_empty():
+		return
+	var raw: Variant = hist[hist.size() - 1]
+	var pos: Vector3 = raw.get("pos", Vector3.ZERO) if raw is Dictionary else Vector3.ZERO
+	var bx := clampi(int(floor((pos.x + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
+	var bz := clampi(int(floor((pos.z + _terrain_half) / CHUNK_SIZE)), 0, _block_n - 1)
+	var bi := bz * _block_n + bx
+	_remove_last(cat, hist)
+	# 队列描述与已建实例都要去掉最后一个该类别项
+	if bi >= 0 and bi < _blocks.size():
+		var block: Dictionary = _blocks[bi]
+		var queue: Array = block["col_queue"]
+		for i in range(queue.size() - 1, -1, -1):
+			if str((queue[i] as Dictionary).get("cat", "")) == cat:
+				queue.remove_at(i)
+				break
+	if _collision_nodes.has(cat) and not (_collision_nodes[cat] as Array).is_empty():
+		var sb: StaticBody3D = (_collision_nodes[cat] as Array).pop_back()
+		if is_instance_valid(sb):
+			_erase_body_from_block(sb)
+			sb.queue_free()
+
 func remove_last_tree() -> void:
-	_remove_last("tree", _tree_hist)
-	if _tree_collision_nodes.size() > 0:
-		var sb: StaticBody3D = _tree_collision_nodes.pop_back()
-		sb.queue_free()
+	_remove_last_with_collision("tree", _tree_hist)
 
 func remove_last_bush() -> void:
-	_remove_last("bush", _bush_hist)
+	_remove_last_with_collision("bush", _bush_hist)
 
 func remove_last_flower() -> void:
 	_remove_last("flower", _flower_hist)
@@ -808,29 +979,20 @@ func remove_last_grass() -> void:
 	_remove_last("grass", _grass_hist)
 
 func remove_last_rock() -> void:
-	_remove_last("rock", _rock_hist)
-	if _rock_collision_nodes.size() > 0:
-		var sb: StaticBody3D = _rock_collision_nodes.pop_back()
-		sb.queue_free()
+	_remove_last_with_collision("rock", _rock_hist)
 
 func remove_last_mushroom() -> void:
-	_remove_last("mushroom", _mushroom_hist)
+	_remove_last_with_collision("mushroom", _mushroom_hist)
 
 func remove_last_furniture() -> void:
-	_remove_last("furniture", _furniture_hist)
-	if _furniture_collision_nodes.size() > 0:
-		var sb: StaticBody3D = _furniture_collision_nodes.pop_back()
-		sb.queue_free()
-		_rebuild_interactables()
+	_remove_last_with_collision("furniture", _furniture_hist)
+	_rebuild_interactables()
 
 func remove_last_mountain() -> void:
-	_remove_last("mountain", _mountain_hist)
-	if _mountain_collision_nodes.size() > 0:
-		var sb: StaticBody3D = _mountain_collision_nodes.pop_back()
-		sb.queue_free()
+	_remove_last_with_collision("mountain", _mountain_hist)
 
 func remove_last_stump() -> void:
-	_remove_last("stump", _stump_hist)
+	_remove_last_with_collision("stump", _stump_hist)
 
 func _remove_last(cat: String, hist: Array) -> void:
 	if hist.is_empty():
@@ -846,6 +1008,37 @@ func _remove_last(cat: String, hist: Array) -> void:
 		var mm: MultiMesh = (block["mmis"][cat] as Array)[vi].multimesh
 		mm.visible_instance_count = counts[vi]
 	_category_total[cat] = maxi(0, _category_total[cat] - 1)
+
+## 丢弃某块中落在圆形范围内的碰撞队列描述（清场/回收后不再补建）
+func _drop_queued_in_area(center: Vector3, radius: float) -> void:
+	if _blocks.is_empty():
+		return
+	var r2 := radius * radius
+	for bi in _blocks.size():
+		var block: Dictionary = _blocks[bi]
+		var queue: Array = block["col_queue"]
+		if queue.is_empty():
+			continue
+		var kept: Array = []
+		for d in queue:
+			var p: Vector3 = (d as Dictionary).get("pos", Vector3.ZERO)
+			var dx := p.x - center.x
+			var dz := p.z - center.z
+			if dx * dx + dz * dz >= r2:
+				kept.append(d)
+		if kept.size() != queue.size():
+			block["col_queue"] = kept
+			block["col_built"] = false
+
+
+## 把碰撞体从它所属块的登记数组里摘掉
+func _erase_body_from_block(sb: StaticBody3D) -> void:
+	if not sb.has_meta("veg_block"):
+		return
+	var bi := int(sb.get_meta("veg_block"))
+	if bi >= 0 and bi < _blocks.size():
+		(_blocks[bi] as Dictionary)["col_bodies"].erase(sb)
+
 
 ## 清空指定中心周围半径内的植被（出生点清场、建造区清理）
 func clear_around(center: Vector3, radius: float) -> void:
@@ -884,6 +1077,7 @@ func clear_around(center: Vector3, radius: float) -> void:
 			if dx * dx + dz * dz < r2:
 				collisions.remove_child(c)
 				c.queue_free()
+	_drop_queued_in_area(center, radius)
 	_rebuild_all_hist()
 	_rebuild_interactables()
 
@@ -934,6 +1128,7 @@ func recycle_around(center: Vector3, radius: float) -> Dictionary:
 				collisions.remove_child(c)
 				c.queue_free()
 	if result["biomass"] > 0.0 or result["stone"] > 0.0:
+		_drop_queued_in_area(center, radius)
 		_rebuild_all_hist()
 	_rebuild_interactables()
 	return result
@@ -967,14 +1162,19 @@ func _process(delta: float) -> void:
 	if _camera == null or _blocks.is_empty():
 		return
 	_vis_timer -= delta
-	if _vis_timer > 0.0:
-		return
-	_vis_timer = VIS_UPDATE_INTERVAL
-	_update_visibility()
+	if _vis_timer <= 0.0:
+		_vis_timer = VIS_UPDATE_INTERVAL
+		_update_visibility()
+	# 每帧分摊补建视野内块的碰撞体（与剔除频率解耦，避免一次性卡顿）
+	_stream_collisions()
 
-## 视野剔除：按块中心到相机的距离，激活 view_radius 内的块（隐藏其余，禁用其树碰撞）
+## 视野剔除：按块中心到相机的距离，激活 view_radius 内的块。
+## 同时驱动碰撞流式化：块进入视野补建碰撞体，离开视野释放。
 func _update_visibility() -> void:
-	if _camera == null or _blocks.is_empty():
+	if _blocks.is_empty():
+		return
+	# 相机未接入前不做剔除：可见性保持默认（碰撞体此时也尚未建立）
+	if _camera == null:
 		return
 	var p := _camera.global_position
 	var active_r := view_radius + CHUNK_SIZE * 0.5
@@ -993,7 +1193,9 @@ func _update_visibility() -> void:
 			var grass_mmis: Array = block["mmis"]["grass"]
 			for gmmi in grass_mmis:
 				(gmmi as MultiMeshInstance3D).visible = _grass_visible
-		var collisions := block["collisions"] as Node3D
-		for c in collisions.get_children():
-			var sb := c as StaticBody3D
-			sb.collision_layer = 8 if active else 0
+		# 碰撞流式化：进入视野的块排队补建，离开视野的块立即释放碰撞体
+		if active:
+			if not block["col_built"] and not _pending_blocks.has(bi):
+				_pending_blocks.append(bi)
+		elif not (block["col_bodies"] as Array).is_empty():
+			_despawn_block_collisions(bi)
