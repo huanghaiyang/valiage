@@ -296,7 +296,8 @@ func _begin_tool() -> void:
 				return
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 			# 传入滚轮选中的变体；Placement 与半透明预览保证是同一个模型
-			_set_used_variant("tree", vegetation.add_tree(p + Vector3(0, 0.1, 0), 1.2, _place_yaw, _current_variant("tree")))
+			# 不再额外抬高：重定位偏移已保证模型底面落在放置点上
+			_set_used_variant("tree", vegetation.add_tree(p, 1.2, _place_yaw, _current_variant("tree")))
 			player.play_cast_gesture()
 		Game.Tool.FLOWER:
 			if _is_occupied(p):
@@ -311,13 +312,13 @@ func _begin_tool() -> void:
 			var cat := _tool_category(Game.current_tool)
 			var vi := _current_variant(cat)
 			# 楼梯同样生成模型碰撞（可走上去由自动抬步处理）
-			_set_used_variant(cat, vegetation.add_furniture(p + Vector3(0, 0.1, 0), 1.0, _place_yaw, true, vi))
+			_set_used_variant(cat, vegetation.add_furniture(p, 1.0, _place_yaw, true, vi))
 			player.play_cast_gesture()
 		Game.Tool.MOUNTAIN:
 			if _is_occupied(p):
 				return
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
-			_set_used_variant("mountain", vegetation.add_mountain(p + Vector3(0, 0.1, 0), 4.0, _place_yaw, _current_variant("mountain")))
+			_set_used_variant("mountain", vegetation.add_mountain(p, 4.0, _place_yaw, _current_variant("mountain")))
 			player.play_cast_gesture()
 		Game.Tool.TERRAIN_RAISE:
 			terrain.apply_brush(p, terrain.brush_radius, terrain.brush_strength)
