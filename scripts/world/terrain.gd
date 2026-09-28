@@ -21,7 +21,7 @@ const GRID := RESOLUTION - 1
 const CELL := SIZE / float(GRID)
 
 @export var use_terrain3d := true
-@export var flat_fallback_collider := true
+@export var flat_fallback_collider := false   # Terrain3D 有地形时必须 false，否则两层碰撞面打架 -> 上下抖动
 @export var terrain3d_path: NodePath
 
 @export var use_import_map := false
@@ -40,6 +40,7 @@ var _last_brush_time := -1000.0
 
 var _t3d: Node = null
 var _hinted := false
+var _t3d_configured := false
 
 
 func _ready() -> void:
@@ -107,8 +108,41 @@ func _find_terrain3d() -> Node:
 	return null
 
 
+## 把 Terrain3D 对齐本项目的碰撞层约定：**地形 = layer 2**
+## （角色 collision_mask = 2|4|8；Terrain3D 默认在 layer 1，不改的话角色会直接穿过地面）
+func _configure_terrain3d(t: Node) -> void:
+	if t == null or _t3d_configured:
+		return
+	_t3d_configured = true
+	# 开碰撞：collision_mode 0=Disabled 1=Dynamic/Game 2=Dynamic/Editor 3=Full/Game 4=Full/Editor
+	var mode := int(t.get("collision_mode"))
+	if mode == 0:
+		t.set("collision_mode", 1)
+		mode = 1
+	# 层/掩码在 **Terrain3DCollision 子对象** 上（Terrain3D.collision 不是 bool！）
+	var col: Object = t.get("collision")
+	var lay := -1
+	var msk := -1
+	if col != null:
+		lay = int(col.get("layer"))
+		msk = int(col.get("mask"))
+		if lay != 2:
+			col.set("layer", 2)
+		if msk != 0:
+			col.set("mask", 0)
+		lay = int(col.get("layer"))
+		msk = int(col.get("mask"))
+	print("Terrain | Terrain3D 碰撞: mode=%d layer=%d mask=%d（角色 mask=%d，地形须为 layer 2）" % [
+			mode, lay, msk, 2 | 4 | 8])
+
 func using_terrain3d() -> bool:
-	return use_terrain3d and _find_terrain3d() != null
+	if not use_terrain3d:
+		return false
+	var t := _find_terrain3d()
+	if t == null:
+		return false
+	_configure_terrain3d(t)
+	return true
 
 
 func _build_flat_fallback() -> void:

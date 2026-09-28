@@ -13,6 +13,8 @@
 [ext_resource type="Script" uid="uid://bat1f5j1msndx" path="res://scripts/world/features/terrain_platform.gd" id="11_platform"]
 [ext_resource type="Texture2D" uid="uid://ddprscrpsofah" path="res://demo/assets/textures/ground037_alb_ht.png" id="12_trceg"]
 [ext_resource type="Texture2D" uid="uid://c1ots7w6i0i1q" path="res://demo/assets/textures/ground037_nrm_rgh.png" id="13_a8y0u"]
+[ext_resource type="Texture2D" uid="uid://c88j3oj0lf6om" path="res://demo/assets/textures/rock023_alb_ht.png" id="14_jkv2x"]
+[ext_resource type="Texture2D" uid="uid://c307hdmos4gtm" path="res://demo/assets/textures/rock023_nrm_rgh.png" id="15_jbj1t"]
 
 [sub_resource type="ProceduralSkyMaterial" id="sky_mat"]
 sky_top_color = Color(0.7, 0.72, 0.56, 1)
@@ -64,7 +66,7 @@ _shader_parameters = {
 &"macro_variation1": null,
 &"macro_variation2": null,
 &"macro_variation_slope": null,
-&"mipmap_bias": null,
+&"mipmap_bias": 0.5,
 &"noise1_angle": null,
 &"noise1_offset": null,
 &"noise1_scale": null,
@@ -74,7 +76,7 @@ _shader_parameters = {
 }
 world_background = 0
 
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_jbj1t"]
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_jkv2x"]
 transparency = 4
 cull_mode = 2
 vertex_color_use_as_albedo = true
@@ -84,10 +86,10 @@ distance_fade_mode = 1
 distance_fade_min_distance = 128.0
 distance_fade_max_distance = 96.0
 
-[sub_resource type="Terrain3DMeshAsset" id="Terrain3DMeshAsset_muem4"]
+[sub_resource type="Terrain3DMeshAsset" id="Terrain3DMeshAsset_jbj1t"]
 generated_type = 1
 height_offset = 0.5
-material_override = SubResource("StandardMaterial3D_jbj1t")
+material_override = SubResource("StandardMaterial3D_jkv2x")
 last_lod = 0
 last_shadow_lod = 0
 lod0_range = 128.0
@@ -97,18 +99,36 @@ name = "ground037_alb_ht"
 albedo_texture = ExtResource("12_trceg")
 normal_texture = ExtResource("13_a8y0u")
 
+[sub_resource type="Terrain3DTextureAsset" id="Terrain3DTextureAsset_muem4"]
+name = "rock023_alb_ht"
+id = 1
+albedo_texture = ExtResource("14_jkv2x")
+normal_texture = ExtResource("15_jbj1t")
+normal_depth = 0.958
+roughness = -0.038
+uv_scale = 0.008
+detiling_rotation = 0.034
+detiling_shift = 0.355
+
+[sub_resource type="Terrain3DTextureAsset" id="Terrain3DTextureAsset_jbj1t"]
+name = "rock023_alb_ht"
+id = 2
+albedo_texture = ExtResource("14_jkv2x")
+normal_texture = ExtResource("15_jbj1t")
+normal_depth = 0.561
+ao_strength = 0.523
+roughness = -0.634
+uv_scale = 0.016
+
 [sub_resource type="Terrain3DAssets" id="Terrain3DAssets_dp3eg"]
-mesh_list = Array[Terrain3DMeshAsset]([SubResource("Terrain3DMeshAsset_muem4")])
-texture_list = Array[Terrain3DTextureAsset]([SubResource("Terrain3DTextureAsset_jkv2x")])
+mesh_list = Array[Terrain3DMeshAsset]([SubResource("Terrain3DMeshAsset_jbj1t")])
+texture_list = Array[Terrain3DTextureAsset]([SubResource("Terrain3DTextureAsset_jkv2x"), SubResource("Terrain3DTextureAsset_muem4"), SubResource("Terrain3DTextureAsset_jbj1t")])
 
 [node name="Main" type="Node3D" unique_id=18193326]
 script = ExtResource("1_main")
 
 [node name="Terrain" type="Node3D" parent="." unique_id=1832025193]
 script = ExtResource("2_terrain")
-use_terrain3d = null
-flat_fallback_collider = null
-terrain3d_path = null
 
 [node name="PlatformSpawn" type="Node3D" parent="Terrain" unique_id=1795266989]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3, 0, 5)
@@ -187,8 +207,6 @@ script = ExtResource("6_player")
 
 [node name="CameraRig" type="Node3D" parent="." unique_id=266780398]
 script = ExtResource("7_camera_rig")
-camera = NodePath("Camera3D")
-player = NodePath("../Player")
 
 [node name="Camera3D" type="Camera3D" parent="CameraRig" unique_id=326868573]
 fov = 60.0

@@ -81,6 +81,7 @@ var roof_ridge := 2.6
 var roof_eave := 1.0
 
 # 调试截图帧计数（--capture 参数触发，渲染稳定后保存截图并退出）
+var _probe_t := 0.0
 var _capture_frames := 0
 
 func _ready() -> void:
@@ -251,6 +252,24 @@ func _process(delta: float) -> void:
 		op.y = terrain.get_height_at(op.x, op.z)
 		buildings.add_tree(op, 1.0, 0.5, 0)
 		print("Capture | [occl] 已在相机与角色之间放一棵树（应被淡化）")
+	# --probe：每 0.5s 打印角色贴地状态（诊断"掉地底/抖动"用）
+	if "--probe" in OS.get_cmdline_user_args():
+		_probe_t += delta
+		if _probe_t >= 0.5:
+			_probe_t = 0.0
+			var py := player.global_position
+			print("PROBE | y=%.3f on_floor=%s vy=%.2f th=%.3f mask=%d" % [
+					py.y, str(player.is_on_floor()), player.velocity.y,
+					terrain.get_height_at(py.x, py.z), player.collision_mask])
+			var t3 := terrain._find_terrain3d()
+			if t3 != null:
+				terrain._configure_terrain3d(t3)
+
+			if t3 != null:
+				print("PROBE3D | collision=%s layer=%d mask=%d mode=%s regions=%s" % [
+						str(t3.get("collision")), int(t3.get("collision_layer")),
+						int(t3.get("collision_mask")), str(t3.get("collision_mode")),
+						str(t3.call("get_region_count") if t3.has_method("get_region_count") else -1)])
 	if _capture_frames > 0:
 		_apply_capture_view()
 		_capture_frames -= 1

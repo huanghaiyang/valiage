@@ -404,20 +404,30 @@ func _physics_process(delta: float) -> void:
 	# 1) 刷地同步：仅在刷地后短暂窗口内（0.5s），且角色位于刷地影响范围且接近地面时，
 	#    高度直接跟随地形高度（网格 0.1s 先更新、碰撞 0.35s 后更新，此间隙内角色不再悬空/被埋/卡住）。
 	#    窗口结束后恢复正常物理，角色可在已下陷/抬升的地形上正常跳跃。
+	# **Terrain3D 接管时整段跳过**：地形碰撞由 Terrain3D 自己提供，
+	# 再用 get_height_at() 去"吸回地表"会和 move_and_slide 打架 ——
+	# 高度图值与碰撞面在坡地上有出入，于是"瞬移上去 -> 物理落回"反复发生，
+	# 表现就是角色在非平坦地面上**上下抖动**（用户报的 bug）。
+	# 老的刷地同步也只对已删除的程序化地形有意义，这里一并停用。
 	var th := terrain.get_height_at(player.global_position.x, player.global_position.z)
-	var bc := terrain._last_brush_center
-	var br := terrain._last_brush_radius
-	var in_brush := false
-	if bc != Vector3.ZERO and br > 0.0:
-		var bdx := player.global_position.x - bc.x
-		var bdz := player.global_position.z - bc.z
-		in_brush = bdx * bdx + bdz * bdz < (br + 1.2) * (br + 1.2)
-	if in_brush and Time.get_ticks_msec() - terrain._last_brush_time < 500 and absf(player.global_position.y - th) < 1.5:
-		player.global_position.y = th + 0.05
-		_velocity_y = 0.0
-	elif player.global_position.y < th - 0.5:
-		# 2) 深度穿透兜底：任何原因掉到地面以下都吸回地表
-		player.global_position.y = th + 0.1
+	if not terrain.using_terrain3d():
+		var bc := terrain._last_brush_center
+		var br := terrain._last_brush_radius
+		var in_brush := false
+		if bc != Vector3.ZERO and br > 0.0:
+			var bdx := player.global_position.x - bc.x
+			var bdz := player.global_position.z - bc.z
+			in_brush = bdx * bdx + bdz * bdz < (br + 1.2) * (br + 1.2)
+		if in_brush and Time.get_ticks_msec() - terrain._last_brush_time < 500 and absf(player.global_position.y - th) < 1.5:
+			player.global_position.y = th + 0.05
+			_velocity_y = 0.0
+		elif player.global_position.y < th - 0.5:
+			# 2) 深度穿透兜底：任何原因掉到地面以下都吸回地表
+			player.global_position.y = th + 0.1
+			_velocity_y = 0.0
+	# Terrain3D 模式下的兜底：极端情况（掉出世界）才拉回来，平时绝不干预物理
+	elif player.global_position.y < -50.0:
+		player.global_position.y = th + 1.0
 		_velocity_y = 0.0
 
 	player.set_moving(moved)
