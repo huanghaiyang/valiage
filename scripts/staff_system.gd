@@ -130,6 +130,24 @@ func _register_builtin() -> void:
 	reg("spectrum", "虹晶法杖", Element.ARCANE,
 			"res://assets/models/crafted/staff_spectrum.glb",
 			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.030, "world_len": 1.45})
+	# ---- Tripo3D 出的 7 根奇幻法杖 ----
+	# 已用 `.runtime/cut_tripo_parts.py` 从"七支并排"的原文件里**逐份切成独立 glb**，
+	# 每根都缩放到真实尺寸（1.75m）、脚底归零；贴图另外做过提亮（见 brighten_tripo_tex.py）。
+	# DEV_UNLOCK_ALL=true -> 登记即拥有，玩家开局就全有。
+	const DIR := "res://assets/models/crafted/"
+	var staves := [
+		["fantasy_1", "烈焰法杖", Element.FIRE],
+		["fantasy_2", "寒霜法杖", Element.ICE],
+		["fantasy_3", "藤木法杖", Element.NATURE],
+		["fantasy_4", "圣辉法杖", Element.HOLY],
+		["fantasy_5", "岩心法杖", Element.EARTH],
+		["fantasy_6", "雷暴法杖", Element.STORM],
+		["fantasy_7", "秘银法杖", Element.ARCANE],
+	]
+	for e in staves:
+		reg(str(e[0]), str(e[1]), int(e[2]),
+				DIR + "staff_" + str(e[0]) + ".glb",
+				{"scale": 1.95, "idle_spin": 0.20, "hover": 0.030, "world_len": 1.55})
 
 
 ## 登记一根法杖
