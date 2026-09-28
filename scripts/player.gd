@@ -7,7 +7,8 @@ extends CharacterBody3D
 var body: Node3D
 var anim_player: AnimationPlayer = null
 ## 手持法杖（挂在右手 handslot_r 骨骼上，负责悬浮/自转/元素粒子）
-## 手持法杖已移除（见 flash_staff 的说明）
+## 手持法杖（挂在右手 handslot_r 下，见 _attach_held_staff）
+var held_staff: Node = null
 ## 角色自带的手持道具节点（自带法杖/魔杖/法书，装自定义法杖时要藏起来）
 var _native_props: Array[Node3D] = []
 var _moving := false
@@ -397,15 +398,61 @@ func _instantiate_character() -> Node3D:
 	anim_player = _find_animation_player(inst)
 	if anim_player != null:
 		_play_anim(ANIM_IDLE)
+	_attach_held_staff(inst)
 	return inst
 
 
-## 手持法杖的挂载与渲染**已按用户要求移除**（模型面数过低，等新参考图重做）。
-## 角色的 1H_Wand / 2H_Staff / Spellbook 是模型自带的道具，保持原样显示即可。
-## 新法杖做好后，这里按原来的做法重新挂 handslot_r 即可（旧实现见 git 历史）。
-## 供外部（技能/长老仪式）调用：现在是无操作，保留签名免得调用点全要改。
-func flash_staff(_strength: float = 1.6) -> void:
-	pass
+## 把可替换的法杖挂到右手骨骼上。Mage 模型自带 1H_Wand / 2H_Staff / Spellbook，
+## 装上自定义法杖时先把它们藏起来，免得两根杖叠在一起。
+func _attach_held_staff(inst: Node) -> void:
+	_native_props.clear()
+	for nm in ["1H_Wand", "2H_Staff", "Spellbook", "Spellbook_open"]:
+		var p := inst.find_child(nm, true, false)
+		if p is Node3D:
+			_native_props.append(p as Node3D)
+	var slot := inst.find_child("handslot_r", true, false)
+	if slot == null:
+		push_warning("[staff] 角色没有 handslot_r 骨骼，法杖无法挂载")
+		return
+	held_staff = load("res://scripts/held_staff.gd").new()
+	held_staff.name = "HeldStaff"
+	# 位置与朝向都归零：尺寸/握点/前倾角全由 HeldStaff 自己按目标长度与世界方向算
+	held_staff.position = Vector3.ZERO
+	held_staff.rotation_degrees = Vector3.ZERO
+	slot.add_child(held_staff)
+	var sys := _staff_system()
+	if sys != null:
+		_apply_staff(str(sys.get("equipped")), int(sys.get("equipped_element")))
+		sys.connect("staff_equipped", _on_staff_equipped)
+
+
+## 切换手持法杖（id 为空表示收起）
+func _apply_staff(id: String, elem: int) -> void:
+	if held_staff == null:
+		return
+	held_staff.set_staff(id, elem)
+	# 有自定义法杖时藏掉模型自带的手持道具
+	var hide_native := id != ""
+	for p in _native_props:
+		if is_instance_valid(p):
+			p.visible = not hide_native
+
+
+## 运行期取法杖系统。**不要直接写 autoload 标识符 StaffSystem**：那样 player.gd 在
+## autoload 未注册的编译上下文里（--script 探针、依赖链编译）会直接编译失败。
+func _staff_system() -> Node:
+	return get_node_or_null("/root/StaffSystem")
+
+
+func _on_staff_equipped(id: String) -> void:
+	var sys := _staff_system()
+	_apply_staff(id, int(sys.get("equipped_element")) if sys != null else 0)
+
+
+## 供外部（技能/长老仪式）触发杖头闪光
+func flash_staff(strength: float = 1.6) -> void:
+	if held_staff != null:
+		held_staff.flash(strength)
 
 
 func _find_animation_player(node: Node) -> AnimationPlayer:

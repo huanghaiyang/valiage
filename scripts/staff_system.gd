@@ -121,14 +121,15 @@ func _exit_tree() -> void:
 
 
 ## 先登记已经精做完的 6 根（后续逐根追加）
-## 法杖登记表 —— **目前为空**。
+## 法杖登记表。
 ##
-## 原来这里有 146 条 reg(...)（指向 assets/models/crafted/*.glb）。按用户要求
-## 全部移除：那批模型面数过低、无法使用，稍后会给新的建模参考图重做。
-## 框架保留 —— reg() / 元素表 / 解锁 / 装备 / 存档 的接口一个没动，
-## 新模型做好后在这里重新登记即可（一行一根）。
+## 旧的低多边形 146 根已按用户要求全部移除（面数过低）。这里是**新风格**的第一根：
+## 高精度几何 + PBR 贴图（35756 面，见 .runtime/make_staff_spectrum.py）。
+## 后面每做好一根，在这里加一行 reg(...) 即可。
 func _register_builtin() -> void:
-	pass
+	reg("spectrum", "虹晶法杖", Element.ARCANE,
+			"res://assets/models/crafted/staff_spectrum.glb",
+			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.030, "world_len": 1.45})
 
 
 ## 登记一根法杖

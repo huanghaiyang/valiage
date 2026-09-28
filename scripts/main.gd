@@ -219,6 +219,7 @@ func _process(delta: float) -> void:
 			sys.call("unlock", _capture_staff)
 			sys.call("equip", _capture_staff)
 			print("Capture | 已装备法杖 %s" % _capture_staff)
+			_dump_staff_state()
 	if _capture_frames > 0:
 		_apply_capture_view()
 		_capture_frames -= 1
@@ -250,6 +251,15 @@ func _run_capture_sequence() -> void:
 				path.substr(dot)]) if dot > 0 else "%s_%s" % [path, _capture_seq[idx]]
 		_save_capture(out)
 
+
+## 诊断：手持法杖到底挂在什么尺寸/朝向上（截图/排查用）
+func _dump_staff_state() -> void:
+	var hs = player.get("held_staff")
+	if hs == null:
+		print("StaffDump | held_staff 为空（没挂上）")
+		return
+	var d: Dictionary = hs.call("debug_info")
+	print("StaffDump | %s" % JSON.stringify(d))
 
 func _save_capture(out_path: String) -> void:
 	var img := get_viewport().get_texture().get_image()
@@ -467,8 +477,12 @@ func _apply_capture_view() -> void:
 		camera.fov = 58.0
 	else:
 		camera.global_position = _capture_cam
-		if _capture_look != _capture_cam:
-			camera.look_at(_capture_look, Vector3.UP)
+		# 不给 --look 就**自动对准角色**：角色的落地高度是物理结算出来的，
+		# 手填的注视点十有八九对不上（实测差 1.8m，整根杖跑到画面外）。
+		var tgt := _capture_look
+		if _capture_look == Vector3.ZERO or _capture_look == _capture_cam:
+			tgt = player.global_position + Vector3(0.0, 0.95, 0.0)
+		camera.look_at(tgt, Vector3.UP)
 
 
 func _setup_ui() -> void:
