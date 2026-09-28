@@ -26,8 +26,10 @@ extends Node3D
 ##   eye + yaw*(cos(pitch)*D) + up*(tps_height + sin(pitch)*D)
 ## 高度里那项 tps_height 是**常数**偏移，只把 D 减半会让相机相对角色抬高、
 ## 变成俯视头顶；两个一起缩才是"沿同一条视线拉近"。
-@export var tps_distance := 2.4
-@export var tps_height := 1.0
+# 再拉远 25%：2.4/1.0 -> 3.0/1.25（同样是整个偏移向量一起缩，
+# 只改距离会让相机相对角色抬高、变成俯视头顶）
+@export var tps_distance := 3.0
+@export var tps_height := 1.25
 
 var third_person := true
 var _current_yaw := 0.0

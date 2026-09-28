@@ -220,6 +220,15 @@ func _process(delta: float) -> void:
 			sys.call("equip", _capture_staff)
 			print("Capture | 已装备法杖 %s" % _capture_staff)
 			_dump_staff_state()
+	# 临时演示：把两套房屋并排放出来对照（--houses），验收用
+	if "--houses" in OS.get_cmdline_user_args() and _capture_frames == 88:
+		var base := player.global_position + Vector3(0.0, 0.0, -11.0)
+		for i in buildings.house_variant_count():
+			var pos := base + Vector3(i * 9.0 - 4.5, 0.0, 0.0)
+			buildings.add_house(pos, 1.0, 0.0, i)
+		print("Capture | [houses] 已放置 %d 套房屋：%s"
+				% [buildings.house_variant_count(), buildings.house_variant_name(0)
+				   + " / " + buildings.house_variant_name(1)])
 	if _capture_frames > 0:
 		_apply_capture_view()
 		_capture_frames -= 1
@@ -512,8 +521,9 @@ func _setup_previews() -> void:
 	# 屋预览：真实小屋模型半透明（scale 与放置默认一致）
 	var house_mi := MeshInstance3D.new()
 	house_mi.name = "HousePreview"
-	house_mi.mesh = _extract_mesh(buildings.house_scene)
-	house_mi.scale = Vector3.ONE * buildings.HOUSE_BASE_SCALE
+	# 房屋有多套（红顶小屋 / 茅草屋），各自自带基准缩放，见 building_manager.HOUSE_MODELS
+	house_mi.mesh = _extract_mesh_merged(buildings.house_scene_at())
+	house_mi.scale = Vector3.ONE * buildings.house_base_scale()
 	preview_place.add_child(house_mi)
 	# 树/花预览：花草树木的整体移除后分类表是空的，`category_model_path()` 会返回 ""，
 	# 直接 `load("")` 会在启动时报 `Resource file not found: res://`（实测两条）。
@@ -716,7 +726,7 @@ func _begin_tool() -> void:
 			if _is_occupied(p):
 				return
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
-			buildings.add_house(p, 1.0, _place_yaw)
+			buildings.add_house(p, 1.0, _place_yaw, buildings.house_variant)
 			buildings.flush_all()
 			player.play_cast_gesture()
 		Game.Tool.TREE:
@@ -870,6 +880,14 @@ func _set_used_variant(cat: String, used: int) -> void:
 
 ## 滚轮切换：dir=+1 下一个模型，-1 上一个；只有一个模型时给出提示
 func _cycle_variant(dir: int) -> void:
+	# 房屋工具用的是 building_manager 自己的房屋表，不归植被分类管
+	if Game.current_tool == Game.Tool.ROOF:
+		var hi := buildings.cycle_house_variant(dir)
+		_update_house_preview()
+		ui.show_interact_hint("房屋 %d/%d · %s" % [hi + 1,
+				buildings.house_variant_count(), buildings.house_variant_name()])
+		_variant_hint_time = 1.6
+		return
 	var cat := _tool_category(Game.current_tool)
 	if cat.is_empty():
 		ui.show_interact_hint("该工具只有一种模型")
@@ -905,6 +923,21 @@ func _model_basename(cat: String, variant: int) -> String:
 
 
 ## 把预览网格换成当前变体的真实模型（保留场景里那套半透明材质）
+## 换房屋变体后立刻换预览网格（半透明材质与缩放都要跟着换）
+func _update_house_preview() -> void:
+	var node := preview_place.get_node_or_null("HousePreview") as MeshInstance3D
+	if node == null:
+		return
+	var sc := buildings.house_scene_at()
+	if sc == null:
+		return
+	var mesh := _extract_mesh_merged(sc)
+	if mesh != null:
+		node.mesh = mesh
+	node.scale = Vector3.ONE * buildings.house_base_scale()
+	_apply_place_material(node, PREVIEW_PLACE_OK)
+
+
 func _set_place_preview_mesh(cat: String) -> void:
 	var node := _preview_for_tool(Game.current_tool)
 	if node == null:
@@ -983,6 +1016,40 @@ func _apply_place_material(node: Node, mat: StandardMaterial3D) -> void:
 		_apply_place_material(c, mat)
 
 ## 从场景提取第一个 MeshInstance3D 的 Mesh（用于真实模型半透明预览）
+## 把整棵子树的网格合并成一个（**预览用**）。
+##
+## `_extract_mesh()` 只取**第一个**子网格：KayKit 的房子整栋就是一个网格，所以一直没问题；
+## 自制茅草屋有 205 个部件，只取第一个的话预览里就显示成一个木桶（用户实测反馈"预览怎么是个桶"）。
+func _extract_mesh_merged(scene: PackedScene) -> Mesh:
+	if scene == null:
+		return null
+	var inst := scene.instantiate()
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var any := false
+	for node in inst.find_children("*", "MeshInstance3D", true, false):
+		var mi := node as MeshInstance3D
+		if mi.mesh == null:
+			continue
+		var xf := _transform_relative_to(mi, inst)
+		for s in mi.mesh.get_surface_count():
+			st.append_from(mi.mesh, s, xf)
+			any = true
+	inst.free()
+	return st.commit() if any else null
+
+
+## node 相对 root 的局部累积变换（不用 global_transform：那是惰性求值的）
+func _transform_relative_to(node: Node3D, root: Node) -> Transform3D:
+	var xf := Transform3D()
+	var n: Node = node
+	while n != null and n != root:
+		if n is Node3D:
+			xf = (n as Node3D).transform * xf
+		n = n.get_parent()
+	return xf
+
+
 func _extract_mesh(scene: PackedScene) -> Mesh:
 	if scene == null:
 		return null

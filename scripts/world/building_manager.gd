@@ -33,8 +33,94 @@ func _ready() -> void:
 		add_child(container)
 	wall_scene = load("res://assets/models/buildings/buildings/neutral/wall_straight.gltf")
 	tower_scene = load("res://assets/models/buildings/buildings/red/building_tower_A_red.gltf")
-	house_scene = load("res://assets/models/buildings/buildings/red/building_home_A_red.gltf")
+	house_scene = house_scene_at(0)      # 兼容旧引用（预览等处），默认第一套
 	_calibrate_sizes()
+	_recalibrate_house()
+
+## 可以放的房屋（滚轮在"房屋"工具里切换）。
+##
+## `base` 是**模型自身尺寸 -> 游戏尺寸**的倍数，两套模型差别很大，所以必须逐项给：
+##   * KayKit 那套是按玩具尺寸做的，要放大 3.5 倍（HOUSE_BASE_SCALE）
+##   * 自制的茅草屋是**按真实米数建的**（占地 4.2x3.0m、脊高 3.45m），倍数只能是 1.0，
+##     否则套上 3.5 会变成一栋十几米的房子
+const HOUSE_MODELS := [
+	{"id": "red_home", "name": "红顶小屋", "base": HOUSE_BASE_SCALE,
+	 "path": "res://assets/models/buildings/buildings/red/building_home_A_red.gltf"},
+	{"id": "cottage", "name": "茅草屋", "base": 1.0,
+	 "path": "res://assets/models/buildings/cottage/cottage.glb"},
+]
+## 当前选中的房屋（对应 HOUSE_MODELS 下标）
+var house_variant := 0
+var _house_cache := {}
+
+
+func house_variant_count() -> int:
+	return HOUSE_MODELS.size()
+
+
+func house_variant_name(i: int = -1) -> String:
+	var idx := house_variant if i < 0 else i
+	if idx < 0 or idx >= HOUSE_MODELS.size():
+		return ""
+	return str((HOUSE_MODELS[idx] as Dictionary).get("name", ""))
+
+
+func house_variant_id(i: int = -1) -> String:
+	var idx := house_variant if i < 0 else i
+	if idx < 0 or idx >= HOUSE_MODELS.size():
+		return ""
+	return str((HOUSE_MODELS[idx] as Dictionary).get("id", ""))
+
+
+func house_base_scale(i: int = -1) -> float:
+	var idx := house_variant if i < 0 else i
+	if idx < 0 or idx >= HOUSE_MODELS.size():
+		return HOUSE_BASE_SCALE
+	return float((HOUSE_MODELS[idx] as Dictionary).get("base", 1.0))
+
+
+## 取某号房屋的场景（带缓存）。返回 null 表示文件缺失。
+func house_scene_at(i: int = -1) -> PackedScene:
+	var idx := house_variant if i < 0 else i
+	if idx < 0 or idx >= HOUSE_MODELS.size():
+		return null
+	var path := str((HOUSE_MODELS[idx] as Dictionary).get("path", ""))
+	if path.is_empty():
+		return null
+	if not _house_cache.has(path):
+		_house_cache[path] = load(path) if ResourceLoader.exists(path) else null
+		if _house_cache[path] == null:
+			push_warning("BuildingManager: 房屋模型缺失 %s" % path)
+	return _house_cache[path] as PackedScene
+
+
+## 切换房屋变体（滚轮）；返回切换后的下标
+func cycle_house_variant(dir: int) -> int:
+	var n := house_variant_count()
+	if n > 0:
+		house_variant = posmod(house_variant + dir, n)
+		_recalibrate_house()
+	return house_variant
+
+
+func set_house_variant(i: int) -> void:
+	if i >= 0 and i < house_variant_count():
+		house_variant = i
+		_recalibrate_house()
+
+
+## 当前房屋的占地尺寸（供旧的 add_gable_roof 用）
+func _recalibrate_house() -> void:
+	var sc := house_scene_at()
+	if sc == null:
+		return
+	var inst := sc.instantiate()
+	var mi := _find_mesh_instance(inst)
+	if mi != null and mi.mesh != null:
+		var sz: Vector3 = mi.mesh.get_aabb().size
+		_house_base = maxf(sz.x, sz.z)
+	inst.free()
+
 
 func _calibrate_sizes() -> void:
 	if wall_scene != null:
@@ -158,19 +244,25 @@ func _place_tower(center: Vector3, radius: float, yaw: float, target: Node3D = n
 	_add_mesh_collision(inst, tower_scene)
 
 ## 放置一栋房屋（对应原"屋顶"工具，改用预制小屋模型；yaw>=0 指定朝向，-1 随机）
-func add_house(pos: Vector3, scale := 1.0, yaw := -1.0) -> void:
-	_place_house(pos, scale, yaw)
-	_undo_stack.append({"type": "house", "p": pos, "s": scale, "y": yaw})
+func add_house(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> void:
+	_place_house(pos, scale, yaw, null, variant)
+	_undo_stack.append({"type": "house", "p": pos, "s": scale, "y": yaw,
+			"v": house_variant if variant < 0 else variant})
 
-func _place_house(pos: Vector3, scale: float, yaw: float, target: Node3D = null) -> void:
-	var inst := _instantiate(house_scene, target)
+func _place_house(pos: Vector3, scale: float, yaw: float, target: Node3D = null,
+		variant: int = -1) -> void:
+	var sc := house_scene_at(variant)
+	if sc == null:
+		return
+	var inst := _instantiate(sc, target)
 	if inst == null:
 		return
 	inst.global_position = Vector3(pos.x, pos.y, pos.z)
-	inst.scale = Vector3.ONE * (maxf(0.4, scale) * HOUSE_BASE_SCALE)
+	# 每套模型自带基准缩放（玩具尺寸那套 3.5，按真实米数建的茅草屋 1.0）
+	inst.scale = Vector3.ONE * (maxf(0.4, scale) * house_base_scale(variant))
 	inst.rotation = Vector3(0, yaw if yaw >= 0.0 else _rng.randf_range(0.0, TAU), 0)
 	# 房屋碰撞：模型三角网格多面体（含屋顶斜面，角色可跳到屋顶上）
-	_add_mesh_collision(inst, house_scene)
+	_add_mesh_collision(inst, sc)
 
 ## 兼容旧接口（已改为放置房屋模型）
 func add_gable_roof(a: Vector3, b: Vector3, width: float, _ridge_h: float, _eave_h: float) -> void:
