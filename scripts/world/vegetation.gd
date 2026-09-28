@@ -203,11 +203,16 @@ var _furniture_height_cache: Dictionary = {}  # 家具模型路径 -> 站立面/
 ## = 角色 1.7m 的 11.5 倍；树干/树枝/板根是真几何，树叶是带 alpha 的叶片卡片，
 ## 树皮 2048² / 叶簇 1024² 各有 BaseColor + Normal（树皮另有 ORM）。
 var _category_models := {
+	# 树：**顺序必须与 building_manager.TREE_MODELS 完全一致**。
+	# 游戏内树工具的滚轮切换读的是这里的数量/下标（_current_variant），而实际放置是
+	# buildings.add_tree(variant) 去查那张表 —— 两张表错位就会"滚轮显示 A、种下 B"。
+	# 另外：全图撒点入口（populate_auto / plan_layout / _run_scatter）目前**没有任何调用方**，
+	# 场景里也没有烘焙的撒点节点（metadata/cat = 0），所以填这张表只是"让模型可选"。
+	"tree": [
+		"res://assets/models/plants/autumn_tree_1.glb",
+		"res://assets/models/plants/craystal_red_tree.glb",
+	],
 	# 花/草/蘑菇仍留空。
-	# 自制参天大树（TREE_MODELS）**暂不接入**：见 .runtime 第 55 轮记录 ——
-	# 植被是 MultiMesh 摆的，一个实例只渲染一个 surface，树皮/叶簇两个材质会串，
-	# 需要先把"叶簇用图集 alpha 通道"这条路在引擎里验证通过再接。
-	"tree": [],
 	"bush": [],
 	"flower": [],
 	"grass": [],

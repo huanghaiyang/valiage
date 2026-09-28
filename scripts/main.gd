@@ -723,7 +723,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		# 选了工具才是切模型变体。
 		if event.pressed and event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN] \
 				and not (Game.current_tool in _place_tools):
-			var dz := -1 if event.button_index == MOUSE_BUTTON_WHEEL_DOWN else 1
+			# 方向：**滚轮上 = 拉近（视野变小 / 百分比变小）**，滚轮下 = 拉远。
+			# 上一版写反了（上=拉远），用户实测反馈"滚轮缩放视角弄反了"。
+			# 注意 zoom_by 的语义是 dir=+1 拉远，所以这里要取反。
+			var dz := 1 if event.button_index == MOUSE_BUTTON_WHEEL_DOWN else -1
 			if camera_rig.zoom_by(dz):
 				ui.show_interact_hint("视野 %.0f%%（滚轮缩放，75%%~200%%）"
 						% (camera_rig.iso_zoom * 100.0))
@@ -993,7 +996,7 @@ func _end_tool() -> void:
 		_tree_brush_active = false
 		_last_tree_pos = Vector3.INF
 		buildings.flush_all()
-		print("TreeBrush | 本次笔画种了 %d 棵红枫树" % _tree_brush_count)
+		print("TreeBrush | 本次笔画种了 %d 棵树" % _tree_brush_count)
 		_tree_brush_count = 0
 	if not _is_dragging:
 		return

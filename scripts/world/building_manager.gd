@@ -10,7 +10,7 @@ var tower_scene: PackedScene
 var house_scene: PackedScene
 
 var _undo_stack: Array[Dictionary] = []
-var _shape_cache: Dictionary = {}   # 场景路径 -> ConcavePolygonShape3D（同类模型共享，按模型实际面）
+var _shape_cache: Dictionary = {}   # 场景路径 -> {shape, pos}（同类模型共享；见 _make_collision_shape）
 var _rng := RandomNumberGenerator.new()
 
 # 模型尺寸校准（运行时从 AABB 读取）
@@ -164,30 +164,87 @@ func _instantiate(scene: PackedScene, target: Node3D = null) -> Node3D:
 	(target if target != null else container).add_child(inst)
 	return inst
 
-## 给建筑实例加模型三角网格碰撞（ConcavePolygonShape3D）
-## 收集模型内所有 MeshInstance 的实际三角面（多部件：墙身/塔身/屋顶等全部覆盖），
-## 按模型实际面碰撞而非写死体积；shape 顶点在模型本地空间，随 inst 的 scale/rotation 一起变换。
-## 同类场景共享同一 shape（缓存），避免每段墙/每座塔重复收集面。
+## 超过这个顶点数就不做三角网碰撞，改用"包围盒圆柱"。
+## 例：新加的水晶树是 **1.8M 面 / 99 万顶点** —— `get_faces()` 要吐出 547 万个 Vector3，
+## 再在 GDScript 里逐点 append，实测会把主线程卡几十秒、吃掉上百 MB；而且这个 shape
+## 是同类模型**共享**的，物理里还要按它建 BVH。退回圆柱够挡住角色，代价几乎为零。
+const MAX_TRIMESH_VERTICES := 30000
+
+## 给建筑实例加碰撞体。
+## 正常模型：三角网（ConcavePolygonShape3D，贴合外形，多部件全覆盖）。
+## 超高面数模型：退回"包围盒圆柱"（见 MAX_TRIMESH_VERTICES）。
+## shape 顶点在模型本地空间，随 inst 的 scale/rotation 一起变换；同类场景共享同一份。
 func _add_mesh_collision(inst: Node3D, scene: PackedScene) -> void:
 	if scene == null or inst == null:
 		return
-	var shape: ConcavePolygonShape3D = _shape_cache.get(scene.resource_path)
-	if shape == null:
-		var faces := PackedVector3Array()
-		# 从 inst 收集但不乘 inst 自身 transform（shape 挂 inst 下，inst 的 scale/rotation 会整体作用）
-		_collect_mesh_faces(inst, Transform3D.IDENTITY, faces, false)
-		if faces.is_empty():
+	var entry: Dictionary = _shape_cache.get(scene.resource_path, {})
+	if entry.is_empty():
+		entry = _make_collision_shape(inst)
+		if entry.is_empty():
 			return
-		shape = ConcavePolygonShape3D.new()
-		shape.set_faces(faces)
-		_shape_cache[scene.resource_path] = shape
+		_shape_cache[scene.resource_path] = entry
 	var sb := StaticBody3D.new()
 	sb.collision_layer = 4
 	sb.collision_mask = 0
 	var col := CollisionShape3D.new()
-	col.shape = shape
+	col.shape = entry["shape"]
+	col.position = entry["pos"]
 	sb.add_child(col)
 	inst.add_child(sb)
+
+
+## 决定一个模型实例用哪种碰撞形状。返回 {"shape": Shape3D, "pos": Vector3}；
+## 顶点太多 → 圆柱（pos = 包围盒中心，否则圆柱会一半埋进地里）；否则三角网（pos = 原点）。
+func _make_collision_shape(inst: Node3D) -> Dictionary:
+	if _count_mesh_vertices(inst) > MAX_TRIMESH_VERTICES:
+		var ab := _mesh_local_aabb(inst)
+		var cyl := CylinderShape3D.new()
+		# 半径取水平短边的一半：树/水晶这类竖高的模型只要挡住中轴就够
+		cyl.radius = maxf(0.05, minf(ab.size.x, ab.size.z) * 0.5)
+		cyl.height = maxf(0.1, ab.size.y)
+		return {"shape": cyl, "pos": ab.get_center()}
+	var faces := PackedVector3Array()
+	# 从 inst 收集但不乘 inst 自身 transform（shape 挂 inst 下，inst 的 scale/rotation 会整体作用）
+	_collect_mesh_faces(inst, Transform3D.IDENTITY, faces, false)
+	if faces.is_empty():
+		return {}
+	var tri := ConcavePolygonShape3D.new()
+	tri.set_faces(faces)
+	return {"shape": tri, "pos": Vector3.ZERO}
+
+
+## 统计实例内所有 MeshInstance 的顶点数。
+## 只读 surface_get_array_len，**不**调用 get_faces()，所以对高模也是毫秒级。
+func _count_mesh_vertices(n: Node) -> int:
+	var total := 0
+	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+		var m := (n as MeshInstance3D).mesh
+		for i in m.get_surface_count():
+			total += m.surface_get_array_len(i)
+	for c in n.get_children():
+		total += _count_mesh_vertices(c)
+	return total
+
+
+## 实例内所有网格的本地 AABB 并集（不乘根节点自身 transform，与 _collect_mesh_faces 一致）
+func _mesh_local_aabb(root: Node3D) -> AABB:
+	var boxes: Array[AABB] = []
+	_collect_mesh_aabbs(root, Transform3D.IDENTITY, false, boxes)
+	if boxes.is_empty():
+		return AABB()
+	var out := boxes[0]
+	for i in range(1, boxes.size()):
+		out = out.merge(boxes[i])
+	return out
+
+
+func _collect_mesh_aabbs(n: Node3D, xform: Transform3D, include_self: bool, out: Array[AABB]) -> void:
+	var t: Transform3D = xform * (n.transform if include_self else Transform3D.IDENTITY)
+	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+		out.append(t * (n as MeshInstance3D).mesh.get_aabb())
+	for c in n.get_children():
+		if c is Node3D:
+			_collect_mesh_aabbs(c as Node3D, t, true, out)
 
 ## 递归收集场景内所有 MeshInstance3D 的三角面顶点，按节点 transform 链式变换到根空间
 ## include_self 为 false 时跳过根节点自身 transform（shape 挂根节点下随根 transform 整体变换）
@@ -257,7 +314,13 @@ func _place_tower(center: Vector3, radius: float, yaw: float, target: Node3D = n
 ## 滚轮可以在这些变体之间切换。
 const TREE_MODELS := [
 	{"id": "red_maple", "name": "红枫树", "base": 1.0,
-	 "path": "res://assets/models/plants/autumn_tree_1.glb"},]
+	 "path": "res://assets/models/plants/autumn_tree_1.glb"},
+	# 红色水晶树（Tripo）：模型只有 0.98m 高，base 是"补到真实米数"的倍率 ——
+	# 6.0 → 约 5.9m。要改大小就改这个数。
+	# **注意它是 1.8M 面 / 99 万顶点的高模**：精度靠引擎的自动 LOD（游玩时按
+	# Settings.mesh_lod_threshold 切换），碰撞由 _make_collision_shape 自动退回圆柱。
+	{"id": "crystal_red", "name": "红色水晶树", "base": 6.0,
+	 "path": "res://assets/models/plants/craystal_red_tree.glb"},]
 
 var tree_variant := 0
 var _tree_cache := {}
