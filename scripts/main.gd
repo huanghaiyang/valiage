@@ -245,6 +245,12 @@ func _process(delta: float) -> void:
 			buildings.add_tree(tp2, 1.0, 0.5, ti)
 		print("Capture | [newmodels] 已放置 %d 棵树（变体 %s ...）"
 				% [buildings.tree_variant_count(), buildings.tree_variant_name(0)])
+	if "--occl" in OS.get_cmdline_user_args() and _capture_frames == 88:
+		# 遮挡穿透验收：在**相机与角色之间**放一棵树（相机在角色的 +X +Z 方向）
+		var op := player.global_position + Vector3(3.4, 0.0, 3.4)
+		op.y = terrain.get_height_at(op.x, op.z)
+		buildings.add_tree(op, 1.0, 0.5, 0)
+		print("Capture | [occl] 已在相机与角色之间放一棵树（应被淡化）")
 	if _capture_frames > 0:
 		_apply_capture_view()
 		_capture_frames -= 1

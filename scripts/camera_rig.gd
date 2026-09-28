@@ -46,6 +46,21 @@ const ISO_ZOOM_STEP := 0.12
 @export var iso_look_height := 1.15  # 注视点抬高 -> 角色落在画面偏下
 @export var iso_fov := 45.0          # 小 FOV 减少透视畸变，更像 D4
 
+# ---- 遮挡穿透（相机被挡住时把挡路物体淡化）----
+@export var occlusion_fade := true       # 总开关
+## 洞的半径 = 角色在屏幕上的高度 * 这个系数（越大抠得越多）
+@export var hole_radius_scale := 1.05
+@export var hole_min_radius := 0.06
+@export var hole_softness := 0.035       # 洞边缘过渡宽度（UV）
+@export var hole_alpha := 0.08           # 洞内保留的不透明度（0=全透，1=不淡）
+@export var occlusion_probe_interval := 0.08   # 采样间隔（秒）
+## 只处理这一层上的物体。这个项目里：地形=2，**建筑（树/房/墙/塔）=4**，植被=8。
+## 不做过滤的话，射线平时打到地面，会把整块地形也淡化掉（实测踩过这个 Bug）。
+## 地面也不需要挖洞：角色站在地上，地面本来挡不住他，挖洞反而露出天空盒。
+@export_flags_3d_physics var occlusion_layer_mask := 4
+## 挖洞着色器（只影响被遮挡的那一块，不是整棵变透明）
+const OCCLUSION_SHADER := preload("res://scripts/shaders/occlusion_hole.gdshader")
+
 var third_person := true
 var _current_yaw := 0.0
 var _current_pitch := 0.0
@@ -53,6 +68,11 @@ var _mouse_captured := true
 var _velocity_y := 0.0       # 垂直速度（跳跃/重力）
 var _space_prev := false     # 上一帧空格状态（防按住连跳）
 var interact_freeze := false    # 家具互动期间冻结角色物理驱动（位置由 player 管理）
+
+## 遮挡挖洞：MeshInstance3D -> 是否已装洞材质
+var _occ_holes := {}
+var _occ_seen := {}
+var _occ_timer := 0.0
 # ---- 卡墙自救 ----
 ## 持续想走却走不动时，侧向蹭一下绕过障碍。
 ## 正面顶墙时 move_and_slide 正好把速度抵消为零，玩家会完全钉在原地；
@@ -127,7 +147,168 @@ func _unhandled_input(event: InputEvent) -> void:
 			invert_y = not invert_y
 			print("[camera] 垂直视角反转 = %s" % str(invert_y))
 
+## ---------------- 遮挡穿透（屏幕空间挖洞） ----------------
+##
+## 只把"盖住角色"的那块抠掉，模型其余部分照旧不透明 ——
+## 这样既能看到角色，又不会整棵树糊成一片半透明。
+
+## 每帧：更新角色的屏幕位置/半径（写全局 uniform）+ 定期重新采样遮挡物。
+func _update_occlusion_fade(delta: float) -> void:
+	if not occlusion_fade or camera == null or player == null:
+		_clear_all_holes()
+		return
+	# --- 角色在屏幕上的位置与半径 ---
+	var vp := get_viewport().get_visible_rect().size
+	if vp.y < 1.0:
+		return
+	var base: Vector3 = player.global_position
+	var p_top := camera.unproject_position(base + Vector3(0.0, 1.75, 0.0))
+	var p_bot := camera.unproject_position(base)
+	var h_px: float = (p_top - p_bot).length()
+	var uv := Vector2(0.5, 0.5)
+	var pr := camera.unproject_position(base + Vector3(0.0, 0.9, 0.0))
+	if vp.x > 1.0 and vp.y > 1.0:
+		uv = Vector2(pr.x / vp.x, pr.y / vp.y)
+	var radius: float = maxf(hole_min_radius, (h_px / vp.y) * hole_radius_scale)
+	# 这三个全局 uniform 必须先在 project.godot 的 [shader_globals] 里注册
+	# （编辑器扫描着色器时会自动写进去；命令行跑就得手动加，否则这里会报
+	#  "!global_shader_uniforms.variables.has(p_name)"）
+	RenderingServer.global_shader_parameter_set("occ_player_uv", uv)
+	RenderingServer.global_shader_parameter_set("occ_radius", radius)
+	RenderingServer.global_shader_parameter_set("occ_softness", hole_softness)
+	RenderingServer.global_shader_parameter_set("occ_hole_alpha", hole_alpha)
+
+	# --- 定期重新采样 ---
+	_occ_timer -= delta
+	if _occ_timer <= 0.0:
+		_occ_timer = occlusion_probe_interval
+		_rescan_occluders()
+
+
+## 找出挡住角色的建筑，给它们装"挖洞"材质；没挡住的恢复原材质。
+func _rescan_occluders() -> void:
+	_occ_seen.clear()
+	var from: Vector3 = camera.global_position
+	var base: Vector3 = player.global_position
+	var probes := [base + Vector3(0.0, 1.35, 0.0),
+			base + Vector3(0.0, 0.75, 0.0),
+			base + Vector3(0.0, 0.15, 0.0)]
+	var exclude: Array[RID] = []
+	var body: Variant = player.get("body")
+	if body is CollisionObject3D:
+		exclude.append((body as CollisionObject3D).get_rid())
+	for to in probes:
+		var params := PhysicsRayQueryParameters3D.create(from, to)
+		params.exclude = exclude
+		params.collide_with_areas = false
+		var hit := get_world_3d().direct_space_state.intersect_ray(params)
+		if hit.is_empty():
+			continue
+		var col: Object = hit.get("collider")
+		if col == null or not (col is Node):
+			continue
+		if col is CollisionObject3D:
+			var co := col as CollisionObject3D
+			if (co.collision_layer & occlusion_layer_mask) == 0:
+				continue                     # 地形/植被：跳过
+		var root := _occluder_root(col as Node)
+		if root == null:
+			continue
+		for gi in _geometry_instances(root):
+			if gi is MeshInstance3D:
+				_occ_seen[gi] = true
+				if not _occ_holes.has(gi):
+					_install_hole(gi as MeshInstance3D)
+	# 不再挡路的：恢复
+	for gi in _occ_holes.keys():
+		if not is_instance_valid(gi):
+			_occ_holes.erase(gi)
+			continue
+		if not _occ_seen.has(gi):
+			_remove_hole(gi as MeshInstance3D)
+
+
+func _install_hole(mi: MeshInstance3D) -> void:
+	if mi.mesh == null:
+		return
+	var n := mi.mesh.get_surface_count()
+	for i in n:
+		var src := mi.get_active_material(i)
+		var m := ShaderMaterial.new()
+		m.shader = OCCLUSION_SHADER
+		var tint := Color.WHITE
+		if src is StandardMaterial3D:
+			var std := src as StandardMaterial3D
+			if std.albedo_texture != null:
+				m.set_shader_parameter("albedo_tex", std.albedo_texture)
+			tint = std.albedo_color
+			m.set_shader_parameter("roughness", std.roughness)
+			m.set_shader_parameter("metallic", std.metallic)
+		else:
+			# 自定义着色器材质：拿不到它的贴图，退回原材质不动（别把模型弄白）
+			continue
+		m.set_shader_parameter("tint", tint)
+		mi.set_surface_override_material(i, m)
+	_occ_holes[mi] = true
+
+
+func _remove_hole(mi: MeshInstance3D) -> void:
+	if not is_instance_valid(mi) or mi.mesh == null:
+		_occ_holes.erase(mi)
+		return
+	for i in mi.mesh.get_surface_count():
+		mi.set_surface_override_material(i, null)
+	_occ_holes.erase(mi)
+
+
+func _clear_all_holes() -> void:
+	for gi in _occ_holes.keys():
+		if is_instance_valid(gi):
+			_remove_hole(gi as MeshInstance3D)
+	_occ_holes.clear()
+	_occ_seen.clear()
+
+
+## 射线打到的是碰撞体（挂在模型实例下面的子节点），往上找到"那一个被放置的物体"。
+func _occluder_root(n: Node) -> Node3D:
+	var cur: Node = n
+	var depth := 0
+	while cur != null and depth < 4:
+		var p := cur.get_parent()
+		if p == null or p == get_tree().current_scene:
+			return null
+		if not (cur is Node3D):
+			return null
+		if _has_geometry(cur):
+			return cur as Node3D
+		cur = p
+		depth += 1
+	return null
+
+
+func _has_geometry(n: Node) -> bool:
+	if n is GeometryInstance3D:
+		return true
+	for c in n.get_children():
+		if c is GeometryInstance3D:
+			return true
+	return false
+
+
+func _geometry_instances(root: Node3D) -> Array:
+	var out: Array = []
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is GeometryInstance3D:
+			out.append(n)
+		for c in n.get_children():
+			stack.append(c)
+	return out
+
+
 func _physics_process(delta: float) -> void:
+	_update_occlusion_fade(delta)
 	if iso_locked:
 		# 每帧强制写回固定朝向与俯角：下面还有"爬坡时动态夹紧俯角"
 		# 和"鼠标没捕获时朝向跟移动方向"两段逻辑，都会把这个值改掉。

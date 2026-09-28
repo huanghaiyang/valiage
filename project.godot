@@ -58,8 +58,23 @@ renderer/anti_aliasing/quality/msaa_3d=1
 
 [shader_globals]
 
-wind_direction={
+occ_player_uv={
 "type": "vec2",
+"value": Vector2(0.5, 0.5)
+}
+occ_radius={
+"type": "float",
+"value": 0.1
+}
+occ_softness={
+"type": "float",
+"value": 0.035
+}
+occ_hole_alpha={
+"type": "float",
+"value": 0.25
+}
+wind_direction={"type": "vec2",
 "value": Vector2(1, 0)
 }
 wind_strength={
