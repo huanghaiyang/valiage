@@ -250,13 +250,18 @@ func _place_tower(center: Vector3, radius: float, yaw: float, target: Node3D = n
 ## 只渲染一个 surface —— 参天大树是"树皮 + 叶片(带 alpha)"两个材质的高精度模型，
 ## 放进 MultiMesh 必然串材质（实测：叶子先变成无贴图白片、再变成棕色木片）。
 ## 房屋那条路用真实节点摆放，多材质天然支持，所以树照抄房屋这条路。
-## 参天大树模型表（**当前为空**：自制那棵已从项目里撤掉，用户将用 Tripo3D 重做）。
-## 接入新模型只需在这里加一行，例如：
-##   {"id": "tripo_maple", "name": "参天枫树", "base": 1.0,
-##    "path": "res://assets/models/trees/xxx.glb"}
-## `base` 是模型自带的基准缩放：按真实米数建模的填 1.0，玩具尺寸的按需放大。
-## 表为空时 add_tree 会直接返回（不会报错），树木工具点了没反应是正常的。
-const TREE_MODELS := []
+## 参天大树模型表。Tripo3D 出的模型已用 `.runtime/trim_tripo_models.py`
+## 切成"四份里的第一份"、脚底归零、缩放到真实米数（9.0m），所以 base = 1.0。
+const TREE_MODELS := [
+	{"id": "autumn_tree", "name": "秋树", "base": 1.0,
+	 "path": "res://assets/models/plants/autumn_tree.glb"},
+]
+
+## 雕像模型表（可建造的装饰地标）。同样是真实米数（2.6m），base = 1.0。
+const STATUE_MODELS := [
+	{"id": "serpent_statue", "name": "蛇人雕像", "base": 1.0,
+	 "path": "res://assets/models/statue/serpent_statue.glb"},
+]
 var tree_variant := 0
 var _tree_cache := {}
 
@@ -322,6 +327,68 @@ func _place_tree(pos: Vector3, scale: float, yaw: float, target: Node3D = null,
 	inst.rotation = Vector3(0, yaw if yaw >= 0.0 else _rng.randf_range(0.0, TAU), 0)
 	# 树干碰撞：三角网格（树叶卡片也在里面，但角色撞上去就是"树"的感觉，
 	# 而且可以顺着树干站上枝桠）
+	_add_mesh_collision(inst, sc)
+
+
+## ---------------- 雕像（可建造地标） ----------------
+## 与房屋/树木同一条路：真实节点摆放 -> 多材质没问题 -> 带网格碰撞 -> 可撤销。
+var statue_variant := 0
+var _statue_cache := {}
+
+
+func statue_variant_count() -> int:
+	return STATUE_MODELS.size()
+
+
+func statue_variant_name(i: int = -1) -> String:
+	var idx := statue_variant if i < 0 else i
+	if idx < 0 or idx >= STATUE_MODELS.size():
+		return ""
+	return str((STATUE_MODELS[idx] as Dictionary).get("name", ""))
+
+
+func statue_base_scale(i: int = -1) -> float:
+	var idx := statue_variant if i < 0 else i
+	if idx < 0 or idx >= STATUE_MODELS.size():
+		return 1.0
+	return float((STATUE_MODELS[idx] as Dictionary).get("base", 1.0))
+
+
+func statue_scene_at(i: int = -1) -> PackedScene:
+	var idx := statue_variant if i < 0 else i
+	if idx < 0 or idx >= STATUE_MODELS.size():
+		return null
+	var path := str((STATUE_MODELS[idx] as Dictionary).get("path", ""))
+	if path.is_empty():
+		return null
+	if not _statue_cache.has(path):
+		_statue_cache[path] = load(path) if ResourceLoader.exists(path) else null
+	return _statue_cache[path] as PackedScene
+
+
+func cycle_statue_variant(dir: int = 1) -> void:
+	if STATUE_MODELS.is_empty():
+		return
+	statue_variant = posmod(statue_variant + dir, STATUE_MODELS.size())
+
+
+func add_statue(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> void:
+	_place_statue(pos, scale, yaw, null, variant)
+	_undo_stack.append({"type": "statue", "p": pos, "s": scale, "y": yaw,
+			"v": statue_variant if variant < 0 else variant})
+
+
+func _place_statue(pos: Vector3, scale: float, yaw: float, target: Node3D = null,
+		variant: int = -1) -> void:
+	var sc := statue_scene_at(variant)
+	if sc == null:
+		return
+	var inst := _instantiate(sc, target)
+	if inst == null:
+		return
+	inst.global_position = Vector3(pos.x, pos.y, pos.z)
+	inst.scale = Vector3.ONE * (maxf(0.05, scale) * statue_base_scale(variant))
+	inst.rotation = Vector3(0, yaw if yaw >= 0.0 else _rng.randf_range(0.0, TAU), 0)
 	_add_mesh_collision(inst, sc)
 
 
@@ -391,6 +458,9 @@ func _rebuild_from_history() -> void:
 						int(op.get("v", -1)))
 			"tree":
 				_place_tree(op.p, op.s, op.get("y", -1.0), cache,
+						int(op.get("v", -1)))
+			"statue":
+				_place_statue(op.p, op.s, op.get("y", -1.0), cache,
 						int(op.get("v", -1)))
 	_undo_stack = history
 	for c in cache.get_children():

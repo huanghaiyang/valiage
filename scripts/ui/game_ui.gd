@@ -67,6 +67,7 @@ const TOOL_BUTTONS := [
 	["花草", Game.Tool.FLOWER],
 	["家具", Game.Tool.DECOR],
 	["山体", Game.Tool.MOUNTAIN],
+	["雕像", Game.Tool.STATUE],
 ]
 
 func setup(main_node: Node3D) -> void:
@@ -286,6 +287,8 @@ func _on_tool_changed(tool: int) -> void:
 			tip = "点击放置家具（桌/椅/床/梯子等）"
 		Game.Tool.MOUNTAIN:
 			tip = "点击放置山体（悬崖岩块）"
+		Game.Tool.STATUE:
+			tip = "点击放置雕像"
 	# 常驻提示文字已按用户要求去掉；当前工具的说明挂在**创造列表**的提示上，
 	# 按需查看（B 打开列表时会显示），不再在屏幕上常驻一行字。
 	if create_panel != null:

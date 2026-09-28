@@ -2,21 +2,21 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://b1jtb7i2gec6l"
-path.s3tc="res://.godot/imported/staff_spectrum_T_Gold_ORM.png-e079f50822ee08937546330199f9b6b1.s3tc.ctex"
-path.etc2="res://.godot/imported/staff_spectrum_T_Gold_ORM.png-e079f50822ee08937546330199f9b6b1.etc2.ctex"
+uid="uid://culv43ku23wpu"
+path.s3tc="res://.godot/imported/serpent_statue_蛇人雕像3d模型_basecolor.jpg-3f61b47a6391bcd0bb546c70360b7959.s3tc.ctex"
+path.etc2="res://.godot/imported/serpent_statue_蛇人雕像3d模型_basecolor.jpg-3f61b47a6391bcd0bb546c70360b7959.etc2.ctex"
 metadata={
 "imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
-"md5": "d563be30cd095ea89a5af445bc5e1a37"
+"md5": "8831cd3e58ec709a6c7bf165e8700ccc"
 }
 
 [deps]
 
-source_file="res://assets/models/crafted/staff_spectrum_T_Gold_ORM.png"
-dest_files=["res://.godot/imported/staff_spectrum_T_Gold_ORM.png-e079f50822ee08937546330199f9b6b1.s3tc.ctex", "res://.godot/imported/staff_spectrum_T_Gold_ORM.png-e079f50822ee08937546330199f9b6b1.etc2.ctex"]
+source_file="res://assets/models/statue/serpent_statue_蛇人雕像3d模型_basecolor.jpg"
+dest_files=["res://.godot/imported/serpent_statue_蛇人雕像3d模型_basecolor.jpg-3f61b47a6391bcd0bb546c70360b7959.s3tc.ctex", "res://.godot/imported/serpent_statue_蛇人雕像3d模型_basecolor.jpg-3f61b47a6391bcd0bb546c70360b7959.etc2.ctex"]
 
 [params]
 

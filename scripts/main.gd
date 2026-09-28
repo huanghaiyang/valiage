@@ -47,7 +47,7 @@ const PREVIEW_PLACE_OK := preload("res://assets/materials/preview_place_ok.tres"
 const PREVIEW_PLACE_BLOCKED := preload("res://assets/materials/preview_place_blocked.tres")
 
 # 单点放置工具（塔/屋/树/花/家具/山体：视野中心目标点的半透明模型，绿=可放置，红=占位）
-var _place_tools := [Game.Tool.TOWER, Game.Tool.ROOF, Game.Tool.TREE, Game.Tool.FLOWER, Game.Tool.DECOR, Game.Tool.MOUNTAIN]
+var _place_tools := [Game.Tool.TOWER, Game.Tool.ROOF, Game.Tool.TREE, Game.Tool.FLOWER, Game.Tool.DECOR, Game.Tool.MOUNTAIN, Game.Tool.STATUE]
 ## 各分类当前选中的模型变体（滚轮切换）：{"tree": 0, "flower": 2, ...}
 ## 按分类而非按工具保存，切回同类工具时保留上次的选择；场景重载后自动归零。
 var _variant_sel: Dictionary = {}
@@ -237,6 +237,16 @@ func _process(delta: float) -> void:
 		print("Capture | [houses] 已放置 %d 套房屋：%s"
 				% [buildings.house_variant_count(), buildings.house_variant_name(0)
 				   + " / " + buildings.house_variant_name(1)])
+	if "--newmodels" in OS.get_cmdline_user_args() and _capture_frames == 88:
+		# 验收：Tripo 的树 + 雕像各放一个（走正式放置入口）
+		var tp2 := player.global_position + Vector3(-7.0, 0.0, -5.0)
+		tp2.y = terrain.get_height_at(tp2.x, tp2.z)
+		buildings.add_tree(tp2, 1.0, 0.5, 0)
+		var sp2 := player.global_position + Vector3(4.5, 0.0, -3.5)
+		sp2.y = terrain.get_height_at(sp2.x, sp2.z)
+		buildings.add_statue(sp2, 1.0, -0.7, 0)
+		print("Capture | [newmodels] 树=%s 雕像=%s 已放置"
+				% [buildings.tree_variant_name(0), buildings.statue_variant_name(0)])
 	if _capture_frames > 0:
 		_apply_capture_view()
 		_capture_frames -= 1
@@ -555,6 +565,14 @@ func _setup_previews() -> void:
 		tree_mi.mesh = _extract_mesh_merged(tsc)
 		tree_mi.scale = Vector3.ONE * buildings.tree_base_scale()
 	preview_place.add_child(tree_mi)
+	# 雕像预览：同样用 building_manager 的场景（无模型时不建）
+	var statue_mi := MeshInstance3D.new()
+	statue_mi.name = "StatuePreview"
+	var ssc := buildings.statue_scene_at()
+	if ssc != null:
+		statue_mi.mesh = _extract_mesh_merged(ssc)
+		statue_mi.scale = Vector3.ONE * buildings.statue_base_scale()
+	preview_place.add_child(statue_mi)
 	furniture_mi.scale = Vector3.ONE
 	preview_place.add_child(furniture_mi)
 	# 山体预览：真实 cliff 模型半透明（scale 与放置一致，用山体中值）
@@ -840,6 +858,14 @@ func _begin_tool() -> void:
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 			_set_used_variant("mountain", vegetation.add_mountain(p, 4.0, _place_yaw, _current_variant("mountain")))
 			player.play_cast_gesture()
+		Game.Tool.STATUE:
+			if buildings.statue_variant_count() == 0:
+				return
+			if _is_occupied(p):
+				return
+			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
+			buildings.add_statue(p, 1.0, _place_yaw, _current_variant("statue"))
+			player.play_cast_gesture()
 		Game.Tool.TERRAIN_RAISE:
 			terrain.apply_brush(p, terrain.brush_radius, terrain.brush_strength)
 			_recycle_vegetation(p)
@@ -938,6 +964,8 @@ func _tool_category(tool: int) -> String:
 			return "furniture"
 		Game.Tool.MOUNTAIN:
 			return "mountain"
+		Game.Tool.STATUE:
+			return "statue"
 	return ""
 
 
@@ -1049,6 +1077,7 @@ func _preview_base_scale_for(cat: String) -> float:
 		"flower": return 1.1
 		"furniture": return 1.0
 		"mountain": return 4.0
+		"statue": return 1.0
 	return -1.0
 
 
@@ -1091,6 +1120,8 @@ func _place_node_name(tool: int) -> String:
 			return "FurniturePreview"
 		Game.Tool.MOUNTAIN:
 			return "MountainPreview"
+		Game.Tool.STATUE:
+			return "StatuePreview"
 	return ""
 
 ## 递归设置预览材质（树预览是 MeshInstance3D 或 Node3D 容器）
