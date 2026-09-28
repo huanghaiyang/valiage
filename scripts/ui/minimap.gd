@@ -233,7 +233,16 @@ func _process(_delta: float) -> void:
 	var yaw := 0.0
 	if main.player.body != null:
 		yaw = main.player.body.rotation.y
-	arrow.update_arrow(p.x, p.z, yaw)
+	# ---- 小地图跟着相机转（用户要求）；大地图保持正北，所以 big_cam 不动 ----
+	# 相机 yaw 就是俯视角的 iso_yaw_deg（未选工具时右键拖动能改它）。
+	# 小地图相机是俯视机位，绕世界竖直轴转同样的角度，画面就跟着转。
+	var cam_yaw := 0.0
+	if main.camera_rig != null:
+		cam_yaw = deg_to_rad(main.camera_rig.iso_yaw_deg)
+	# 若发现旋转方向反了，把下面的负号去掉即可
+	cam.rotation = Vector3(-PI * 0.5, 0.0, -cam_yaw)
+	# 箭头是屏幕空间画的，地图转了它也得跟着转，否则朝向对不上
+	arrow.update_arrow(p.x, p.z, yaw - cam_yaw)
 	coord_label.text = "X %d · Z %d · 海拔 %.1f" % [int(p.x), int(p.z), p.y]
 	if big_root.visible:
 		big_arrow.update_arrow(p.x, p.z, yaw)

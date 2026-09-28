@@ -2,10 +2,37 @@ extends CanvasLayer
 ## 游戏 UI：顶部工具栏与提示
 
 var main: Node3D
+## 创造列表（B 呼出）与帮助面板（H 呼出）
+var create_panel: PanelContainer
+var create_button: Button
+var help_panel: PanelContainer
+var help_button: Button
+var help_label: Label
+var _create_visible := false
+## 打开创建菜单前的工具/变体选择（关闭时回滚）
+var _tool_before_create: int = Game.Tool.NONE
+var _variants_before_create: Dictionary = {}
+var _help_visible := false
+
+## 左侧功能键统一用小尺寸按钮（原来 84x48、字号默认太大）
+func _make_key_button(label: String, tip: String) -> Button:
+	var b := Button.new()
+	b.text = label
+	b.tooltip_text = tip
+	b.custom_minimum_size = Vector2(36, 26)
+	b.add_theme_font_size_override("font_size", 12)
+	b.toggle_mode = true
+	return b
+
+
+const HELP_TEXT := """WASD 移动 · Shift 加速 · Space 跳跃 · C 下降
+左键 建造/放置 · 右键 旋转视角（未选工具时按住拖动）
+滚轮 缩放视野（未选工具时 75%~200%）/ 换模型（选了工具时）
+E 交互（坐/睡/攀爬） · F 装备法杖 · Q 换杖 · V 换天气
+M 大地图 · Ctrl+Z 撤销 · ESC 关闭面板 · B/K/H 本面板"""
+
 var tool_buttons: Dictionary = {}
 var tool_button_map: Dictionary = {}  # button -> tool
-var title_label: Label
-var hint_label: Label
 var undo_button: Button
 var biomass_label: Label
 var action_button: Button           # 动作菜单开关按钮
@@ -27,6 +54,9 @@ var staff_slot_icon: ColorRect
 var _weather_accum := 0.0
 
 const TOOL_BUTTONS := [
+	# 不在这里放"选择"按钮（用户要求去掉）。取消选择的功能保留：
+	#   * ESC：没打开面板时按一下 = 收起当前工具
+	#   * 再点一次"当前已选中"的工具按钮 = 取消选择
 	["墙壁", Game.Tool.WALL],
 	["塔楼", Game.Tool.TOWER],
 	["房屋", Game.Tool.ROOF],
@@ -43,6 +73,9 @@ func setup(main_node: Node3D) -> void:
 	main = main_node
 	_build_ui()
 	Game.tool_changed.connect(_on_tool_changed)
+	# 开局同步一次按钮高亮：默认工具是"选择"(NONE)，而信号只在**变化**时发，
+	# 不主动调一次的话开局没有任何按钮是按下态。
+	_on_tool_changed(Game.current_tool)
 	# 装备数据一变就刷新右下角格子与（打开着的）面板
 	var sys := get_node_or_null("/root/StaffSystem")
 	if sys != null and not sys.is_connected("equipment_changed", _on_equipment_changed):
@@ -50,157 +83,156 @@ func setup(main_node: Node3D) -> void:
 	update_staff_slot()
 
 func _build_ui() -> void:
-	# 背景
-	var bg := ColorRect.new()
-	bg.color = Color(0.1, 0.14, 0.18, 0.55)
-	bg.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	bg.offset_bottom = 64.0
-	add_child(bg)
+	# ============================================================
+	# 布局：顶部**什么都不留**；底部一排 B / K / H 三个按钮；
+	# 建造工具全部收进 B 呼出的"创造列表"里。
+	# ============================================================
 
-	# 标题
-	title_label = Label.new()
-	title_label.text = "温馨山谷 · Cozy Vale"
-	title_label.add_theme_font_size_override("font_size", 22)
-	title_label.add_theme_color_override("font_color", Color.WHITE)
-	title_label.position = Vector2(16, 10)
-	add_child(title_label)
+	# ---- 创造列表（默认隐藏，B 键 / B 按钮呼出，ESC 关闭）----
+	create_panel = PanelContainer.new()
+	create_panel.name = "CreatePanel"
+	create_panel.add_theme_stylebox_override("panel", _panel_style())
+	# 位置由 _layout_panels() 动态给，这里只定左上锚点
+	create_panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	create_panel.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	create_panel.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	create_panel.visible = false
+	add_child(create_panel)
+	var cv := VBoxContainer.new()
+	cv.add_theme_constant_override("separation", 10)
+	create_panel.add_child(cv)
 
-	# 工具按钮行
-	var hbox := HBoxContainer.new()
-	hbox.position = Vector2(200, 12)
-	hbox.add_theme_constant_override("separation", 6)
-	add_child(hbox)
+	# 资源/天气：原来在右上角（顶部 UI），按用户要求挪进创造列表
+	var top_row := HBoxContainer.new()
+	top_row.add_theme_constant_override("separation", 18)
+	cv.add_child(top_row)
+	var cap := Label.new()
+	cap.text = "创 造"
+	cap.add_theme_font_size_override("font_size", 13)
+	cap.add_theme_color_override("font_color", Color.WHITE)
+	top_row.add_child(cap)
+	biomass_label = Label.new()
+	biomass_label.text = "生物质 0 · 石材 0"
+	biomass_label.add_theme_font_size_override("font_size", 11)
+	biomass_label.add_theme_color_override("font_color", Color(0.78, 0.95, 0.62))
+	top_row.add_child(biomass_label)
+	Game.biomass_changed.connect(_on_biomass_changed)
+	Game.stone_changed.connect(_on_biomass_changed)
+	weather_label = Label.new()
+	weather_label.text = "晴朗"
+	weather_label.add_theme_font_size_override("font_size", 11)
+	weather_label.add_theme_color_override("font_color", Color(0.82, 0.90, 1.0))
+	top_row.add_child(weather_label)
 
+	# 工具按钮：每行 5 个
+	var grid := GridContainer.new()
+	grid.columns = 5
+	grid.add_theme_constant_override("h_separation", 4)
+	grid.add_theme_constant_override("v_separation", 4)
+	cv.add_child(grid)
 	for btn_data in TOOL_BUTTONS:
 		var btn := Button.new()
 		btn.text = btn_data[0]
-		btn.custom_minimum_size = Vector2(64, 34)
+		btn.add_theme_font_size_override("font_size", 11)
+		btn.custom_minimum_size = Vector2(80, 24)
 		btn.pressed.connect(_on_tool_button_pressed.bind(btn))
-		hbox.add_child(btn)
+		grid.add_child(btn)
 		tool_buttons[btn_data[1]] = btn
 		tool_button_map[btn] = btn_data[1]
 
-	# 撤销按钮
-	undo_button = Button.new()
-	undo_button.text = "撤销 (Ctrl+Z)"
-	undo_button.custom_minimum_size = Vector2(110, 34)
-	undo_button.pressed.connect(_on_undo_pressed)
-	hbox.add_child(undo_button)
+	var brow := HBoxContainer.new()
+	brow.add_theme_constant_override("separation", 10)
+	cv.add_child(brow)
+	# 撤销按钮已按用户要求从菜单里去掉；功能保留在 **Ctrl+Z**（main.gd 里处理）
+	# 装备按钮已经挪到左侧键列（F），这里不再重复
 
-	# 动作菜单按钮
-	action_button = Button.new()
-	action_button.text = "动作 (K)"
-	action_button.custom_minimum_size = Vector2(90, 34)
-	action_button.toggle_mode = true
+	# ---- 帮助面板（H 呼出）：把原来常驻底部的操作提示挪进来按需查看 ----
+	help_panel = PanelContainer.new()
+	help_panel.name = "HelpPanel"
+	help_panel.add_theme_stylebox_override("panel", _panel_style())
+	help_panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	help_panel.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	help_panel.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	help_panel.visible = false
+	add_child(help_panel)
+	var hv := VBoxContainer.new()
+	hv.add_theme_constant_override("separation", 6)
+	help_panel.add_child(hv)
+	var ht := Label.new()
+	ht.text = "操作"
+	ht.add_theme_font_size_override("font_size", 13)
+	hv.add_child(ht)
+	help_label = Label.new()
+	help_label.text = HELP_TEXT
+	help_label.add_theme_font_size_override("font_size", 11)
+	hv.add_child(help_label)
+
+	# ---- 快捷键：**屏幕正下方居中，横向 B / K / H / F** ----
+	var bar := HBoxContainer.new()
+	bar.name = "KeyBar"
+	bar.add_theme_constant_override("separation", 8)
+	bar.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	bar.offset_left = -88
+	bar.offset_right = 88
+	bar.offset_top = -42
+	bar.offset_bottom = -14
+	add_child(bar)
+	create_button = _make_key_button("B", "创造列表")
+	create_button.pressed.connect(_toggle_create_panel)
+	bar.add_child(create_button)
+	action_button = _make_key_button("K", "动作")
 	action_button.pressed.connect(_toggle_action_panel)
-	hbox.add_child(action_button)
-
-	# 装备按钮（法杖占 1 格，146 根靠滚轮一根根翻太慢，给个列表）
-	staff_button = Button.new()
-	staff_button.text = "装备 (F)"
-	staff_button.custom_minimum_size = Vector2(90, 34)
-	staff_button.toggle_mode = true
+	bar.add_child(action_button)
+	help_button = _make_key_button("H", "操作说明")
+	help_button.pressed.connect(_toggle_help_panel)
+	bar.add_child(help_button)
+	# F：装备面板 —— 用户要求"把 F 放出来"，所以从创造列表挪到左侧键列
+	staff_button = _make_key_button("F", "装备法杖")
 	staff_button.pressed.connect(_toggle_staff_panel)
-	hbox.add_child(staff_button)
+	bar.add_child(staff_button)
 
-	# 动作列表面板（默认隐藏，K 或按钮呼出）
+	# ---- 待建面板（动作 / 装备）----
 	_build_action_panel()
 	_build_staff_panel()
 
-	# 生物质/石材余额（右上角，回收植被获得；石头单独计入石材）
-	biomass_label = Label.new()
-	biomass_label.text = "生物质 0\n石材 0"
-	biomass_label.add_theme_font_size_override("font_size", 17)
-	biomass_label.add_theme_color_override("font_color", Color(0.78, 0.95, 0.62))
-	biomass_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.7))
-	biomass_label.add_theme_constant_override("outline_size", 5)
-	biomass_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	biomass_label.offset_left = -220
-	biomass_label.offset_right = -16
-	biomass_label.offset_top = 12
-	biomass_label.offset_bottom = 66
-	biomass_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	add_child(biomass_label)
-	Game.biomass_changed.connect(_on_biomass_changed)
-	Game.stone_changed.connect(_on_biomass_changed)
-
-	# 天气信息（右上角，生物质下方）
-	weather_label = Label.new()
-	weather_label.text = "晴朗"
-	weather_label.add_theme_font_size_override("font_size", 16)
-	weather_label.add_theme_color_override("font_color", Color(0.82, 0.90, 1.0))
-	weather_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.7))
-	weather_label.add_theme_constant_override("outline_size", 5)
-	weather_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	weather_label.offset_left = -260
-	weather_label.offset_right = -16
-	weather_label.offset_top = 70
-	weather_label.offset_bottom = 116
-	weather_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	add_child(weather_label)
-
-	# 底部提示
-	hint_label = Label.new()
-	hint_label.text = "左键搭建/涂抹 · WASD 移动 · F 装备 · Q 换杖 · Shift 加速 · Space/C 升降 · T 切换视角 · V 切换天气 · Esc 释放鼠标"
-	hint_label.add_theme_font_size_override("font_size", 14)
-	hint_label.add_theme_color_override("font_color", Color(0.95, 0.95, 0.9, 0.9))
-	hint_label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	hint_label.offset_top = -34
-	hint_label.offset_bottom = -8
-	hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	add_child(hint_label)
-
-	# ---- 法杖装备格（右下角）----
-	# 设计参考：武器单占一格，格子里显示元素色条 + 名称，空手时格子变暗。
+	# ---- 法杖装备格（右下角，保留：它是装备 HUD 不是提示文字）----
 	staff_slot = PanelContainer.new()
 	staff_slot.add_theme_stylebox_override("panel", _panel_style())
+	# 装备信息在**右下角**（用户要求）
 	staff_slot.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	staff_slot.offset_left = -258
-	staff_slot.offset_right = -16
-	staff_slot.offset_top = -122
-	staff_slot.offset_bottom = -44
+	staff_slot.offset_left = -186
+	staff_slot.offset_top = -66
+	staff_slot.offset_right = -14
+	staff_slot.offset_bottom = -14
 	staff_slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(staff_slot)
 	var srow := HBoxContainer.new()
 	srow.add_theme_constant_override("separation", 8)
 	staff_slot.add_child(srow)
 	staff_slot_icon = ColorRect.new()
-	staff_slot_icon.custom_minimum_size = Vector2(10, 46)
+	staff_slot_icon.custom_minimum_size = Vector2(7, 32)
 	staff_slot_icon.color = Color(0.5, 0.5, 0.5)
 	srow.add_child(staff_slot_icon)
 	staff_slot_label = Label.new()
 	staff_slot_label.text = "法杖 · 空"
-	staff_slot_label.add_theme_font_size_override("font_size", 15)
+	staff_slot_label.add_theme_font_size_override("font_size", 11)
 	staff_slot_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	srow.add_child(staff_slot_label)
 
-	# 屏幕中央准星（不拦截鼠标）
-	var cross_container := CenterContainer.new()
-	cross_container.set_anchors_preset(Control.PRESET_FULL_RECT)
-	cross_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var crosshair := Label.new()
-	crosshair.text = "+"
-	crosshair.add_theme_font_size_override("font_size", 30)
-	crosshair.add_theme_color_override("font_color", Color(1, 1, 1, 0.9))
-	crosshair.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.65))
-	crosshair.add_theme_constant_override("outline_size", 4)
-	crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	cross_container.add_child(crosshair)
-	add_child(cross_container)
-
-	# 家具互动提示（准星下方，按 E 交互）
+	# ---- 家具互动提示（准星下方的浮层，按 E 交互时才出现）----
+	# 这是**上下文提示**，不是常驻文字，保留；用户说要去掉的是常驻的那些。
 	interact_label = Label.new()
 	interact_label.text = ""
 	interact_label.visible = false
 	interact_label.set_anchors_preset(Control.PRESET_CENTER)
-	interact_label.custom_minimum_size = Vector2(420, 46)
-	interact_label.offset_left = -210
-	interact_label.offset_right = 210
-	interact_label.offset_top = 96
-	interact_label.offset_bottom = 142
+	interact_label.custom_minimum_size = Vector2(300, 34)
+	interact_label.offset_left = -150
+	interact_label.offset_right = 150
+	interact_label.offset_top = 44
+	interact_label.offset_bottom = 78
 	interact_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	interact_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	interact_label.add_theme_font_size_override("font_size", 18)
+	interact_label.add_theme_font_size_override("font_size", 12)
 	interact_label.add_theme_color_override("font_color", Color(1.0, 0.95, 0.7))
 	interact_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
 	interact_label.add_theme_constant_override("outline_size", 4)
@@ -214,13 +246,16 @@ func _build_ui() -> void:
 
 	_on_tool_changed(Game.current_tool)
 
+
 func _on_biomass_changed(_v: float) -> void:
 	biomass_label.text = "生物质 %.1f\n石材 %.1f" % [Game.biomass, Game.stone]
 
 func _on_tool_button_pressed(btn: Button) -> void:
 	var tool: int = tool_button_map[btn]
-	if main:
-		main.set_tool(tool)
+	if main == null:
+		return
+	# 再点一次当前已选中的工具 = 取消选择（替代原来的"选择"按钮）
+	main.set_tool(Game.Tool.NONE if Game.current_tool == tool else tool)
 
 func _on_undo_pressed() -> void:
 	if main and main.has_method("undo"):
@@ -233,6 +268,8 @@ func _on_tool_changed(tool: int) -> void:
 	# 更新提示
 	var tip := ""
 	match tool:
+		Game.Tool.NONE:
+			tip = "不放置任何东西 —— 想建造先从左边点一个工具"
 		Game.Tool.WALL:
 			tip = "拖拽画出墙壁"
 		Game.Tool.TOWER:
@@ -249,15 +286,18 @@ func _on_tool_changed(tool: int) -> void:
 			tip = "点击放置家具（桌/椅/床/梯子等）"
 		Game.Tool.MOUNTAIN:
 			tip = "点击放置山体（悬崖岩块）"
-	hint_label.text = "【%s】%s · WASD移动 · Shift加速 · F装备 · Q换杖 · Space/C升降 · T切换视角 · 数字键1-0切工具" % [Game.get_tool_name(), tip]
+	# 常驻提示文字已按用户要求去掉；当前工具的说明挂在**创造列表**的提示上，
+	# 按需查看（B 打开列表时会显示），不再在屏幕上常驻一行字。
+	if create_panel != null:
+		create_panel.tooltip_text = "%s：%s" % [Game.get_tool_name(), tip]
 
 # ---------- 动作菜单（快捷键 K 呼出，游戏内测试动作） ----------
 
 func _build_action_panel() -> void:
 	action_panel = PanelContainer.new()
 	action_panel.visible = false
-	action_panel.position = Vector2(12, 74)
-	action_panel.custom_minimum_size = Vector2(230, 0)
+	action_panel.position = Vector2(60, 14)
+	action_panel.custom_minimum_size = Vector2(150, 0)
 	action_panel.add_theme_stylebox_override("panel", _panel_style())
 	add_child(action_panel)
 
@@ -267,12 +307,12 @@ func _build_action_panel() -> void:
 
 	var cap := Label.new()
 	cap.text = "动作测试（点击播放，再次移动/跳跃恢复）"
-	cap.add_theme_font_size_override("font_size", 13)
+	cap.add_theme_font_size_override("font_size", 10)
 	cap.add_theme_color_override("font_color", Color(0.95, 0.95, 0.9))
 	vbox.add_child(cap)
 
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(0, 380)
+	scroll.custom_minimum_size = Vector2(0, 300)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	vbox.add_child(scroll)
 
@@ -288,7 +328,8 @@ func _build_action_panel() -> void:
 		var b := Button.new()
 		b.text = entry[0]
 		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		b.custom_minimum_size = Vector2(0, 30)
+		b.custom_minimum_size = Vector2(0, 20)
+		b.add_theme_font_size_override("font_size", 11)
 		b.pressed.connect(_on_action_pressed.bind(i))
 		list.add_child(b)
 
@@ -298,20 +339,18 @@ func _panel_style() -> StyleBoxFlat:
 	sb.border_color = Color(0.45, 0.55, 0.5, 0.9)
 	sb.set_border_width_all(2)
 	sb.set_corner_radius_all(8)
-	sb.content_margin_left = 10
-	sb.content_margin_right = 10
-	sb.content_margin_top = 10
-	sb.content_margin_bottom = 10
+	sb.content_margin_left = 6
+	sb.content_margin_right = 6
+	sb.content_margin_top = 6
+	sb.content_margin_bottom = 6
 	return sb
 
 func _toggle_action_panel() -> void:
 	_action_visible = not _action_visible
 	action_panel.visible = _action_visible
 	action_button.button_pressed = _action_visible
-	# 与装备面板位置重叠，互斥
-	if _action_visible and _staff_visible:
-		_set_staff_panel(false)
 	_apply_ui_capture()
+	_layout_panels()
 
 func _on_action_pressed(index: int) -> void:
 	if main != null and main.player != null:
@@ -474,36 +513,136 @@ func _set_staff_panel(on: bool) -> void:
 		_fill_staff_panel()
 	staff_panel.visible = on
 	staff_button.button_pressed = on
-	if on and _action_visible:
-		_toggle_action_panel()
 	_apply_ui_capture()
+	_layout_panels()
 
 
-## 任一侧边面板打开 -> 放开鼠标（好点列表）；都关了就收回视角控制
+## 面板打开时把 rig 的输入让给 UI。
+##
+## **绝不再改鼠标捕获模式**：俯视角下相机不需要鼠标，光标本来就该一直可见。
+## 原来这里在"面板全关"时调用 set_ui_capture(true) 把光标重新捕获隐藏 ——
+## 于是按 K 做完动作、面板一关，鼠标就"丢了"（用户实测反馈）。
 func _apply_ui_capture() -> void:
 	if main == null or main.camera_rig == null:
 		return
 	var rig: CameraRig = main.camera_rig
-	var any := _staff_visible or _action_visible
-	if rig.ui_override == any:
+	rig.ui_override = _staff_visible or _action_visible or _create_visible or _help_visible
+
+
+## 动态排布所有打开的菜单：**一行横向排开，互不遮挡**（用户要求）。
+##
+## 以前是"打开一个就自动关掉另一个"来避免重叠，那样用户想同时看两个面板就不行。
+## 现在按最小尺寸依次摆放，谁打开都不会压到别人。
+func _layout_panels() -> void:
+	# 等一帧：PanelContainer 的最小尺寸要经过一次布局才是准的
+	call_deferred("_do_layout_panels")
+
+
+func _do_layout_panels() -> void:
+	const X0 := 12.0
+	const Y0 := 12.0
+	const GAP := 8.0
+	var x := X0
+	var panels: Array = []
+	if _create_visible:
+		panels.append(create_panel)
+	if _help_visible:
+		panels.append(help_panel)
+	if _action_visible:
+		panels.append(action_panel)
+	if _staff_visible:
+		panels.append(staff_panel)
+	for p in panels:
+		if p == null or not p.visible:
+			continue
+		(p as Control).reset_size()
+		(p as Control).position = Vector2(x, Y0)
+		x += (p as Control).size.x + GAP
+
+
+## B：创造列表开关
+func _toggle_create_panel() -> void:
+	_set_create_panel(not _create_visible)
+
+
+func _set_create_panel(on: bool) -> void:
+	# 打开时记下当前工具与变体选择；关闭时回滚 ——
+	# 用户要求"关闭创建菜单后，还没放置的物品要销毁、状态恢复到打开之前"。
+	if on and not _create_visible:
+		_tool_before_create = Game.current_tool
+		_variants_before_create = _tool_variant_snapshot()
+	_create_visible = on
+	create_panel.visible = on
+	create_button.button_pressed = on
+	if not on and main != null:
+		# 回滚：恢复工具 + 变体选择，并让 main 清掉半透明预览
+		main.set_tool(_tool_before_create)
+		_restore_tool_variants(_variants_before_create)
+	_apply_ui_capture()
+	_layout_panels()
+
+
+## 记下"当前工具 -> 选中的模型变体"，关闭创建菜单时回滚用
+func _tool_variant_snapshot() -> Dictionary:
+	if main == null or not ("_variant_sel" in main):
+		return {}
+	return (main.get("_variant_sel") as Dictionary).duplicate()
+
+
+func _restore_tool_variants(snap: Dictionary) -> void:
+	if main == null or snap.is_empty() or not ("_variant_sel" in main):
 		return
-	rig.ui_override = any
-	rig.set_ui_capture(not any)
+	var cur: Dictionary = main.get("_variant_sel")
+	cur.clear()
+	for k in snap:
+		cur[k] = snap[k]
+
+
+## H：操作说明开关
+func _toggle_help_panel() -> void:
+	_help_visible = not _help_visible
+	help_panel.visible = _help_visible
+	help_button.button_pressed = _help_visible
+	_apply_ui_capture()
+	_layout_panels()
+
+
+## ESC：关掉当前打开的任意面板；返回 true 表示这次 ESC 被吃掉了
+func close_any_panel() -> bool:
+	if _create_visible:
+		_set_create_panel(false)
+		return true
+	if _action_visible:
+		_toggle_action_panel()
+		return true
+	if _help_visible:
+		_toggle_help_panel()
+		return true
+	if _staff_visible:
+		_set_staff_panel(false)
+		return true
+	# 没有面板打开时：ESC = 取消当前工具（"选择"按钮去掉后功能保留在这里）
+	if main != null and Game.current_tool != Game.Tool.NONE:
+		main.set_tool(Game.Tool.NONE)
+		return true
+	return false
 
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_K:
+		if event.keycode == KEY_B:
+			_toggle_create_panel()
+			get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_K:
 			_toggle_action_panel()
+			get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_H:
+			_toggle_help_panel()
 			get_viewport().set_input_as_handled()
 		elif event.keycode == KEY_F:
 			_toggle_staff_panel()
 			get_viewport().set_input_as_handled()
-		elif event.keycode == KEY_ESCAPE and _action_visible:
-			_toggle_action_panel()
-			get_viewport().set_input_as_handled()
-		elif event.keycode == KEY_ESCAPE and _staff_visible:
-			_set_staff_panel(false)
+		elif event.keycode == KEY_ESCAPE and close_any_panel():
 			get_viewport().set_input_as_handled()
 
 # ---------- 家具互动提示 ----------
@@ -531,18 +670,17 @@ func update_staff_slot() -> void:
 	var id := str(sys.get("equipped"))
 	var owned: int = int(sys.call("owned_list").size())
 	if id == "":
-		var tip := "（F 打开装备）" if owned > 0 else "（找长老领取）"
+		var tip := "按 F 装备" if owned > 0 else "（找长老领取）"
 		staff_slot_label.text = "法杖 · 空\n%s" % tip
 		staff_slot_icon.color = Color(0.32, 0.34, 0.36)
 		return
 	var elem := int(sys.get("equipped_element"))
 	staff_slot_icon.color = sys.call("element_color", elem)
 	var bless := "*" if bool(sys.call("is_blessed", id)) else ""
-	staff_slot_label.text = "%s%s  %d/%d\n%s · 长老石 %d · F 装备" % [
+	staff_slot_label.text = "%s%s  %d/%d\n%s" % [
 			str(sys.call("display_name", id)), bless,
 			int(sys.call("owned_index", id)), owned,
-			str(sys.call("element_name", elem)),
-			int(sys.call("stone_count", id))]
+			str(sys.call("element_name", elem))]
 
 
 # ---------- 天气信息 ----------

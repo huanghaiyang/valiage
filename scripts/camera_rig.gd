@@ -37,7 +37,12 @@ extends Node3D
 @export var iso_locked := true
 @export var iso_yaw_deg := 45.0      # 斜 45 度是经典等距视角
 @export var iso_pitch_deg := 52.0    # 从上往下压 52 度
-@export var iso_distance := 10.5     # 比第三人称远得多，才装得下周围环境
+@export var iso_distance := 14.0     # 默认再拉远一档（用户要求）
+## 滚轮缩放：只是 iso_distance 的倍率。0.75 = 最近（当前距离的 75%），2.0 = 最远
+@export var iso_zoom := 1.0
+const ISO_ZOOM_MIN := 0.75
+const ISO_ZOOM_MAX := 2.0
+const ISO_ZOOM_STEP := 0.12
 @export var iso_look_height := 1.15  # 注视点抬高 -> 角色落在画面偏下
 @export var iso_fov := 45.0          # 小 FOV 减少透视畸变，更像 D4
 
@@ -72,7 +77,9 @@ var ui_override := false     # UI（动作菜单等）占用时让出鼠标/键�
 func _ready() -> void:
 	# 玩家引用可能尚未注入（父节点 _ready() 晚于子节点）：先接管鼠标，
 	# 角色朝向与出生点由 main.gd 在装配阶段调用 aim_from_player() 完成。
-	_set_mouse_captured(true)
+	# **鼠标默认不锁定**（俯视角不需要它转相机）：锁定时鼠标转视角已经关掉了，
+	# 再捕获光标只会让人没法用鼠标瞄准。放置改成"以鼠标位置为准"，见 get_ground_point_mouse()。
+	_set_mouse_captured(false)
 	if player != null:
 		aim_from_player()
 
@@ -263,12 +270,21 @@ func _physics_process(delta: float) -> void:
 func _place_iso_camera(focus: Vector3) -> void:
 	var y := deg_to_rad(iso_yaw_deg)
 	var p := deg_to_rad(iso_pitch_deg)
-	var horiz := iso_distance * cos(p)      # 水平后退距离
-	var vert := iso_distance * sin(p)       # 抬高量
+	var d := iso_distance * iso_zoom
+	var horiz := d * cos(p)                 # 水平后退距离
+	var vert := d * sin(p)                  # 抬高量
 	camera.global_position = focus + Vector3(sin(y) * horiz, vert, cos(y) * horiz)
 	camera.look_at(focus + Vector3(0.0, iso_look_height, 0.0), Vector3.UP)
 	if not is_equal_approx(camera.fov, iso_fov):
 		camera.fov = iso_fov
+
+
+## 滚轮缩放（未选任何放置工具时）：dir=+1 拉远、-1 拉近。
+## 返回 true 表示这次滚轮被缩放吃掉了。
+func zoom_by(dir: int) -> bool:
+	var before := iso_zoom
+	iso_zoom = clampf(iso_zoom + dir * ISO_ZOOM_STEP, ISO_ZOOM_MIN, ISO_ZOOM_MAX)
+	return not is_equal_approx(before, iso_zoom)
 
 
 ## 只返回水平移动方向（x=左右，y=前后）。跳跃在 _physics_process 单独处理。
@@ -434,6 +450,23 @@ func get_center_ray() -> Array:
 	var from := camera.project_ray_origin(center)
 	var dir := camera.project_ray_normal(center)
 	return [from, dir]
+
+## 鼠标位置的地面落点（俯视角下用它代替"屏幕中心准星"）。
+## 与 get_ground_point_center 同一套逻辑，只是射线从鼠标位置发出。
+func get_ground_point_mouse(terrain: TerrainSystem) -> Variant:
+	if camera == null:
+		return null
+	var mpos := get_viewport().get_mouse_position()
+	var from := camera.project_ray_origin(mpos)
+	var dir := camera.project_ray_normal(mpos)
+	var near := _cast_ground(from, dir, interact_range)
+	if not near.is_empty():
+		return _clamp_place_point(near.position, terrain)
+	var far := _cast_ground(from, dir, GROUND_RAY_MAX)
+	if not far.is_empty():
+		return _clamp_place_point(far.position, terrain)
+	return null
+
 
 ## 准星落地射线的探测距离上限。
 ## 第三人称相机在角色后上方（+2.0m 高、-9.4 度俯角），准星射线每前进 1m 只下降 0.036m，

@@ -54,8 +54,16 @@ var _variant_sel: Dictionary = {}
 ## 变体提示的剩余显示时间（秒），避免被互动提示立刻覆盖
 var _variant_hint_time := 0.0
 var _place_yaw := 0.0  # 放置朝向（右键旋转）
+## 未选工具时按住右键拖动 = 旋转场景（俯视角的 yaw/pitch）
+var _rotating := false
 var _place_rot_accum := 0.0  # 按住右键旋转的累积时间（每 100ms +10°）
-const PLACE_OCCUPY_RADIUS := 0.9    # 占位检测球半径（建筑层）
+const PLACE_OCCUPY_RADIUS := 0.9    # 占位检测半径（建筑层）
+## 占位检测的高度：**只查贴地那一圈**。
+## 原来是一个球体（把屋檐、树冠这些悬在上方的几何也算进来），于是"墙根下、大树下"
+## 都放不了花草 —— 用户明确要求改成不按立体体积检测。
+const PLACE_OCCUPY_HEIGHT := 0.55
+## 与角色的最小间距：放置点离角色太近（会插进身体）时不允许放置
+const PLACE_PLAYER_CLEAR := 0.95
 const PLACE_RECYCLE_RADIUS := 2.0   # 放置时回收植被范围
 
 # 拖拽状态
@@ -280,6 +288,9 @@ func _save_capture(out_path: String) -> void:
 			% [out_path, err, ProjectSettings.globalize_path(out_path)])
 	# 植被换成自制模型之后，"一帧画多少三角面"必须能直接读出来 ——
 	# 密度（PLANT_KEEP）就是照这个数调的，靠目测帧率太不稳。
+	print("Input | mouse_mode=%d（0=可见 2=捕获）captured=%s 工具=%s 放置点=%s"
+			% [Input.mouse_mode, str(camera_rig.is_mouse_captured()),
+			   str(Game.current_tool), str(_get_ground_pos())])
 	print("Perf | 三角面=%d 绘制调用=%d 渲染物件=%d FPS=%.1f"
 			% [RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME),
 			   RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME),
@@ -606,10 +617,19 @@ func _unhandled_input(event: InputEvent) -> void:
 			_cycle_weather()
 			return
 
-	# 第一人称：仅在鼠标捕获时响应左键搭建
-	if not camera_rig.is_mouse_captured():
-		return
+	# 鼠标现在默认可见（俯视角不捕获光标），所以不再用"是否捕获"当作放入口开关；
+	# 点在哪就放在哪。UI 上的点击会被 Control 消费掉，不会走到 _unhandled_input。
 	if event is InputEventMouseButton:
+		# 滚轮：**没选任何放置工具时用来缩放场景**（用户要求 75%~200%）；
+		# 选了工具才是切模型变体。
+		if event.pressed and event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN] \
+				and not (Game.current_tool in _place_tools):
+			var dz := -1 if event.button_index == MOUSE_BUTTON_WHEEL_DOWN else 1
+			if camera_rig.zoom_by(dz):
+				ui.show_interact_hint("视野 %.0f%%（滚轮缩放，75%%~200%%）"
+						% (camera_rig.iso_zoom * 100.0))
+				_variant_hint_time = 1.2
+			return
 		# 滚轮：切换当前放置工具的模型变体（分类下有多个模型时）
 		if event.pressed and event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN] \
 				and Game.current_tool in _place_tools:
@@ -618,13 +638,59 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed and Game.current_tool in _place_tools:
 			_place_yaw += deg_to_rad(10.0)
 			return
+		# 未选任何工具时：**右键按住拖动旋转场景**（俯视角的 yaw/pitch 都是常量，
+		# 所以旋转就是改那两个常量）。小地图跟着转、大地图不转，见 minimap.gd。
+		if event.button_index == MOUSE_BUTTON_RIGHT:
+			_rotating = event.pressed
+			# 拖动旋转期间**隐藏并锁住光标**：否则鼠标一划就移出窗口，
+			# 旋转会突然中断、指针也跑到别的窗口上去（用户实测）。
+			# 松开立刻恢复可见 —— 俯视角平时就是要点鼠标的。
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if _rotating \
+					else Input.MOUSE_MODE_VISIBLE
+			return
+		# 左键：开始/结束放置。
+		# **这两行必须留在"鼠标按钮"分支里面**：上一版我把右键旋转的
+		# `if event is InputEventMouseMotion` 块按 1 层缩进插到了这里，
+		# 它带着一个 `return` 把整个鼠标按钮分支截断，于是左键放置变成了
+		# 运动事件分支里的死代码 —— 表现就是"完全无法放置物品"（用户实测）。
 		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 			_begin_tool()
 		elif event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
 			_end_tool()
+		return
+	if event is InputEventMouseMotion and _rotating and not (Game.current_tool in _place_tools):
+		camera_rig.iso_yaw_deg = fposmod(camera_rig.iso_yaw_deg
+				- event.relative.x * 0.28, 360.0)
+		camera_rig.iso_pitch_deg = clampf(camera_rig.iso_pitch_deg
+				+ event.relative.y * 0.18, 22.0, 72.0)
 
 ## V 键：按顺序切换天气（晴朗 → 多云 → 阴天 → 小雨 → 雷雨 → 大风）
 ## 切换立即生效（force），并暂停自动天气一段时间，方便观察风摇效果。
+## 换杖 / 收杖时的屏幕提示。
+##
+## `game_ui._on_staff_picked()` 是用 `main.call("_show_staff_hint", id)` 调的 ——
+## 这个函数在第 38 轮"整体移除法杖系统"时被删掉了，但那种**字符串形式**的调用
+## 没被当时的检查脚本扫出来（它只扫 `xxx.method(` 的直接调用），
+## 于是点装备面板里任何一行（包括"空手（收起法杖）"）都会抛
+## `Invalid call. Nonexistent function '_show_staff_hint'` 并把游戏中断（用户实测）。
+func _show_staff_hint(id: String) -> void:
+	if ui == null:
+		return
+	var sys := get_node_or_null("/root/StaffSystem")
+	if id == "":
+		ui.show_interact_hint("法杖已收起")
+	else:
+		var nm := id
+		var el := 0
+		var el_name := "-"
+		if sys != null:
+			nm = str(sys.call("display_name", id))
+			el = int(sys.call("element_of", id))
+			el_name = str(sys.call("element_name", el))
+		ui.show_interact_hint("%s · %s（Q / Shift+滚轮 换杖）" % [nm, el_name])
+	_variant_hint_time = 1.6
+
+
 func _cycle_weather() -> void:
 	var n := Weather.KIND_NAMES.size()
 	var next: int = (Weather.target + 1) % n
@@ -704,7 +770,9 @@ func _update_interact_hint() -> void:
 
 ## 用准星射线求地面放置点（返回 null 表示未命中或超出交互距离）
 func _get_ground_pos() -> Variant:
-	return camera_rig.get_ground_point_center(terrain)
+	# **以鼠标为中心**（原来是屏幕正中准星）：俯视角 + 自由鼠标下，准星在屏幕中间
+	# 根本指不到想放的地方。
+	return camera_rig.get_ground_point_mouse(terrain)
 
 func _begin_tool() -> void:
 	var p: Variant = _get_ground_pos()
@@ -954,11 +1022,15 @@ func _set_place_preview_mesh(cat: String) -> void:
 	_apply_place_material(node, PREVIEW_PLACE_OK)
 
 
-## 预览缩放：分类基准缩放，但归到分类下的植物是按真实尺寸建的（见 _add_plant_extra），
-## 套上树木的 3.4 倍会变成三米高的草，所以植物一律 1.0。
+## 预览缩放：分类基准缩放。
+##
+## 原来这里有一句 `if vegetation.is_plant_extra(...): return 1.0` —— 植物系统整体移除时
+## 那个函数被删了，但这句调用漏了。后果：**任何放置工具滚轮换模型时都会抛
+## "Invalid call. Nonexistent function 'is_plant_extra'"**，在编辑器里直接中断游戏
+## （用户反馈的"放置家具时程序中断"）。植物以后要重做的话，这条分支应该加回来，
+## 但判据要换成"这个模型是不是按真实尺寸建的"（可以查分类表的 base_scale），
+## 不要再依赖植物专属接口。
 func _preview_base_scale_for(cat: String) -> float:
-	if vegetation.is_plant_extra(cat, _current_variant(cat)):
-		return 1.0
 	match cat:
 		"tree": return 3.4
 		"flower": return 1.1
@@ -1020,9 +1092,17 @@ func _apply_place_material(node: Node, mat: StandardMaterial3D) -> void:
 ##
 ## `_extract_mesh()` 只取**第一个**子网格：KayKit 的房子整栋就是一个网格，所以一直没问题；
 ## 自制茅草屋有 205 个部件，只取第一个的话预览里就显示成一个木桶（用户实测反馈"预览怎么是个桶"）。
+## 合并结果缓存：key = PackedScene 的 resource_path。
+## 茅草屋有 213 个部件、GLB 31MB，滚轮切换时每次都重新合并会明显卡一下（用户实测）。
+var _merged_mesh_cache := {}
+
+
 func _extract_mesh_merged(scene: PackedScene) -> Mesh:
 	if scene == null:
 		return null
+	var key := scene.resource_path
+	if not key.is_empty() and _merged_mesh_cache.has(key):
+		return _merged_mesh_cache[key]
 	var inst := scene.instantiate()
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -1036,7 +1116,10 @@ func _extract_mesh_merged(scene: PackedScene) -> Mesh:
 			st.append_from(mi.mesh, s, xf)
 			any = true
 	inst.free()
-	return st.commit() if any else null
+	var merged: Mesh = st.commit() if any else null
+	if not key.is_empty():
+		_merged_mesh_cache[key] = merged
+	return merged
 
 
 ## node 相对 root 的局部累积变换（不用 global_transform：那是惰性求值的）
@@ -1070,19 +1153,34 @@ func _find_first_mesh(node: Node) -> Mesh:
 ## 占位检测：目标点半径内是否有建筑（玩家创建的墙/塔/屋，层4）。
 ## 小植被（树/石/草/花/蘑菇/灌木）不占位，放置时自动回收为生物质/石材。
 func _is_occupied(p: Vector3) -> bool:
+	# 只查"贴地那一圈"的**矮圆柱**。原实现是球体，屋檐 / 树冠这些**悬在上方**的
+	# 几何也会被算成占位 -> 墙根下、大树下都放不了花草（用户实测就是这个）。
 	var space := get_world_3d().direct_space_state
 	var params := PhysicsShapeQueryParameters3D.new()
-	var shape := SphereShape3D.new()
+	var shape := CylinderShape3D.new()
 	shape.radius = PLACE_OCCUPY_RADIUS
+	shape.height = PLACE_OCCUPY_HEIGHT
 	params.shape = shape
-	params.transform = Transform3D(Basis.IDENTITY, p + Vector3(0, PLACE_OCCUPY_RADIUS, 0))
+	params.transform = Transform3D(Basis.IDENTITY,
+			p + Vector3(0, PLACE_OCCUPY_HEIGHT * 0.5, 0))
 	params.collision_mask = 4
-	var hits := space.intersect_shape(params, 4)
-	return not hits.is_empty()
+	var hits := space.intersect_shape(params, 8)
+	if not hits.is_empty():
+		return true
+	# 与角色自身碰撞：会插进身体的不允许放置
+	if player != null:
+		var d := Vector2(p.x - player.global_position.x,
+				p.z - player.global_position.z).length()
+		if d < PLACE_PLAYER_CLEAR:
+			return true
+	return false
 
 ## UI 回调：切换工具
 func set_tool(tool: int) -> void:
 	Game.current_tool = tool
+	# 关掉创建菜单回滚工具时，半透明预览也要立刻消失（"销毁还没放置的物品"）
+	if not (tool in _place_tools):
+		preview_place.visible = false
 	_is_dragging = false
 	_place_yaw = 0.0
 	preview_wall.visible = false

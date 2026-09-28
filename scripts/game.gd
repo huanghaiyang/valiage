@@ -23,7 +23,9 @@ const TOOL_NAMES := {
 }
 
 ## 当前激活的工具
-var current_tool: int = Tool.WALL:
+## 默认**不选中任何放置工具**：开局就举着塔楼/墙壁，点一下鼠标就误建，体验很差。
+## 想建造时先在工具栏里点一个（工具列表第一项是"选择"= 无工具）。
+var current_tool: int = Tool.NONE:
 	set(v):
 		current_tool = v
 		tool_changed.emit(v)

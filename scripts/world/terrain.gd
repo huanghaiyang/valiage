@@ -237,7 +237,7 @@ func _carve_river() -> void:
 		bmin_z = minf(bmin_z, b.y)
 		bmax_z = maxf(bmax_z, b.w)
 	var z_lo := maxi(0, int(floor((bmin_z + HALF) / CELL)))
-	var z_hi := mini(GRID, int(ceil((bmax_z + HALF) / CELL)))
+	var z_hi := mini(GRID - 1, int(ceil((bmax_z + HALF) / CELL)))
 	for z in range(z_lo, z_hi + 1):
 		var wz := -HALF + z * CELL
 		# 本行的河段 x 范围
@@ -251,7 +251,7 @@ func _carve_river() -> void:
 		if x_lo > x_hi:
 			continue
 		var cx_lo := maxi(0, int(floor((x_lo + HALF) / CELL)))
-		var cx_hi := mini(GRID, int(ceil((x_hi + HALF) / CELL)))
+		var cx_hi := mini(GRID - 1, int(ceil((x_hi + HALF) / CELL)))
 		for x in range(cx_lo, cx_hi + 1):
 			var wx := -HALF + x * CELL
 			var d := _river_distance(wx, wz)
@@ -375,9 +375,9 @@ func flatten_region(center: Vector3, radius: float, target_h: float) -> void:
 	var cx := center.x; var cz := center.z
 	var r2 := radius * radius
 	var start_x := maxi(0, int((cx - radius + HALF) / CELL))
-	var end_x := mini(GRID, int((cx + radius + HALF) / CELL) + 1)
+	var end_x := mini(GRID - 1, int((cx + radius + HALF) / CELL) + 1)
 	var start_z := maxi(0, int((cz - radius + HALF) / CELL))
-	var end_z := mini(GRID, int((cz + radius + HALF) / CELL) + 1)
+	var end_z := mini(GRID - 1, int((cz + radius + HALF) / CELL) + 1)
 	for z in range(start_z, end_z + 1):
 		for x in range(start_x, end_x + 1):
 			var wx := -HALF + x * CELL
@@ -398,9 +398,9 @@ func apply_brush(world_pos: Vector3, radius: float, delta: float) -> void:
 	var cx := world_pos.x; var cz := world_pos.z
 	var r2 := radius * radius
 	var start_x := maxi(0, int((cx - radius + HALF) / CELL))
-	var end_x := mini(GRID, int((cx + radius + HALF) / CELL) + 1)
+	var end_x := mini(GRID - 1, int((cx + radius + HALF) / CELL) + 1)
 	var start_z := maxi(0, int((cz - radius + HALF) / CELL))
-	var end_z := mini(GRID, int((cz + radius + HALF) / CELL) + 1)
+	var end_z := mini(GRID - 1, int((cz + radius + HALF) / CELL) + 1)
 	for z in range(start_z, end_z + 1):
 		for x in range(start_x, end_x + 1):
 			var wx := -HALF + x * CELL
