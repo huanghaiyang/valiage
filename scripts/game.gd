@@ -4,7 +4,7 @@ extends Node
 
 ## 工具集：植物不是独立工具，它作为额外变体挂在「树木」「花草」下面
 ## （见 vegetation.gd 的 _plant_extras），所以这里没有 PLANT。
-enum Tool { NONE, WALL, TOWER, ROOF, TERRAIN_RAISE, TERRAIN_LOWER, TERRAIN_FLATTEN, TREE, FLOWER, PATH, DECOR, ERASE, MOUNTAIN, STATUE }
+enum Tool { NONE, WALL, TOWER, ROOF, TERRAIN_RAISE, TERRAIN_LOWER, TERRAIN_FLATTEN, TREE, FLOWER, PATH, DECOR, ERASE, MOUNTAIN }
 
 const TOOL_NAMES := {
 	Tool.NONE: "选择",
@@ -20,7 +20,6 @@ const TOOL_NAMES := {
 	Tool.DECOR: "家具",
 	Tool.ERASE: "橡皮擦",
 	Tool.MOUNTAIN: "山体",
-	Tool.STATUE: "雕像",
 }
 
 ## 当前激活的工具

@@ -3,13 +3,13 @@
 importer="scene"
 importer_version=1
 type="PackedScene"
-uid="uid://bgsaj0fmc84sr"
-path="res://.godot/imported/serpent_statue.glb-5c30957d28dd83d54d6f2ed8713a5bba.scn"
+uid="uid://eok3a016i5xc"
+path="res://.godot/imported/staff_fantasy_5.glb-3326326f1164e241db39597835fbbebf.scn"
 
 [deps]
 
-source_file="res://assets/models/statue/serpent_statue.glb"
-dest_files=["res://.godot/imported/serpent_statue.glb-5c30957d28dd83d54d6f2ed8713a5bba.scn"]
+source_file="res://assets/models/crafted/staff_fantasy_5.glb"
+dest_files=["res://.godot/imported/staff_fantasy_5.glb-3326326f1164e241db39597835fbbebf.scn"]
 
 [params]
 

@@ -3,13 +3,13 @@
 importer="scene"
 importer_version=1
 type="PackedScene"
-uid="uid://7ecjwbugnt5m"
-path="res://.godot/imported/autumn_tree.glb-0e9cf26565a90e3332c9abf72a31e34a.scn"
+uid="uid://cavhrujbjcytl"
+path="res://.godot/imported/staff_fantasy_6.glb-7b341bd463f47261dcd931afd2dca248.scn"
 
 [deps]
 
-source_file="res://assets/models/plants/autumn_tree.glb"
-dest_files=["res://.godot/imported/autumn_tree.glb-0e9cf26565a90e3332c9abf72a31e34a.scn"]
+source_file="res://assets/models/crafted/staff_fantasy_6.glb"
+dest_files=["res://.godot/imported/staff_fantasy_6.glb-7b341bd463f47261dcd931afd2dca248.scn"]
 
 [params]
 

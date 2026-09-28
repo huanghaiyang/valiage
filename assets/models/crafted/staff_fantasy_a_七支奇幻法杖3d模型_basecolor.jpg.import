@@ -2,21 +2,21 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://culv43ku23wpu"
-path.s3tc="res://.godot/imported/serpent_statue_蛇人雕像3d模型_basecolor.jpg-3f61b47a6391bcd0bb546c70360b7959.s3tc.ctex"
-path.etc2="res://.godot/imported/serpent_statue_蛇人雕像3d模型_basecolor.jpg-3f61b47a6391bcd0bb546c70360b7959.etc2.ctex"
+uid="uid://c67ds1ytduy6k"
+path.s3tc="res://.godot/imported/staff_fantasy_a_七支奇幻法杖3d模型_basecolor.jpg-ae23477c2c9498246970be971e768e3d.s3tc.ctex"
+path.etc2="res://.godot/imported/staff_fantasy_a_七支奇幻法杖3d模型_basecolor.jpg-ae23477c2c9498246970be971e768e3d.etc2.ctex"
 metadata={
 "imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
-"md5": "8831cd3e58ec709a6c7bf165e8700ccc"
+"md5": "fa29f0408eeb1cb90a815b3c95528874"
 }
 
 [deps]
 
-source_file="res://assets/models/statue/serpent_statue_蛇人雕像3d模型_basecolor.jpg"
-dest_files=["res://.godot/imported/serpent_statue_蛇人雕像3d模型_basecolor.jpg-3f61b47a6391bcd0bb546c70360b7959.s3tc.ctex", "res://.godot/imported/serpent_statue_蛇人雕像3d模型_basecolor.jpg-3f61b47a6391bcd0bb546c70360b7959.etc2.ctex"]
+source_file="res://assets/models/crafted/staff_fantasy_a_七支奇幻法杖3d模型_basecolor.jpg"
+dest_files=["res://.godot/imported/staff_fantasy_a_七支奇幻法杖3d模型_basecolor.jpg-ae23477c2c9498246970be971e768e3d.s3tc.ctex", "res://.godot/imported/staff_fantasy_a_七支奇幻法杖3d模型_basecolor.jpg-ae23477c2c9498246970be971e768e3d.etc2.ctex"]
 
 [params]
 
