@@ -257,6 +257,7 @@ transform = Transform3D(0.81915206, 0.43938506, -0.36868784, 0, 0.64278764, 0.76
 light_color = Color(1, 0.88, 0.68, 1)
 light_energy = 1.28
 shadow_enabled = true
+directional_shadow_mode = 1
 directional_shadow_blend_splits = true
 
 [node name="FillLight" type="DirectionalLight3D" parent="." unique_id=1445667273]
@@ -298,6 +299,7 @@ metadata/_edit_lock_ = true
 
 [node name="SimpleGrassTextured" type="MultiMeshInstance3D" parent="." unique_id=494743626]
 material_override = SubResource("ShaderMaterial_gqmmt")
+cast_shadow = 0
 multimesh = SubResource("MultiMesh_gqmmt")
 script = ExtResource("19_jscy8")
 sgt_radius = 10.0
