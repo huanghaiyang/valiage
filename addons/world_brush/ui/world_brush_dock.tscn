@@ -1,0 +1,24 @@
+[gd_scene format=3 uid="uid://cxihuk2blp8s"]
+
+[ext_resource type="Script" uid="uid://4uis0jk0b1bv" path="res://addons/world_brush/ui/world_brush_dock.gd" id="1_u07ui"]
+
+[node name="WorldBrushDock" type="VBoxContainer" unique_id=2039932584]
+layout_direction = 3
+offset_right = 280.0
+offset_bottom = 400.0
+size_flags_horizontal = 3
+size_flags_vertical = 3
+script = ExtResource("1_u07ui")
+
+[node name="TitleLabel" type="Label" parent="." unique_id=1893496441]
+layout_mode = 2
+text = "فرشاة العالم"
+horizontal_alignment = 1
+
+[node name="TopSeparator" type="HSeparator" parent="." unique_id=848279132]
+layout_mode = 2
+
+[node name="StatusLabel" type="Label" parent="." unique_id=1926505656]
+layout_mode = 2
+text = "تمت استعادة المكتبة: 2 Scene(s)"
+horizontal_alignment = 2

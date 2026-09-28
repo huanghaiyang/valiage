@@ -229,6 +229,8 @@ func _world_to_local() -> float:
 var _local_basis := Basis.IDENTITY
 var _local_ok := false
 var _spin := 0.0
+var _idle_ok := 0
+var _logged := false
 
 ## 每帧把法杖的**世界朝向**写成目标方向：默认前倾 60°，奔跑时再前挥一档。
 ## 见文件头说明：法杖挂在会旋转的手骨上，只有绕开局部轴才不会"手往前摆、杖往后甩"。
@@ -264,8 +266,39 @@ func _apply_pose(delta: float) -> void:
 	if hand == null:
 		return
 	if not _local_ok:
-		_local_basis = (hand.global_transform.basis.inverse() * want).orthonormalized()
+		# **用骨骼的静止姿势(rest)标定，而不是当前动画帧**。
+		# 原来用手骨"当前"的 global basis：切杖那一刻若角色正在走/跑，
+		# 记下来的是那一帧的摆臂姿势 -> 法杖位置概率性不对
+		# （用户："反复切换法杖，法杖的位置就会有概率不正确"）。
+		# 骨骼 rest 与动画无关，所以结果稳定、可复现。
+		var rest_basis := Basis.IDENTITY
+		var got_rest := false
+		var ba := hand as BoneAttachment3D
+		if ba != null:
+			var skel: Skeleton3D = ba.get_skeleton()
+			if skel != null and ba.bone_idx >= 0:
+				rest_basis = (skel.global_transform.basis
+						* skel.get_bone_global_rest(ba.bone_idx).basis)
+				got_rest = true
+		if not got_rest:
+			# 挂点不是 BoneAttachment3D（拿不到骨骼 rest）：
+			# **等角色静止下来再锁定**，避免抓到摆臂中的某一帧。
+			# 静止前先每帧临时标定，保证不至于完全没姿势。
+			rest_basis = hand.global_transform.basis
+			if _owner_speed() > 0.05:
+				_idle_ok = 0
+			else:
+				_idle_ok += 1
+			if _idle_ok < 2:
+				_local_basis = (rest_basis.inverse() * want).orthonormalized()
+				return
+		_local_basis = (rest_basis.inverse() * want).orthonormalized()
 		_local_ok = true
+		if not _logged:
+			_logged = true
+			print("HeldStaff | 标定完成：%s（%s）" % [
+					"骨骼 rest 姿势" if got_rest else "静止姿势",
+					"BoneAttachment3D" if got_rest else str(hand.get_class())])
 	var sc := basis.get_scale()          # 保留挂载时算好的缩放
 	basis = _local_basis.scaled(sc)
 	# 刚性固定：不再做任何自转（否则又变成'自己转圈'）
