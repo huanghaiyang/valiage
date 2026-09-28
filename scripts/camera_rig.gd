@@ -31,6 +31,16 @@ extends Node3D
 @export var tps_distance := 3.0
 @export var tps_height := 1.25
 
+## ---- 俯视角（暗黑破坏神 4 那种斜俯视）----
+## 锁定后：鼠标不再转相机、朝向与俯角固定、相机跟着角色跑，
+## 但 WASD 仍然是"按相机朝向"移动（这条别改，否则锁定后手感全乱）。
+@export var iso_locked := true
+@export var iso_yaw_deg := 45.0      # 斜 45 度是经典等距视角
+@export var iso_pitch_deg := 52.0    # 从上往下压 52 度
+@export var iso_distance := 10.5     # 比第三人称远得多，才装得下周围环境
+@export var iso_look_height := 1.15  # 注视点抬高 -> 角色落在画面偏下
+@export var iso_fov := 45.0          # 小 FOV 减少透视畸变，更像 D4
+
 var third_person := true
 var _current_yaw := 0.0
 var _current_pitch := 0.0
@@ -84,7 +94,8 @@ func set_ui_capture(captured: bool) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if ui_override:
 		return
-	if event is InputEventMouseMotion and _mouse_captured:
+	if event is InputEventMouseMotion and _mouse_captured and not iso_locked:
+		# 俯视角锁定：鼠标不再转相机（D4 也是完全不能转视角）
 		_current_yaw -= event.relative.x * mouse_sensitivity
 		# 鼠标上移→抬头（pitch 减小），下移→低头（pitch 增大），并夹紧到上下限。
 		# invert_y 打开时整体反号（F2 切换）。
@@ -96,12 +107,25 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.keycode == KEY_ESCAPE:
 			_set_mouse_captured(not _mouse_captured)
 		elif event.keycode == KEY_T:
-			third_person = not third_person
+			# 锁定俯视角时，第三人称分支永远走不到 -> T 改成切换"锁定"本身
+			if iso_locked:
+				iso_locked = false
+				third_person = true
+				camera.fov = 75.0
+				print("[camera] 俯视角锁定 = 关（回到第三人称）")
+			else:
+				iso_locked = true
+				print("[camera] 俯视角锁定 = 开（暗黑破坏神式斜俯视）")
 		elif event.keycode == KEY_F2:
 			invert_y = not invert_y
 			print("[camera] 垂直视角反转 = %s" % str(invert_y))
 
 func _physics_process(delta: float) -> void:
+	if iso_locked:
+		# 每帧强制写回固定朝向与俯角：下面还有"爬坡时动态夹紧俯角"
+		# 和"鼠标没捕获时朝向跟移动方向"两段逻辑，都会把这个值改掉。
+		_current_yaw = deg_to_rad(iso_yaw_deg)
+		_current_pitch = -deg_to_rad(iso_pitch_deg)
 	# 家具互动（坐/睡/爬梯）期间：冻结移动/重力驱动，位置由 player 管理，相机仍跟随
 	if interact_freeze:
 		_update_camera_only()
@@ -210,13 +234,18 @@ func _physics_process(delta: float) -> void:
 	var min_pitch_dyn := min_pitch
 	if rise > 1.0:
 		min_pitch_dyn = lerpf(min_pitch, -0.08, clampf((rise - 1.0) / 6.0, 0.0, 1.0))
-	_current_pitch = clampf(_current_pitch, min_pitch_dyn, max_pitch)
+	if not iso_locked:
+		_current_pitch = clampf(_current_pitch, min_pitch_dyn, max_pitch)
 
 	# 相机定位 + 角色模型显隐（第一人称隐藏身体，避免相机卡进头部）
 	# 相机跟 visual_height()：抬步时根部瞬间上到台阶顶、模型缓动追上去，
 	# 若跟根节点，上台阶瞬间镜头会先猛跳一下再被模型追平。
 	var eye_y := player.visual_height()
-	if third_person:
+	var focus := Vector3(player.global_position.x, eye_y, player.global_position.z)
+	if iso_locked:
+		player.set_body_visible(true)
+		_place_iso_camera(focus)
+	elif third_person:
 		player.set_body_visible(true)
 		var yaw_vec := Vector3(sin(_current_yaw), 0.0, cos(_current_yaw))
 		var dist_h := cos(_current_pitch) * tps_distance
@@ -229,9 +258,27 @@ func _physics_process(delta: float) -> void:
 		var rot := Basis.from_euler(Vector3(_current_pitch, _current_yaw, 0.0))
 		camera.global_transform = Transform3D(rot, Vector3(player.global_position.x, eye_y + eye_height, player.global_position.z))
 
+## 俯视角机位：从 focus 正上方偏后按固定角度摆相机（暗黑破坏神 4 那种）。
+## 与第三人称的区别是"完全不吃鼠标输入"，朝向/俯角/距离都是常量。
+func _place_iso_camera(focus: Vector3) -> void:
+	var y := deg_to_rad(iso_yaw_deg)
+	var p := deg_to_rad(iso_pitch_deg)
+	var horiz := iso_distance * cos(p)      # 水平后退距离
+	var vert := iso_distance * sin(p)       # 抬高量
+	camera.global_position = focus + Vector3(sin(y) * horiz, vert, cos(y) * horiz)
+	camera.look_at(focus + Vector3(0.0, iso_look_height, 0.0), Vector3.UP)
+	if not is_equal_approx(camera.fov, iso_fov):
+		camera.fov = iso_fov
+
+
 ## 只返回水平移动方向（x=左右，y=前后）。跳跃在 _physics_process 单独处理。
 ## 互动冻结期间仅更新相机（跟随玩家位置/朝向）
 func _update_camera_only() -> void:
+	if iso_locked:
+		player.set_body_visible(true)
+		_place_iso_camera(Vector3(player.global_position.x, player.visual_height(),
+				player.global_position.z))
+		return
 	if third_person:
 		player.set_body_visible(true)
 		var yaw_vec := Vector3(sin(_current_yaw), 0.0, cos(_current_yaw))
