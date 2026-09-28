@@ -60,6 +60,7 @@ func _ready() -> void:
 
 ## 换杖（id 为空 = 收起）
 func set_staff(id: String, elem: int) -> void:
+	_local_ok = false      # 换杖 -> 重新标定局部朝向
 	staff_id = id
 	element = elem
 	_clear()
@@ -221,13 +222,21 @@ func _world_to_local() -> float:
 	return maxf(0.0001, s)
 
 
+## 法杖在手里上下翻转 180°（修「杖头朝下 / 反向握」）。检查器里一键切换。
+@export var flip_in_hand := false
+
+## 手骨局部朝向（标定一次）——「刚性固定在手上」就靠它
+var _local_basis := Basis.IDENTITY
+var _local_ok := false
+var _spin := 0.0
+
 ## 每帧把法杖的**世界朝向**写成目标方向：默认前倾 60°，奔跑时再前挥一档。
 ## 见文件头说明：法杖挂在会旋转的手骨上，只有绕开局部轴才不会"手往前摆、杖往后甩"。
-func _apply_pose(_delta: float) -> void:
+func _apply_pose(delta: float) -> void:
 	var fwd := _facing()
 	if fwd == Vector3.ZERO:
 		return
-	_run_phase += _delta * TAU * RUN_SWING_HZ
+	_run_phase += delta * TAU * RUN_SWING_HZ
 	var run := clampf(_owner_speed() / RUN_FULL_SPEED, 0.0, 1.0)
 	var deg := FORWARD_TILT_DEG + RUN_TILT_DEG * run \
 			+ RUN_SWING_DEG * run * sin(_run_phase)
@@ -240,9 +249,26 @@ func _apply_pose(_delta: float) -> void:
 		zcol = Vector3.BACK
 	zcol = zcol.normalized()
 	var xcol := ycol.cross(zcol).normalized()
-	# **必须保留原有世界缩放**：本节点上面是 Visual(约 0.368)，写单位 basis 会让杖放大 2.7 倍
-	var sc := global_transform.basis.get_scale()
-	global_transform = Transform3D(Basis(xcol, ycol, zcol).scaled(sc), global_position)
+	var want := Basis(xcol, ycol, zcol)
+	# 模型自身方向修正：Tripo 出的法杖有的"头"在 -Y、有的在 +Y。
+	# 打开就把法杖在手里**上下翻转 180°**（绕模型局部 X 轴），用来修"杖头朝下/反向握"。
+	if flip_in_hand:
+		want = want * Basis(Vector3.RIGHT, PI)
+	# ---- 刚性固定在手上（用户要求）----
+	# 原来这里每帧写 `global_transform`（世界朝向），而位置跟着手骨 ——
+	# 两者打架：手一摆，法杖就以握点为轴自己转一圈（"按 WASD 就复现"）。
+	# 现在只做**一次标定**：把"想要的世界朝向"换算成手骨的局部朝向存下来，
+	# 之后只写局部 basis，位置完全交给手骨 —— 手怎么动法杖就怎么动，
+	# 这才是"固定在角色手上"。
+	var hand := get_parent() as Node3D
+	if hand == null:
+		return
+	if not _local_ok:
+		_local_basis = (hand.global_transform.basis.inverse() * want).orthonormalized()
+		_local_ok = true
+	var sc := basis.get_scale()          # 保留挂载时算好的缩放
+	basis = _local_basis.scaled(sc)
+	# 刚性固定：不再做任何自转（否则又变成'自己转圈'）
 
 
 func _owner_body() -> Node3D:
@@ -258,7 +284,12 @@ func _facing() -> Vector3:
 	var b := _owner_body()
 	if b == null:
 		return Vector3.ZERO
-	var f := -b.global_transform.basis.z
+	# 角色**面朝**方向 = 模型的 +Z。
+	# player.gd::face_direction() 用 atan2(face.x, face.z) 设 rotation.y，
+	# 即把 face 对齐到 +Z（文件里也写着「Mage 模型 +Z 为面部前方」）。
+	# 原来取 -basis.z（= 背面），于是「前倾 60°」变成朝身后倒 ——
+	# 用户：「杖头应该在身体前，而不是身体后」。
+	var f := b.global_transform.basis.z
 	f.y = 0.0
 	return f.normalized() if f.length() > 0.001 else Vector3.ZERO
 

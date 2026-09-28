@@ -6,6 +6,9 @@ const MAP_SIZE := 120          # 小地图尺寸（缩小一半）
 const MAP_BIG_SIZE := 600      # 大地图尺寸
 const WORLD_HALF := 450.0
 const MARGIN := 14.0
+## 小地图视野半径（米）：以玩家为中心，屏幕边到中心的实际距离
+@export var minimap_radius := 36.0
+
 const ARROW_RATIO := 0.08      # 玩家箭头半径相对地图尺寸比例（缩小）
 
 ## 地标：村庄/哨站已随场景清空，这里留空（原来写死三个坐标）
@@ -62,7 +65,9 @@ func _build_ui() -> void:
 	cam = Camera3D.new()
 	cam.name = "MinimapCamera"
 	cam.projection = Camera3D.PROJECTION_ORTHOGONAL
-	cam.size = WORLD_HALF
+	# **以玩家为中心的局部视图**：玩家永远在小地图正中，地图内容滚动
+	# （原来是 cam.size = WORLD_HALF 一屏装下整个世界、相机钉在世界原点）
+	cam.size = minimap_radius * 2.0
 	cam.position = Vector3(0.0, 350.0, 0.0)
 	cam.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
 	cam.near = 1.0
@@ -229,16 +234,24 @@ func _process(_delta: float) -> void:
 	var yaw := 0.0
 	if main.player.body != null:
 		yaw = main.player.body.rotation.y
-	# ---- 小地图跟着相机转（用户要求）；大地图保持正北，所以 big_cam 不动 ----
-	# 相机 yaw 就是俯视角的 iso_yaw_deg（未选工具时右键拖动能改它）。
-	# 小地图相机是俯视机位，绕世界竖直轴转同样的角度，画面就跟着转。
 	var cam_yaw := 0.0
 	if main.camera_rig != null:
 		cam_yaw = deg_to_rad(main.camera_rig.iso_yaw_deg)
-	# 若发现旋转方向反了，把下面的负号去掉即可
-	cam.rotation = Vector3(-PI * 0.5, 0.0, -cam_yaw)
-	# 箭头是屏幕空间画的，地图转了它也得跟着转，否则朝向对不上
-	arrow.update_arrow(p.x, p.z, yaw - cam_yaw)
+	# ---- 小地图跟着相机转（已解除锁定）----
+	# 方向修正：原来写的是 `-cam_yaw`，符号反了 —— 表现为"转场景时地图朝反方向转"。
+	# 推导（Godot rotation 是 YXZ 序，Z 先作用）：俯视机位 rotation=(-90°,0,θ) 时
+	#   屏幕上方 = 相机局部 +Y = (-sinθ, 0, -cosθ)
+	#   而相机视线方向 = (-sinθ, 0, -cosθ)   <- 两者相同 ✓
+	# 也就是说 θ 取 **正** 号时，"镜头看向的方向"正好朝屏幕上方，这才是正确朝向。
+	cam.rotation = Vector3(-PI * 0.5, 0.0, cam_yaw)
+	# 相机跟随玩家（保持原高度），于是玩家恒在正中、动的是地图
+	cam.position = Vector3(p.x, cam.position.y, p.z)
+	# 箭头是屏幕空间自绘的，要抵消地图的旋转 -> 减 cam_yaw（这一项原代码就是对的，别动）
+	# 箭头钉在正中（传 0,0）；转的只是地图，玩家不动
+	arrow.update_arrow(0.0, 0.0, yaw - cam_yaw)
+	# 北向标记跟着地图转（大地图是正北，传 0）
+	if landmarks != null:
+		landmarks.set_map_yaw(cam_yaw)
 	coord_label.text = "X %d · Z %d · 海拔 %.1f" % [int(p.x), int(p.z), p.y]
 	if big_root.visible:
 		big_arrow.update_arrow(p.x, p.z, yaw)
@@ -283,6 +296,8 @@ class ArrowOverlay extends Control:
 ## 地标叠加层：圆点标记 + 名称（Label）+ 北向
 class LandmarkOverlay extends Control:
 	var marks: Array = []
+	var north_lbl: Label = null
+	var map_yaw := 0.0
 	var dot_r1 := 4.5
 	var dot_r2 := 2.8
 	var font_size := 11
@@ -309,18 +324,33 @@ class LandmarkOverlay extends Control:
 			lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			lbl.position = Vector2(px - lbl_w * 0.5, py - 20.0)
 			add_child(lbl)
-		# 北向标记（地图顶部固定指北）
-		var n := Label.new()
-		n.text = "N"
-		n.custom_minimum_size = Vector2(24, 18)
-		n.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		n.add_theme_font_size_override("font_size", font_n)
-		n.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95, 0.95))
-		n.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
-		n.add_theme_constant_override("outline_size", 2)
-		n.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		n.position = Vector2(size.x * 0.5 - 12.0, 4.0)
-		add_child(n)
+		# 北向标记：**跟着地图一起转**（原来固定贴在屏幕顶部，地图一转就不对了）
+		# 世界正北 = -Z。地图绕相机 yaw 转 θ 后，北在屏幕上的方向是
+		# (sinθ, -cosθ)（相对地图中心的单位向量），所以把它摆到那个角度上。
+		north_lbl = Label.new()
+		north_lbl.text = "N"
+		north_lbl.custom_minimum_size = Vector2(24, 18)
+		north_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		north_lbl.add_theme_font_size_override("font_size", font_n)
+		north_lbl.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95, 0.95))
+		north_lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
+		north_lbl.add_theme_constant_override("outline_size", 2)
+		north_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(north_lbl)
+		_place_north()
+
+	## 让北向标记落在"当前地图朝向"对应的角度上
+	func set_map_yaw(y: float) -> void:
+		map_yaw = y
+		_place_north()
+
+	func _place_north() -> void:
+		if north_lbl == null:
+			return
+		var r := size.x * 0.5 - 14.0
+		var dir := Vector2(sin(map_yaw), -cos(map_yaw))   # 屏幕上"北"的方向
+		north_lbl.position = Vector2(size.x * 0.5 + dir.x * r - 12.0,
+				size.y * 0.5 + dir.y * r - 9.0)
 
 	func _draw() -> void:
 		var half := size.x * 0.5

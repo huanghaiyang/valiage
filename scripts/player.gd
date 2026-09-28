@@ -473,10 +473,23 @@ func set_body_visible(v: bool) -> void:
 	if body != null:
 		body.visible = v
 
+## 转向平滑：转场景时移动方向（相对屏幕）会变，角色若**瞬间**赋值朝向，
+## 就是"一帧甩到新方向"——法杖挂在手上、以手为轴扫过去，看着像在绕圈
+## （用户："玩家移动时，旋转场景，怎么法杖也跟着转圈"）。
+## 打开后按 turn_speed_deg 逐帧转过去，观感是"转身"而不是"甩"。
+@export var smooth_turn := true
+@export var turn_speed_deg := 900.0
+
 ## 角色面向水平移动方向（Mage 模型 +Z 为面部前方）
 func face_direction(face: Vector3) -> void:
-	if body != null:
-		body.rotation.y = atan2(face.x, face.z)
+	if body == null:
+		return
+	var target := atan2(face.x, face.z)
+	if not smooth_turn:
+		body.rotation.y = target
+		return
+	var rate := deg_to_rad(turn_speed_deg) * get_process_delta_time()
+	body.rotation.y = rotate_toward(body.rotation.y, target, rate)
 
 # ---------- 转向过渡 ----------
 

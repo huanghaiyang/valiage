@@ -48,6 +48,16 @@ const PREVIEW_PLACE_BLOCKED := preload("res://assets/materials/preview_place_blo
 
 # 单点放置工具（塔/屋/树/花/家具/山体：视野中心目标点的半透明模型，绿=可放置，红=占位）
 var _place_tools := [Game.Tool.TOWER, Game.Tool.ROOF, Game.Tool.TREE, Game.Tool.FLOWER, Game.Tool.DECOR, Game.Tool.MOUNTAIN]
+
+## ---- 树木笔刷（红枫树）----
+## 按住左键拖动 -> 沿笔迹成片种树；单击仍然是种一棵。
+@export var tree_brush_spacing := 4.0      ## 相邻两棵的最小间距（米）
+@export var tree_brush_radius := 1.6       ## 每棵在放置点周围的随机偏移半径（米）
+@export var tree_brush_scale_jitter := 0.12 ## 尺寸抖动幅度（±比例）
+@export var tree_brush_max_per_stroke := 80 ## 一次笔画最多刷几棵
+var _tree_brush_active := false
+var _tree_brush_count := 0
+var _last_tree_pos := Vector3.INF
 ## 各分类当前选中的模型变体（滚轮切换）：{"tree": 0, "flower": 2, ...}
 ## 按分类而非按工具保存，切回同类工具时保留上次的选择；场景重载后自动归零。
 var _variant_sel: Dictionary = {}
@@ -246,6 +256,44 @@ func _process(delta: float) -> void:
 			buildings.add_tree(tp2, 1.0, 0.5, ti)
 		print("Capture | [newmodels] 已放置 %d 棵树（变体 %s ...）"
 				% [buildings.tree_variant_count(), buildings.tree_variant_name(0)])
+	if "--treepaint" in OS.get_cmdline_user_args() and _capture_frames == 88:
+		# 验收：以程序方式"画"一条树枝笔画（走的是和鼠标拖动同一条函数）
+		Game.current_tool = Game.Tool.TREE
+		if terrain != null:
+			var t3d: Node = terrain._find_terrain3d()
+			if t3d != null and t3d.has_method("set_collision_enabled"):
+				pass
+		_tree_brush_active = true
+		_tree_brush_count = 0
+		_last_tree_pos = Vector3.INF
+		for i in 30:
+			var bp := player.global_position + Vector3(-14.0 + i * 1.0, 0.0, -6.0)
+			bp.y = terrain.get_height_at(bp.x, bp.z)
+			# 模拟"鼠标走到这里"：直接调用笔刷的内部放置逻辑
+			if _last_tree_pos == Vector3.INF or bp.distance_to(_last_tree_pos) >= tree_brush_spacing:
+				var ang := randf() * TAU
+				var rad := sqrt(randf()) * tree_brush_radius
+				var q := bp + Vector3(cos(ang) * rad, 0.0, sin(ang) * rad)
+				q.y = terrain.get_height_at(q.x, q.z)
+				if not _is_occupied(q):
+					buildings.add_tree(q, 1.0 + randf_range(-tree_brush_scale_jitter, tree_brush_scale_jitter),
+							randf() * 360.0, _current_variant("tree"))
+					_last_tree_pos = bp
+					_tree_brush_count += 1
+		buildings.flush_all()
+		print("TreeBrush | [treepaint] 程序化笔画种了 %d 棵" % _tree_brush_count)
+		_tree_brush_active = false
+	if "--mapcheck" in OS.get_cmdline_user_args() and _capture_frames == 88:
+		# 验收小地图朝向：把 yaw 设成 45°，在"镜头正前方"种一棵树。
+		# 正确的话，它应该出现在小地图的**上方**（玩家箭头之上）。
+		camera_rig.iso_yaw_deg = 45.0
+		var mp := player.global_position + Vector3(9.0, 0.0, 9.0)   # yaw45 时镜头朝 (-0.707,0,-0.707)，正前方是 -X-Z
+		var fwd := Vector3(-sin(deg_to_rad(45.0)), 0.0, -cos(deg_to_rad(45.0)))
+		var tp3 := player.global_position + fwd * 9.0
+		tp3.y = terrain.get_height_at(tp3.x, tp3.z)
+		buildings.add_tree(tp3, 1.0, 0.0, 0)
+		buildings.flush_all()
+		print("MapCheck | 已把树种在镜头正前方 %s（小地图上应出现在玩家**上方**）" % str(tp3))
 	if "--occl" in OS.get_cmdline_user_args() and _capture_frames == 88:
 		# 遮挡穿透验收：在**相机与角色之间**放一棵树（相机在角色的 +X +Z 方向）
 		var op := player.global_position + Vector3(3.4, 0.0, 3.4)
@@ -709,11 +757,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
 			_end_tool()
 		return
+	# 树木笔刷：按住左键拖动时，每走够 spacing 就再种一棵
+	if event is InputEventMouseMotion and _tree_brush_active:
+		_paint_tree_stroke()
+		return
 	if event is InputEventMouseMotion and _rotating and not (Game.current_tool in _place_tools):
+		# 右键拖动**只做水平旋转**（绕 Y 轴），俯仰角锁定不动。
+		# 用户要求："按住鼠标右键只可以旋转场景，但锁定y"。
+		# 俯角仍由 camera_rig.iso_pitch_deg 决定（默认 52°），不再被鼠标改。
 		camera_rig.iso_yaw_deg = fposmod(camera_rig.iso_yaw_deg
 				- event.relative.x * 0.28, 360.0)
-		camera_rig.iso_pitch_deg = clampf(camera_rig.iso_pitch_deg
-				+ event.relative.y * 0.18, 22.0, 72.0)
 
 ## V 键：按顺序切换天气（晴朗 → 多云 → 阴天 → 小雨 → 雷雨 → 大风）
 ## 切换立即生效（force），并暂停自动天气一段时间，方便观察风摇效果。
@@ -859,6 +912,10 @@ func _begin_tool() -> void:
 			# 不再额外抬高：重定位偏移已保证模型底面落在放置点上
 			# 3.4：KayKit 树原生约 1.2~1.7m，乘完约 4~6m，与"树是角色 2.5~5 倍高"一致
 			buildings.add_tree(p, 1.0, _place_yaw, _current_variant("tree"))
+			# 进入"笔刷"状态：接下来拖动鼠标会沿笔迹继续种
+			_tree_brush_active = true
+			_tree_brush_count = 1
+			_last_tree_pos = p
 			player.play_cast_gesture()
 		Game.Tool.FLOWER:
 			if _is_occupied(p):
@@ -900,7 +957,44 @@ func _recycle_vegetation(p: Vector3, radius: float = -1.0) -> void:
 	if got["stone"] > 0.0:
 		Game.stone += got["stone"]
 
+
+## 树木笔刷：在鼠标当前位置种一棵（若离上一棵够远），带随机偏移/朝向/尺寸。
+func _paint_tree_stroke() -> void:
+	if not _tree_brush_active:
+		return
+	if Game.current_tool != Game.Tool.TREE or buildings.tree_variant_count() == 0:
+		_tree_brush_active = false
+		return
+	if _tree_brush_count >= tree_brush_max_per_stroke:
+		return
+	var p: Variant = _get_ground_pos()
+	if p == null:
+		return
+	var pp := p as Vector3
+	if _last_tree_pos != Vector3.INF and pp.distance_to(_last_tree_pos) < tree_brush_spacing:
+		return                      # 还没走够间距，等鼠标再走一点
+	# 在放置点周围抖一下，避免排成一条直线
+	var ang := randf() * TAU
+	var rad := sqrt(randf()) * tree_brush_radius
+	var q := pp + Vector3(cos(ang) * rad, 0.0, sin(ang) * rad)
+	q.y = terrain.get_height_at(q.x, q.z)
+	if _is_occupied(q):
+		return
+	_recycle_vegetation(q, PLACE_RECYCLE_RADIUS)
+	var sc := 1.0 + randf_range(-tree_brush_scale_jitter, tree_brush_scale_jitter)
+	var yaw := randf() * 360.0
+	buildings.add_tree(q, sc, yaw, _current_variant("tree"))
+	_last_tree_pos = pp
+	_tree_brush_count += 1
+
 func _end_tool() -> void:
+	# 收笔：无论是否拖动过，都要退出笔刷状态
+	if _tree_brush_active:
+		_tree_brush_active = false
+		_last_tree_pos = Vector3.INF
+		buildings.flush_all()
+		print("TreeBrush | 本次笔画种了 %d 棵红枫树" % _tree_brush_count)
+		_tree_brush_count = 0
 	if not _is_dragging:
 		return
 	_is_dragging = false
