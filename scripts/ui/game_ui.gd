@@ -11,6 +11,14 @@ var biomass_label: Label
 var action_button: Button           # 动作菜单开关按钮
 var action_panel: PanelContainer    # 动作列表面板
 var _action_visible := false
+# ---- 装备（法杖）面板：F 呼出，与动作面板同样式同位置、互斥 ----
+var staff_button: Button            # 工具栏上的「装备 (F)」开关按钮
+var staff_panel: PanelContainer     # 已拥有法杖的列表（146 根，可滚动 + 元素筛选）
+var _staff_visible := false
+var _staff_filter := -1             # 元素筛选：-1 = 全部
+var _staff_filter_buttons: Dictionary = {}   # 元素 -> 筛选按钮（toggle 需手动互斥）
+var _staff_list: VBoxContainer
+var _staff_cap: Label
 var interact_label: Label        # 家具互动提示浮层
 var weather_label: Label         # 天气/风力信息（右上角）
 var staff_slot: PanelContainer   # 法杖装备格（右下角，武器单占一格）
@@ -35,6 +43,11 @@ func setup(main_node: Node3D) -> void:
 	main = main_node
 	_build_ui()
 	Game.tool_changed.connect(_on_tool_changed)
+	# 装备数据一变就刷新右下角格子与（打开着的）面板
+	var sys := get_node_or_null("/root/StaffSystem")
+	if sys != null and not sys.is_connected("equipment_changed", _on_equipment_changed):
+		sys.connect("equipment_changed", _on_equipment_changed)
+	update_staff_slot()
 
 func _build_ui() -> void:
 	# 背景
@@ -82,8 +95,17 @@ func _build_ui() -> void:
 	action_button.pressed.connect(_toggle_action_panel)
 	hbox.add_child(action_button)
 
+	# 装备按钮（法杖占 1 格，146 根靠滚轮一根根翻太慢，给个列表）
+	staff_button = Button.new()
+	staff_button.text = "装备 (F)"
+	staff_button.custom_minimum_size = Vector2(90, 34)
+	staff_button.toggle_mode = true
+	staff_button.pressed.connect(_toggle_staff_panel)
+	hbox.add_child(staff_button)
+
 	# 动作列表面板（默认隐藏，K 或按钮呼出）
 	_build_action_panel()
+	_build_staff_panel()
 
 	# 生物质/石材余额（右上角，回收植被获得；石头单独计入石材）
 	biomass_label = Label.new()
@@ -119,7 +141,7 @@ func _build_ui() -> void:
 
 	# 底部提示
 	hint_label = Label.new()
-	hint_label.text = "左键搭建/涂抹 · WASD 移动 · 鼠标旋转视角 · Shift 加速 · Space/C 升降 · T 切换视角 · V 切换天气 · Esc 释放鼠标"
+	hint_label.text = "左键搭建/涂抹 · WASD 移动 · F 装备 · Q 换杖 · Shift 加速 · Space/C 升降 · T 切换视角 · V 切换天气 · Esc 释放鼠标"
 	hint_label.add_theme_font_size_override("font_size", 14)
 	hint_label.add_theme_color_override("font_color", Color(0.95, 0.95, 0.9, 0.9))
 	hint_label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
@@ -133,9 +155,9 @@ func _build_ui() -> void:
 	staff_slot = PanelContainer.new()
 	staff_slot.add_theme_stylebox_override("panel", _panel_style())
 	staff_slot.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	staff_slot.offset_left = -222
+	staff_slot.offset_left = -258
 	staff_slot.offset_right = -16
-	staff_slot.offset_top = -118
+	staff_slot.offset_top = -122
 	staff_slot.offset_bottom = -44
 	staff_slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(staff_slot)
@@ -227,7 +249,7 @@ func _on_tool_changed(tool: int) -> void:
 			tip = "点击放置家具（桌/椅/床/梯子等）"
 		Game.Tool.MOUNTAIN:
 			tip = "点击放置山体（悬崖岩块）"
-	hint_label.text = "【%s】%s · WASD移动 · Shift加速 · Space/C升降 · T切换视角 · 数字键1-0切工具" % [Game.get_tool_name(), tip]
+	hint_label.text = "【%s】%s · WASD移动 · Shift加速 · F装备 · Q换杖 · Space/C升降 · T切换视角 · 数字键1-0切工具" % [Game.get_tool_name(), tip]
 
 # ---------- 动作菜单（快捷键 K 呼出，游戏内测试动作） ----------
 
@@ -286,26 +308,202 @@ func _toggle_action_panel() -> void:
 	_action_visible = not _action_visible
 	action_panel.visible = _action_visible
 	action_button.button_pressed = _action_visible
-	if main != null and main.camera_rig != null:
-		var rig: CameraRig = main.camera_rig
-		if _action_visible:
-			rig.ui_override = true
-			rig.set_ui_capture(false)
-		else:
-			rig.ui_override = false
-			rig.set_ui_capture(true)
+	# 与装备面板位置重叠，互斥
+	if _action_visible and _staff_visible:
+		_set_staff_panel(false)
+	_apply_ui_capture()
 
 func _on_action_pressed(index: int) -> void:
 	if main != null and main.player != null:
 		main.player.play_action(index)
+
+
+# ---------- 装备（法杖）面板 ----------
+#
+# 法杖是武器、单占一格，但一共 146 根 —— 全用滚轮一根根翻不现实，
+# 所以给一个「按元素分组的可滚动列表 + 元素筛选」。样式与动作面板完全一致，
+# 位置也一样，两者互斥（同屏只有一个侧边面板）。
+
+func _sys() -> Node:
+	return get_node_or_null("/root/StaffSystem")
+
+
+func _build_staff_panel() -> void:
+	staff_panel = PanelContainer.new()
+	staff_panel.visible = false
+	staff_panel.position = Vector2(12, 74)
+	staff_panel.custom_minimum_size = Vector2(420, 0)
+	staff_panel.add_theme_stylebox_override("panel", _panel_style())
+	add_child(staff_panel)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 4)
+	staff_panel.add_child(vbox)
+
+	_staff_cap = Label.new()
+	_staff_cap.add_theme_font_size_override("font_size", 13)
+	_staff_cap.add_theme_color_override("font_color", Color(0.95, 0.95, 0.9))
+	vbox.add_child(_staff_cap)
+
+	# 元素筛选行（全部 + 7 种元素）：146 根一次铺开太长，先按元素收窄
+	var sys := _sys()
+	var frow := HBoxContainer.new()
+	frow.add_theme_constant_override("separation", 3)
+	vbox.add_child(frow)
+	frow.add_child(_filter_button("全部", -1, sys))
+	if sys != null:
+		for e in sys.call("element_ids"):
+			frow.add_child(_filter_button(str(sys.call("element_name", int(e))), int(e), sys))
+
+	var scroll := ScrollContainer.new()
+	scroll.name = "StaffScroll"
+	scroll.custom_minimum_size = Vector2(0, 430)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vbox.add_child(scroll)
+
+	_staff_list = VBoxContainer.new()
+	_staff_list.name = "StaffList"
+	_staff_list.add_theme_constant_override("separation", 2)
+	scroll.add_child(_staff_list)
+
+
+func _filter_button(text: String, element: int, sys: Node) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.toggle_mode = true
+	b.custom_minimum_size = Vector2(36, 26)
+	b.button_pressed = (element == _staff_filter)
+	b.add_theme_font_size_override("font_size", 12)
+	if element >= 0 and sys != null:
+		b.add_theme_color_override("font_color", sys.call("element_color", element))
+	b.pressed.connect(_on_staff_filter.bind(element))
+	_staff_filter_buttons[element] = b
+	return b
+
+
+func _on_staff_filter(element: int) -> void:
+	_staff_filter = element
+	# toggle 按钮不会自己互斥，这里手动同步一遍选中态
+	for e in _staff_filter_buttons.keys():
+		var b: Button = _staff_filter_buttons[e]
+		if is_instance_valid(b):
+			b.button_pressed = (int(e) == element)
+	_fill_staff_panel()
+
+
+## 重建列表。只在打开时/装备数据变化时调用。
+## 注意 `equip()` 是从列表按钮的 pressed 里发出来的，那个信号会经
+## `equipment_changed` 绕回来把按钮自己 free 掉 —— 所以重建一律 deferred。
+func _fill_staff_panel() -> void:
+	if _staff_list == null:
+		return
+	for c in _staff_list.get_children():
+		c.queue_free()
+		_staff_list.remove_child(c)
+	var sys := _sys()
+	if sys == null:
+		return
+	var owned: Array = sys.call("owned_list", _staff_filter)
+	var total: int = int(sys.call("owned_list").size())
+	var all: int = int(sys.call("all_ids").size())
+	var equipped := str(sys.get("equipped"))
+	_staff_cap.text = "装备 · 法杖（点名字换上，世界内 Q / Shift+滚轮 切换）\n已拥有 %d/%d 根%s" % [
+			total, all, "   ·   当前空手" if equipped == "" else
+			"   ·   当前 %s" % str(sys.call("display_name", equipped))]
+	# 「收起法杖」放在最前面：空手也是一种状态（长老祝福只作用于手上的杖）
+	var un := Button.new()
+	un.text = "空手（收起法杖）"
+	un.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	un.custom_minimum_size = Vector2(0, 26)
+	un.disabled = equipped == ""
+	un.pressed.connect(_on_staff_picked.bind(""))
+	_staff_list.add_child(un)
+	# 每行 = [名字按钮（自动占满，左对齐）] + [元素 · 长老石 标签（自动靠右）]
+	# 不用一整条字符串：中文长名字 + 元素 + 石数拼一起会顶到面板边缘被裁掉
+	# （实测 "石0" 被切了一半），分成两列既不会裁，元素标签也能对齐成一列。
+	for id in owned:
+		var sid := str(id)
+		var elem := int(sys.call("element_of", sid))
+		var col: Color = sys.call("element_color", elem)
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		_staff_list.add_child(row)
+		var b := Button.new()
+		b.text = "%s%s%s" % ["▶ " if sid == equipped else "   ",
+				str(sys.call("display_name", sid)),
+				" *" if bool(sys.call("is_blessed", sid)) else ""]
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.custom_minimum_size = Vector2(0, 26)
+		b.add_theme_font_size_override("font_size", 13)
+		b.add_theme_color_override("font_color", Color(1, 1, 1) if sid == equipped else col)
+		b.pressed.connect(_on_staff_picked.bind(sid))
+		row.add_child(b)
+		var tag := Label.new()
+		tag.text = "%s · 石%d" % [str(sys.call("element_name", elem)),
+				int(sys.call("stone_count", sid))]
+		tag.add_theme_font_size_override("font_size", 12)
+		tag.add_theme_color_override("font_color", col)
+		tag.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(tag)
+
+
+func _on_staff_picked(id: String) -> void:
+	var sys := _sys()
+	if sys == null or id == str(sys.get("equipped")):
+		return
+	sys.call("equip", id)
+	if main != null:
+		main.call("_show_staff_hint", id)
+
+
+func _on_equipment_changed() -> void:
+	update_staff_slot()
+	if _staff_visible:
+		_fill_staff_panel.call_deferred()
+
+
+func _toggle_staff_panel() -> void:
+	_set_staff_panel(not _staff_visible)
+
+
+func _set_staff_panel(on: bool) -> void:
+	_staff_visible = on
+	if on:
+		_fill_staff_panel()
+	staff_panel.visible = on
+	staff_button.button_pressed = on
+	if on and _action_visible:
+		_toggle_action_panel()
+	_apply_ui_capture()
+
+
+## 任一侧边面板打开 -> 放开鼠标（好点列表）；都关了就收回视角控制
+func _apply_ui_capture() -> void:
+	if main == null or main.camera_rig == null:
+		return
+	var rig: CameraRig = main.camera_rig
+	var any := _staff_visible or _action_visible
+	if rig.ui_override == any:
+		return
+	rig.ui_override = any
+	rig.set_ui_capture(not any)
+
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_K:
 			_toggle_action_panel()
 			get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_F:
+			_toggle_staff_panel()
+			get_viewport().set_input_as_handled()
 		elif event.keycode == KEY_ESCAPE and _action_visible:
 			_toggle_action_panel()
+			get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_ESCAPE and _staff_visible:
+			_set_staff_panel(false)
 			get_viewport().set_input_as_handled()
 
 # ---------- 家具互动提示 ----------
@@ -322,24 +520,27 @@ func clear_interact_hint() -> void:
 
 # ---------- 法杖装备格 ----------
 
-## 右下角显示当前装备的法杖：元素色条 + 名称 + 元素名。
-## 空手时色条压暗、文字提示"空"。
+## 右下角显示当前装备的法杖：元素色条 + 名称 + 元素 + 长老石 + 第几根。
+## 空手时色条压暗、文字提示怎么拿杖。
 func update_staff_slot() -> void:
 	if staff_slot_label == null:
 		return
-	var sys := get_node_or_null("/root/StaffSystem")
+	var sys := _sys()
 	if sys == null:
 		return
 	var id := str(sys.get("equipped"))
+	var owned: int = int(sys.call("owned_list").size())
 	if id == "":
-		staff_slot_label.text = "法杖 · 空\n（找长老领取）"
+		var tip := "（F 打开装备）" if owned > 0 else "（找长老领取）"
+		staff_slot_label.text = "法杖 · 空\n%s" % tip
 		staff_slot_icon.color = Color(0.32, 0.34, 0.36)
 		return
 	var elem := int(sys.get("equipped_element"))
-	var col: Color = sys.call("element_color", elem)
-	staff_slot_icon.color = col
-	staff_slot_label.text = "%s\n%s · 长老石 %d" % [
-			str(sys.call("display_name", id)),
+	staff_slot_icon.color = sys.call("element_color", elem)
+	var bless := "*" if bool(sys.call("is_blessed", id)) else ""
+	staff_slot_label.text = "%s%s  %d/%d\n%s · 长老石 %d · F 装备" % [
+			str(sys.call("display_name", id)), bless,
+			int(sys.call("owned_index", id)), owned,
 			str(sys.call("element_name", elem)),
 			int(sys.call("stone_count", id))]
 

@@ -21,8 +21,13 @@ extends Node3D
 @export var interact_range := 18.0
 
 # 第三人称相机参数
-@export var tps_distance := 4.8
-@export var tps_height := 2.0
+## 第三人称机位：**整个偏移向量**（水平距离 + 高度）都按 0.5 缩了一档（用户要求"拉近 50%"）。
+## 注意只改 tps_distance 是不对的：相机位置是
+##   eye + yaw*(cos(pitch)*D) + up*(tps_height + sin(pitch)*D)
+## 高度里那项 tps_height 是**常数**偏移，只把 D 减半会让相机相对角色抬高、
+## 变成俯视头顶；两个一起缩才是"沿同一条视线拉近"。
+@export var tps_distance := 2.4
+@export var tps_height := 1.0
 
 var third_person := true
 var _current_yaw := 0.0

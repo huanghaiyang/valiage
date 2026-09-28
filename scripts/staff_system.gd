@@ -1,5 +1,5 @@
 extends Node
-## 法杖系统（自动加载单例）
+## 法杖系统（自动加载单例）—— 同时也是**装备系统**的核心数据层
 ##
 ## 设计参考常见游戏的装备策略：
 ##   * 法杖是**武器**，单手，**占 1 个装备格**（`SLOT_STAFF`），不与工具/材料混放；
@@ -11,14 +11,28 @@ extends Node
 ##   1. 登记所有法杖定义（id / 名称 / 元素 / 网格 / 展示参数）
 ##   2. 记录已解锁与当前装备
 ##   3. 广播信号给 UI 与手持挂点
+##   4. **存档**：已解锁 / 当前装备 / 长老石 / 被祝福改写的元素 -> `user://equipment.cfg`
+##
+## 三条入口（都能改装备，最后都汇到 `equip()`）：
+##   * `F` 装备面板（game_ui.gd，点名字装备）
+##   * `Q` / `Shift+滚轮` 世界内快速切换（main.gd -> `cycle()`）
+##   * 长老赠杖（elders.gd -> `unlock()` + main.gd 里自动 `equip()`）
 
 signal staff_equipped(id: String)
 signal staff_unlocked(id: String)
 signal stone_gained(id: String, amount: int)
+## 批量变化后的**单次**通知（UI 只连这个，避免全解锁时重建 146 次列表）
+signal equipment_changed()
 
 ## 装备格：法杖是武器，单占一格
 const SLOT_STAFF := "staff"
 const SLOT_COUNT := 1
+
+## 开发阶段便利：默认**拥有全部法杖**，方便逐根试效果与截图。
+## 命令行加 `--no-dev-unlock` 关掉（验证"找长老领杖"的正常流程时用）。
+const DEV_UNLOCK_ALL := true
+## 存档路径；`--fresh` 跳过读取（不删档）
+const SAVE_PATH := "user://equipment.cfg"
 
 enum Element { NONE, FIRE, ICE, ARCANE, NATURE, HOLY, EARTH, STORM }
 
@@ -56,332 +70,65 @@ var equipped := ""
 var equipped_element: int = Element.NONE
 ## 用于长老系统的"长老石"，每根杖单独计数（升级/祝福消耗）
 var stones: Dictionary = {}
+## id -> 登记时的原始元素（祝福改写过 defs 里的值，所以必须另存一份基准）
+var base_element: Dictionary = {}
+## id -> 被祝福改成过的元素（只有改写过的才在这里，存档只写这部分）
+var blessed: Dictionary = {}
+## 读档期间为 true：此时不写文件，也不发装备信号
+var _loading := false
+## 存档总开关。`--fresh`（本次会话不读档）与 `--verify`（自检不许改玩家存档）
+## 都会把它关掉；自检里的"存档往返"会临时打开并换成一个临时路径来测。
+var save_enabled := true
+## 存档路径（做成变量，自检才能指向临时文件而不是玩家存档）
+var save_path := SAVE_PATH
 
 
 func _ready() -> void:
 	_register_builtin()
+	# 自动加载单例的 _ready() 早于主场景，所以这里读档时 player/UI 都还不存在。
+	# 正因为如此，读档**不发** `staff_equipped`：player 挂载手持法杖时会主动
+	# 去读 `equipped`（见 player.gd 的 _attach_held_staff），UI 也在自己的 setup 里读一次。
+	var args := OS.get_cmdline_user_args()
+	var fresh := "--fresh" in args
+	var dev := DEV_UNLOCK_ALL and not ("--no-dev-unlock" in args)
+	if fresh or "--verify" in args:
+		save_enabled = false
+	if not fresh:
+		load_game()
+	print("[staff] 登记 %d 根，读档=%s，写档=%s，开发全解锁=%s，当前装备=%s"
+			% [defs.size(), "跳过(--fresh)" if fresh else save_reason(),
+			   save_path if save_enabled else "关闭(自检/--fresh 不写玩家存档)",
+			   str(dev), equipped if equipped != "" else "空"])
+	if dev:
+		var added := unlock_all()
+		# 空手的话顺手拿一根在手里，否则"拥有 146 根但看不见"没有测试价值
+		if equipped == "":
+			var first := first_id()
+			if first != "":
+				equip(first)
+		print("[staff] 开发模式：新解锁 %d 根 -> 已拥有 %d/%d，当前装备=%s"
+				% [added, unlocked.size(), defs.size(),
+				   display_name(equipped) if equipped != "" else "空"])
+
+
+func save_reason() -> String:
+	return save_path if FileAccess.file_exists(save_path) else "无存档"
+
+
+func _exit_tree() -> void:
+	# 兜底：退出时再写一次（正常流程里每次改动都已经立刻落盘）
+	save_game()
 
 
 ## 先登记已经精做完的 6 根（后续逐根追加）
+## 法杖登记表 —— **目前为空**。
+##
+## 原来这里有 146 条 reg(...)（指向 assets/models/crafted/*.glb）。按用户要求
+## 全部移除：那批模型面数过低、无法使用，稍后会给新的建模参考图重做。
+## 框架保留 —— reg() / 元素表 / 解锁 / 装备 / 存档 的接口一个没动，
+## 新模型做好后在这里重新登记即可（一行一根）。
 func _register_builtin() -> void:
-	reg("ice", "冰晶法杖", Element.ICE, "res://assets/models/crafted/staff_ice.glb",
-			{"scale": 1.0, "idle_spin": 0.35, "hover": 0.035})
-	reg("flame", "烈焰法杖", Element.FIRE, "res://assets/models/crafted/staff_flame.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.045})
-	reg("gem", "宝石法杖", Element.ARCANE, "res://assets/models/crafted/staff_gem.glb",
-			{"scale": 1.0, "idle_spin": 0.30, "hover": 0.030})
-	reg("thorn", "荆棘法杖", Element.NATURE, "res://assets/models/crafted/staff_thorn.glb",
-			{"scale": 1.0, "idle_spin": 0.15, "hover": 0.025})
-	reg("beast", "兽首法杖", Element.EARTH, "res://assets/models/crafted/staff_beast.glb",
-			{"scale": 1.0, "idle_spin": 0.18, "hover": 0.030})
-	reg("angel", "圣羽法杖", Element.HOLY, "res://assets/models/crafted/staff_angel.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.050})
-	# ---- batch A ----
-	reg("lamp", "提灯法杖", Element.FIRE, "res://assets/models/crafted/staff_lamp.glb",
-			{"scale": 1.0, "idle_spin": 0.12, "hover": 0.030})
-	reg("crescent", "新月法杖", Element.ARCANE, "res://assets/models/crafted/staff_crescent.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.040})
-	reg("trident", "三叉法杖", Element.STORM, "res://assets/models/crafted/staff_trident.glb",
-			{"scale": 1.0, "idle_spin": 0.18, "hover": 0.032})
-	reg("swordstaff", "剑杖", Element.HOLY, "res://assets/models/crafted/staff_swordstaff.glb",
-			{"scale": 1.0, "idle_spin": 0.16, "hover": 0.028})
-	# ---- batch B ----
-	reg("skull", "骷髅法杖", Element.EARTH, "res://assets/models/crafted/staff_skull.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	reg("mushroom", "蘑菇法杖", Element.NATURE, "res://assets/models/crafted/staff_mushroom.glb",
-			{"scale": 1.0, "idle_spin": 0.14, "hover": 0.026})
-	reg("cage", "晶笼法杖", Element.ARCANE, "res://assets/models/crafted/staff_cage.glb",
-			{"scale": 1.0, "idle_spin": 0.30, "hover": 0.042})
-	reg("tentacle", "触手法杖", Element.ICE, "res://assets/models/crafted/staff_tentacle.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	# ---- batch C ----
-	reg("lantern", "提灯杖", Element.FIRE, "res://assets/models/crafted/staff_lantern.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.038})
-	reg("lotus", "莲花法杖", Element.NATURE, "res://assets/models/crafted/staff_lotus.glb",
-			{"scale": 1.0, "idle_spin": 0.16, "hover": 0.030})
-	reg("hourglass", "沙漏法杖", Element.ARCANE, "res://assets/models/crafted/staff_hourglass.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.034})
-	reg("anchor", "锚形法杖", Element.STORM, "res://assets/models/crafted/staff_anchor.glb",
-			{"scale": 1.0, "idle_spin": 0.18, "hover": 0.032})
-	# ---- batch D ----
-	reg("plume", "羽翎法杖", Element.STORM, "res://assets/models/crafted/staff_plume.glb",
-			{"scale": 1.0, "idle_spin": 0.34, "hover": 0.044})
-	reg("sunfire", "曜阳法杖", Element.FIRE, "res://assets/models/crafted/staff_sunfire.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	reg("starorb", "星辉法杖", Element.HOLY, "res://assets/models/crafted/staff_starorb.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	reg("voidclaw", "幽爪法杖", Element.EARTH, "res://assets/models/crafted/staff_voidclaw.glb",
-			{"scale": 1.0, "idle_spin": 0.18, "hover": 0.030})
-	# ---- batch E ----
-	reg("talon", "魔爪法杖", Element.EARTH, "res://assets/models/crafted/staff_talon.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.032})
-	reg("gild", "鎏金法杖", Element.ARCANE, "res://assets/models/crafted/staff_gild.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.038})
-	reg("goldvine", "金藤法杖", Element.NATURE, "res://assets/models/crafted/staff_goldvine.glb",
-			{"scale": 1.0, "idle_spin": 0.16, "hover": 0.030})
-	reg("frostfire", "霜焰法杖", Element.ICE, "res://assets/models/crafted/staff_frostfire.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.040})
-	# ---- batch F ----
-	reg("sapphire", "苍蓝法杖", Element.ICE, "res://assets/models/crafted/staff_sapphire.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.034})
-	reg("axestaff", "战斧法杖", Element.EARTH, "res://assets/models/crafted/staff_axestaff.glb",
-			{"scale": 1.0, "idle_spin": 0.18, "hover": 0.028})
-	reg("emberspire", "炎棘法杖", Element.FIRE, "res://assets/models/crafted/staff_emberspire.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.036})
-	reg("sungold", "阳金法杖", Element.HOLY, "res://assets/models/crafted/staff_sungold.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.042})
-	# ---- batch G ----
-	reg("demon", "魔首法杖", Element.EARTH, "res://assets/models/crafted/staff_demon.glb",
-			{"scale": 1.0, "idle_spin": 0.16, "hover": 0.028})
-	reg("bramble", "棘冠法杖", Element.NATURE, "res://assets/models/crafted/staff_bramble.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.032})
-	reg("violetflame", "幽焰法杖", Element.ARCANE, "res://assets/models/crafted/staff_violetflame.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("thunder", "雷矛法杖", Element.STORM, "res://assets/models/crafted/staff_thunder.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	# ---- batch H ----
-	reg("scythe", "藤镰法杖", Element.NATURE, "res://assets/models/crafted/staff_scythe.glb",
-			{"scale": 1.0, "idle_spin": 0.18, "hover": 0.030})
-	reg("stonemace", "玄石法杖", Element.EARTH, "res://assets/models/crafted/staff_stonemace.glb",
-			{"scale": 1.0, "idle_spin": 0.14, "hover": 0.026})
-	reg("knotwood", "木灵法杖", Element.NATURE, "res://assets/models/crafted/staff_knotwood.glb",
-			{"scale": 1.0, "idle_spin": 0.12, "hover": 0.024})
-	reg("prism", "棱镜法杖", Element.HOLY, "res://assets/models/crafted/staff_prism.glb",
-			{"scale": 1.0, "idle_spin": 0.30, "hover": 0.044})
-	# ---- batch I ----
-	reg("frostbone", "霜骨法杖", Element.ICE, "res://assets/models/crafted/staff_frostbone.glb",
-			{"scale": 1.0, "idle_spin": 0.16, "hover": 0.028})
-	reg("duskcrystal", "暮晶法杖", Element.STORM, "res://assets/models/crafted/staff_duskcrystal.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("roseflame", "玫焰法杖", Element.ARCANE, "res://assets/models/crafted/staff_roseflame.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.042})
-	reg("crown", "王冠法杖", Element.HOLY, "res://assets/models/crafted/staff_crown.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	# ---- batch J ----
-	reg("frostbrand", "霜锋法杖", Element.ICE, "res://assets/models/crafted/staff_frostbrand.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("thornclaw", "棘爪法杖", Element.NATURE, "res://assets/models/crafted/staff_thornclaw.glb",
-			{"scale": 1.0, "idle_spin": 0.18, "hover": 0.030})
-	reg("amberlantern", "琥珀灯法杖", Element.FIRE, "res://assets/models/crafted/staff_amberlantern.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.040})
-	reg("emerald", "翠玉法杖", Element.NATURE, "res://assets/models/crafted/staff_emerald.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	reg("starfall", "星陨法杖", Element.ARCANE, "res://assets/models/crafted/staff_starfall.glb",
-			{"scale": 1.0, "idle_spin": 0.30, "hover": 0.044})
-	reg("woodcrown", "木冠法杖", Element.EARTH, "res://assets/models/crafted/staff_woodcrown.glb",
-			{"scale": 1.0, "idle_spin": 0.14, "hover": 0.026})
-	# ---- batch K ----
-	reg("moonstone", "月石法杖", Element.ICE, "res://assets/models/crafted/staff_moonstone.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	reg("idol", "霜偶法杖", Element.ICE, "res://assets/models/crafted/staff_idol.glb",
-			{"scale": 1.0, "idle_spin": 0.16, "hover": 0.028})
-	reg("verdant", "碧焰法杖", Element.NATURE, "res://assets/models/crafted/staff_verdant.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("spikedclub", "银棱法杖", Element.EARTH, "res://assets/models/crafted/staff_spikedclub.glb",
-			{"scale": 1.0, "idle_spin": 0.18, "hover": 0.030})
-	reg("waraxe", "双刃战杖", Element.EARTH, "res://assets/models/crafted/staff_waraxe.glb",
-			{"scale": 1.0, "idle_spin": 0.16, "hover": 0.028})
-	reg("nightstar", "夜星法杖", Element.STORM, "res://assets/models/crafted/staff_nightstar.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	# ---- batch L ----
-	reg("icebloom", "冰蕊法杖", Element.ICE, "res://assets/models/crafted/staff_icebloom.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("treefather", "树父法杖", Element.NATURE, "res://assets/models/crafted/staff_treefather.glb",
-			{"scale": 1.0, "idle_spin": 0.14, "hover": 0.026})
-	reg("goldloop", "金环法杖", Element.EARTH, "res://assets/models/crafted/staff_goldloop.glb",
-			{"scale": 1.0, "idle_spin": 0.18, "hover": 0.030})
-	reg("pearl", "珍珠法杖", Element.HOLY, "res://assets/models/crafted/staff_pearl.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("voidhammer", "虚空法杖", Element.ARCANE, "res://assets/models/crafted/staff_voidhammer.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	reg("paleblaze", "冥焰法杖", Element.ICE, "res://assets/models/crafted/staff_paleblaze.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.042})
-	# ---- batch M ----
-	reg("cindergold", "翠金法杖", Element.NATURE, "res://assets/models/crafted/staff_cindergold.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.034})
-	reg("blackbriar", "玄棘法杖", Element.ICE, "res://assets/models/crafted/staff_blackbriar.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("silvergild", "银金法杖", Element.HOLY, "res://assets/models/crafted/staff_silvergild.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("royalcrystal", "紫蓝法杖", Element.ICE, "res://assets/models/crafted/staff_royalcrystal.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	reg("bluetrident", "碧叉法杖", Element.STORM, "res://assets/models/crafted/staff_bluetrident.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	reg("jadeorb", "翠球星杖", Element.NATURE, "res://assets/models/crafted/staff_jadeorb.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.042})
-	# ---- batch N ----
-	reg("tealflame", "青焰法杖", Element.ICE, "res://assets/models/crafted/staff_tealflame.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("lavender", "紫晶法杖", Element.ARCANE, "res://assets/models/crafted/staff_lavender.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	reg("tealring", "青环法杖", Element.ICE, "res://assets/models/crafted/staff_tealring.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("palebranch", "素枝法杖", Element.HOLY, "res://assets/models/crafted/staff_palebranch.glb",
-			{"scale": 1.0, "idle_spin": 0.18, "hover": 0.030})
-	reg("jadeleaf", "蓝叶法杖", Element.NATURE, "res://assets/models/crafted/staff_jadeleaf.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	reg("duskrose", "暮玫法杖", Element.ARCANE, "res://assets/models/crafted/staff_duskrose.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.042})
-	# ---- batch O ----
-	reg("bonelance", "骨脊法杖", Element.EARTH, "res://assets/models/crafted/staff_bonelance.glb",
-			{"scale": 1.0, "idle_spin": 0.16, "hover": 0.028})
-	reg("goldidol", "金偶法杖", Element.HOLY, "res://assets/models/crafted/staff_goldidol.glb",
-			{"scale": 1.0, "idle_spin": 0.18, "hover": 0.030})
-	reg("starflame", "星焰法杖", Element.ARCANE, "res://assets/models/crafted/staff_starflame.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.042})
-	reg("bluering", "蓝环法杖", Element.ICE, "res://assets/models/crafted/staff_bluering.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	reg("frostfan", "霜翎法杖", Element.ICE, "res://assets/models/crafted/staff_frostfan.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("warhammer", "战锤法杖", Element.EARTH, "res://assets/models/crafted/staff_warhammer.glb",
-			{"scale": 1.0, "idle_spin": 0.14, "hover": 0.026})
-	# ---- batch P ----
-	reg("stoneblock", "磐石法杖", Element.EARTH, "res://assets/models/crafted/staff_stoneblock.glb",
-			{"scale": 1.0, "idle_spin": 0.14, "hover": 0.026})
-	reg("twinjewel", "双瞳法杖", Element.ARCANE, "res://assets/models/crafted/staff_twinjewel.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("sunstone", "阳晶法杖", Element.FIRE, "res://assets/models/crafted/staff_sunstone.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	reg("steelblue", "钢蓝法杖", Element.ICE, "res://assets/models/crafted/staff_steelblue.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("azurevine", "蓝藤法杖", Element.STORM, "res://assets/models/crafted/staff_azurevine.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.042})
-	reg("blackaxe", "黑刃战杖", Element.EARTH, "res://assets/models/crafted/staff_blackaxe.glb",
-			{"scale": 1.0, "idle_spin": 0.16, "hover": 0.028})
-	# ---- batch Q ----
-	reg("darkbloom", "暗华法杖", Element.STORM, "res://assets/models/crafted/staff_darkbloom.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	reg("glacialspear", "冰棱法杖", Element.ICE, "res://assets/models/crafted/staff_glacialspear.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("rosegem", "玫晶法杖", Element.ARCANE, "res://assets/models/crafted/staff_rosegem.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("opal", "欧泊法杖", Element.HOLY, "res://assets/models/crafted/staff_opal.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("amberpearl", "琥珀珠法杖", Element.FIRE, "res://assets/models/crafted/staff_amberpearl.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	reg("frostmace", "霜棱法杖", Element.ICE, "res://assets/models/crafted/staff_frostmace.glb",
-			{"scale": 1.0, "idle_spin": 0.18, "hover": 0.030})
-	# ---- batch R ----
-	reg("banner", "战旗法杖", Element.STORM, "res://assets/models/crafted/staff_banner.glb",
-			{"scale": 1.0, "idle_spin": 0.30, "hover": 0.044})
-	reg("brassflame", "黄铜法杖", Element.HOLY, "res://assets/models/crafted/staff_brassflame.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	reg("bonejewel", "骨玉法杖", Element.ARCANE, "res://assets/models/crafted/staff_bonejewel.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("embercage", "赤笼法杖", Element.FIRE, "res://assets/models/crafted/staff_embercage.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	reg("duskblaze", "暮焰法杖", Element.FIRE, "res://assets/models/crafted/staff_duskblaze.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("sunpearl", "阳珠法杖", Element.HOLY, "res://assets/models/crafted/staff_sunpearl.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	# ---- batch S ----
-	reg("wingedmace", "翼槌法杖", Element.HOLY, "res://assets/models/crafted/staff_wingedmace.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	reg("dragonfang", "龙牙法杖", Element.ARCANE, "res://assets/models/crafted/staff_dragonfang.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	reg("greatring", "巨环法杖", Element.HOLY, "res://assets/models/crafted/staff_greatring.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("rosecage", "玫笼法杖", Element.ARCANE, "res://assets/models/crafted/staff_rosecage.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("silverclaw", "银爪法杖", Element.ICE, "res://assets/models/crafted/staff_silverclaw.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	reg("sunburst", "曜火法杖", Element.FIRE, "res://assets/models/crafted/staff_sunburst.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.042})
-	# ---- batch T ----
-	reg("blossom", "花冠法杖", Element.NATURE, "res://assets/models/crafted/staff_blossom.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	reg("arrowhead", "箭头法杖", Element.ICE, "res://assets/models/crafted/staff_arrowhead.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	reg("duskthorn", "幽棘法杖", Element.ARCANE, "res://assets/models/crafted/staff_duskthorn.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("emberwreath", "焰环法杖", Element.FIRE, "res://assets/models/crafted/staff_emberwreath.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("palespire", "苍焰法杖", Element.STORM, "res://assets/models/crafted/staff_palespire.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("kite", "菱晶法杖", Element.ICE, "res://assets/models/crafted/staff_kite.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	# ---- batch U ----
-	reg("vinebasket", "藤篮法杖", Element.NATURE, "res://assets/models/crafted/staff_vinebasket.glb",
-			{"scale": 1.0, "idle_spin": 0.18, "hover": 0.030})
-	reg("crescentmoon", "月牙法杖", Element.HOLY, "res://assets/models/crafted/staff_crescentmoon.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("goldspear", "金锋法杖", Element.FIRE, "res://assets/models/crafted/staff_goldspear.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	reg("goldstar", "金星法杖", Element.HOLY, "res://assets/models/crafted/staff_goldstar.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.042})
-	reg("duskmagenta", "幽玫法杖", Element.ARCANE, "res://assets/models/crafted/staff_duskmagenta.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("blueorb", "蓝球法杖", Element.ICE, "res://assets/models/crafted/staff_blueorb.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	# ---- batch V ----
-	reg("batwing", "蝠翼法杖", Element.ARCANE, "res://assets/models/crafted/staff_batwing.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	reg("pennant", "旗枪法杖", Element.STORM, "res://assets/models/crafted/staff_pennant.glb",
-			{"scale": 1.0, "idle_spin": 0.30, "hover": 0.044})
-	reg("palecrown", "素冠法杖", Element.HOLY, "res://assets/models/crafted/staff_palecrown.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("sunbrass", "曜金法杖", Element.FIRE, "res://assets/models/crafted/staff_sunbrass.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("starcage", "星笼法杖", Element.HOLY, "res://assets/models/crafted/staff_starcage.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.042})
-	reg("plumflame", "梅焰法杖", Element.ICE, "res://assets/models/crafted/staff_plumflame.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	# ---- batch W ----
-	reg("vinecluster", "藤簇法杖", Element.ICE, "res://assets/models/crafted/staff_vinecluster.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	reg("paleaxe", "素斧法杖", Element.EARTH, "res://assets/models/crafted/staff_paleaxe.glb",
-			{"scale": 1.0, "idle_spin": 0.16, "hover": 0.028})
-	reg("violetblaze", "紫焰法杖", Element.ARCANE, "res://assets/models/crafted/staff_violetblaze.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("roseblaze", "玫焰法杖", Element.FIRE, "res://assets/models/crafted/staff_roseblaze.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.042})
-	reg("ashflame", "灰焰法杖", Element.STORM, "res://assets/models/crafted/staff_ashflame.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("jadeblaze", "翠焰法杖", Element.NATURE, "res://assets/models/crafted/staff_jadeblaze.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	# ---- batch X ----
-	reg("voidcoil", "虚空缠杖", Element.ARCANE, "res://assets/models/crafted/staff_voidcoil.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("goldwing", "金翼圣杖", Element.HOLY, "res://assets/models/crafted/staff_goldwing.glb",
-			{"scale": 1.0, "idle_spin": 0.18, "hover": 0.032})
-	reg("vineice", "藤冰枝杖", Element.NATURE, "res://assets/models/crafted/staff_vineice.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	reg("darkcrescent", "黑月法杖", Element.ICE, "res://assets/models/crafted/staff_darkcrescent.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("violettongue", "紫舌焰杖", Element.FIRE, "res://assets/models/crafted/staff_violettongue.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.042})
-	reg("gildamethyst", "金焰紫晶杖", Element.ARCANE, "res://assets/models/crafted/staff_gildamethyst.glb",
-			{"scale": 1.0, "idle_spin": 0.22, "hover": 0.036})
-	# ---- batch Y ----
-	reg("radiantcross", "曜金十字杖", Element.HOLY, "res://assets/models/crafted/staff_radiantcross.glb",
-			{"scale": 1.0, "idle_spin": 0.20, "hover": 0.034})
-	reg("duskclaw", "暮爪晶杖", Element.ARCANE, "res://assets/models/crafted/staff_duskclaw.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("stormcore", "雷芯权杖", Element.STORM, "res://assets/models/crafted/staff_stormcore.glb",
-			{"scale": 1.0, "idle_spin": 0.30, "hover": 0.044})
-	reg("tealoracle", "青焰先知杖", Element.NATURE, "res://assets/models/crafted/staff_tealoracle.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("vinecrystal", "藤晶杖", Element.NATURE, "res://assets/models/crafted/staff_vinecrystal.glb",
-			{"scale": 1.0, "idle_spin": 0.18, "hover": 0.032})
-	reg("stonemask", "石面权杖", Element.EARTH, "res://assets/models/crafted/staff_stonemask.glb",
-			{"scale": 1.0, "idle_spin": 0.14, "hover": 0.026})
-	reg("coilflare", "蓝箍绯焰杖", Element.FIRE, "res://assets/models/crafted/staff_coilflare.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.042})
-	# ---- batch Z（最后一批） ----
-	reg("goldpetal", "金瓣青晶杖", Element.STORM, "res://assets/models/crafted/staff_goldpetal.glb",
-			{"scale": 1.0, "idle_spin": 0.24, "hover": 0.038})
-	reg("tripleband", "三环金焰杖", Element.FIRE, "res://assets/models/crafted/staff_tripleband.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.042})
-	reg("broadaxe", "阔刃斧杖", Element.EARTH, "res://assets/models/crafted/staff_broadaxe.glb",
-			{"scale": 1.0, "idle_spin": 0.12, "hover": 0.024})
-	reg("frostburst", "霜爆法杖", Element.ICE, "res://assets/models/crafted/staff_frostburst.glb",
-			{"scale": 1.0, "idle_spin": 0.26, "hover": 0.040})
-	reg("stormbraid", "青绞雷焰杖", Element.STORM, "res://assets/models/crafted/staff_stormbraid.glb",
-			{"scale": 1.0, "idle_spin": 0.30, "hover": 0.044})
-	reg("stardome", "星穹法杖", Element.ARCANE, "res://assets/models/crafted/staff_stardome.glb",
-			{"scale": 1.0, "idle_spin": 0.34, "hover": 0.048})
-	reg("starblaze", "星火蓝焰杖", Element.STORM, "res://assets/models/crafted/staff_starblaze.glb",
-			{"scale": 1.0, "idle_spin": 0.28, "hover": 0.042})
+	pass
 
 
 ## 登记一根法杖
@@ -397,6 +144,7 @@ func reg(id: String, display: String, element: int, model: String, extra: Dictio
 		"hand": str(extra.get("hand", "r")),
 	}
 	defs[id] = d
+	base_element[id] = element
 
 
 func has(id: String) -> bool:
@@ -408,6 +156,8 @@ func get_def(id: String) -> Dictionary:
 
 
 func display_name(id: String) -> String:
+	if id == "":
+		return "空手"
 	var d: Dictionary = defs.get(id, {})
 	return str(d.get("name", id))
 
@@ -419,6 +169,15 @@ func element_of(id: String) -> int:
 
 func element_name(e: int) -> String:
 	return str(ELEMENT_NAMES.get(e, "?"))
+
+
+## 全部元素（装备面板的筛选行用），按枚举顺序，不含 NONE
+func element_ids() -> Array:
+	var out: Array = []
+	for e in ELEMENT_NAMES.keys():
+		if int(e) != Element.NONE:
+			out.append(int(e))
+	return out
 
 
 func element_color(e: int) -> Color:
@@ -434,7 +193,25 @@ func unlock(id: String) -> bool:
 		return false
 	unlocked[id] = true
 	emit_signal("staff_unlocked", id)
+	emit_signal("equipment_changed")
+	save_game()
 	return true
+
+
+## 一次解锁全部（开发便利）。返回新解锁的数量。
+## 只在这一批结束后发**一次** `equipment_changed`：UI 收到就重建列表，
+## 逐根发的话全解锁会触发 146 次重建。
+func unlock_all() -> int:
+	var n := 0
+	for id in defs.keys():
+		if not unlocked.has(id):
+			unlocked[str(id)] = true
+			emit_signal("staff_unlocked", str(id))
+			n += 1
+	if n > 0:
+		emit_signal("equipment_changed")
+		save_game()
+	return n
 
 
 func is_unlocked(id: String) -> bool:
@@ -451,6 +228,8 @@ func equip(id: String) -> bool:
 	equipped = id
 	equipped_element = element_of(id) if id != "" else Element.NONE
 	emit_signal("staff_equipped", id)
+	emit_signal("equipment_changed")
+	save_game()
 	return true
 
 
@@ -458,34 +237,144 @@ func unequip() -> void:
 	equip("")
 
 
+## 在已拥有的法杖里前后切换（dir=+1 下一根 / -1 上一根），到头环绕。
+## 顺序 = defs 登记顺序（与装备面板列表一致）；空手时从第一根（或最后一根）开始。
+## element >= 0 时只在该元素的杖里切换。
+## 返回切换后的 id（没得换时返回当前手上这根）。
+func cycle(dir: int = 1, element: int = -1) -> String:
+	var list := owned_list(element)
+	if list.is_empty():
+		return equipped
+	var step := 1 if dir > 0 else -1
+	var i := list.find(equipped)
+	if i < 0:
+		i = 0 if step > 0 else list.size() - 1
+	else:
+		i = posmod(i + step, list.size())
+	equip(str(list[i]))
+	return equipped
+
+
 ## 长老祝福：改写当前法杖的元素（模型不变，动态效果与配色变）
 func bless(id: String, element: int) -> void:
 	if not defs.has(id):
 		return
+	if int(base_element.get(id, Element.NONE)) == element:
+		blessed.erase(id)          # 祝福回原元素等于没祝福
+	else:
+		blessed[id] = element
 	defs[id]["element"] = element
 	if equipped == id:
 		equipped_element = element
 		emit_signal("staff_equipped", id)
+	emit_signal("equipment_changed")
+	save_game()
+
+
+## 这根杖当前的元素是不是被祝福改过的（UI 上加个标记）
+func is_blessed(id: String) -> bool:
+	return blessed.has(id)
 
 
 func add_stone(id: String, amount: int = 1) -> void:
 	stones[id] = int(stones.get(id, 0)) + amount
 	emit_signal("stone_gained", id, amount)
+	emit_signal("equipment_changed")
+	save_game()
 
 
 func stone_count(id: String) -> int:
 	return int(stones.get(id, 0))
 
 
-## 已解锁列表（按 defs 顺序，UI 用）
-func unlocked_list() -> Array:
+## 已拥有的 id（按 defs 登记顺序，装备面板、`cycle()`、"第几根"都用它）；
+## element >= 0 时只列该元素的
+func owned_list(element: int = -1) -> Array:
 	var out: Array = []
 	for id in defs.keys():
-		if unlocked.has(id):
-			out.append(id)
+		if not unlocked.has(id):
+			continue
+		if element >= 0 and element_of(str(id)) != element:
+			continue
+		out.append(id)
 	return out
+
+
+## 保留旧名（verify 与 elders 在用）
+func unlocked_list() -> Array:
+	return owned_list()
+
+
+## 已拥有里的第几根（1 起；未拥有返回 0），装备格显示 "12/146" 用
+func owned_index(id: String) -> int:
+	var list := owned_list()
+	var i := list.find(id)
+	return i + 1 if i >= 0 else 0
+
+
+func first_id() -> String:
+	var keys := defs.keys()
+	return str(keys[0]) if not keys.is_empty() else ""
 
 
 ## 全部 id（调试/图鉴用）
 func all_ids() -> Array:
 	return defs.keys()
+
+
+# ============================================================ 存档
+
+## 写档：已解锁 / 当前装备 / 长老石 / 被祝福改写的元素。
+## 每次改动都立刻写 —— 146 个字符串的 ConfigFile 不到 1ms，
+## 换成延时写只会多出一堆"退出时丢档"的边界情况。
+func save_game() -> void:
+	if _loading or not save_enabled:
+		return
+	var cf := ConfigFile.new()
+	cf.set_value("equipment", "unlocked", unlocked.keys())
+	cf.set_value("equipment", "equipped", equipped)
+	cf.set_value("equipment", "stones", stones)
+	cf.set_value("equipment", "blessed", blessed)
+	var err := cf.save(save_path)
+	if err != OK:
+		push_warning("[staff] 存档写入失败 %s err=%d" % [save_path, err])
+
+
+## 读档。返回是否真的读到东西（没有存档文件时返回 false，不是错误）。
+##
+## 全程 `_loading = true`：一是不写回文件，二是**不发 `staff_equipped`**。
+## 自动加载单例跑 `_ready()` 时 player 与 UI 都还没建，发了也没人听；
+## 这两边都在自己初始化时主动读一次 `equipped`。
+func load_game() -> bool:
+	if not FileAccess.file_exists(save_path):
+		return false
+	var cf := ConfigFile.new()
+	if cf.load(save_path) != OK:
+		push_warning("[staff] 存档损坏，按新档处理：%s" % save_path)
+		return false
+	_loading = true
+	var arr: Variant = cf.get_value("equipment", "unlocked", [])
+	if arr is Array or arr is PackedStringArray:
+		for id in arr:
+			if defs.has(str(id)):
+				unlocked[str(id)] = true
+	var eq := str(cf.get_value("equipment", "equipped", ""))
+	if eq != "" and unlocked.has(eq):
+		equipped = eq
+		equipped_element = element_of(eq)
+	var st: Variant = cf.get_value("equipment", "stones", {})
+	if st is Dictionary:
+		stones = st
+	var bl: Variant = cf.get_value("equipment", "blessed", {})
+	if bl is Dictionary:
+		for id in (bl as Dictionary).keys():
+			if not defs.has(str(id)):
+				continue
+			var e := int((bl as Dictionary)[id])
+			defs[str(id)]["element"] = e
+			blessed[str(id)] = e
+	_loading = false
+	print("[staff] 读档 %s：已拥有 %d 根，装备=%s，长老石 %d 根有，祝福过 %d 根"
+			% [save_path, unlocked.size(), equipped if equipped != "" else "空",
+			   stones.size(), blessed.size()])
+	return true

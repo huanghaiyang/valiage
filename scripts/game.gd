@@ -2,6 +2,8 @@ extends Node
 ## 游戏状态管理（自动加载单例）
 ## 记录当前工具、搭建状态、场景引用，供各系统间通信
 
+## 工具集：植物不是独立工具，它作为额外变体挂在「树木」「花草」下面
+## （见 vegetation.gd 的 _plant_extras），所以这里没有 PLANT。
 enum Tool { NONE, WALL, TOWER, ROOF, TERRAIN_RAISE, TERRAIN_LOWER, TERRAIN_FLATTEN, TREE, FLOWER, PATH, DECOR, ERASE, MOUNTAIN }
 
 const TOOL_NAMES := {

@@ -83,6 +83,15 @@ func _ready() -> void:
 	_auto_timer = _rng.randf_range(auto_min_time, auto_max_time)
 	_apply_shader_params()
 
+## 运行期新增的风摇材质（玩家放置的植物是一株一份，放置时才建）也要吃到风。
+## 单靠 bind_world 一次性注入不够：那时植物的材质还没创建。
+func add_wind_material(m: ShaderMaterial) -> void:
+	if m == null or _wind_materials.has(m):
+		return
+	_wind_materials.append(m)
+	_apply_shader_params()
+
+
 ## 由 main 注入场景引用（太阳/环境），并创建雨粒子
 func bind_world(sun: DirectionalLight3D, env: WorldEnvironment, rain_parent: Node3D,
 		wind_materials: Array = []) -> void:

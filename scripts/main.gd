@@ -12,6 +12,9 @@ extends Node3D
 @onready var sun: DirectionalLight3D = $Sun
 @onready var env: WorldEnvironment = $WorldEnvironment
 @onready var ui: CanvasLayer = $UI
+# 家具互动距离（原来被误删过：删函数时把夹在两个函数之间的这段常量一起吃掉了）
+const INTERACT_RADIUS := 2.6
+
 @onready var _minimap: CanvasLayer = $Minimap
 var _hint_timer := 0.0            # 家具互动提示节流
 var _capture_aerial := false      # 调试截图：俯视全景
@@ -25,6 +28,14 @@ var _seq_step := 18                   # 连拍时每根法杖占用的帧数（-
 var _capture_start := 90              # 本次截图模式的起始帧数（--capframes=N 可改）
 var _verify := false                  # --verify：无人值守自检（见 _run_verify()）
 var _verify_frame := 0                # 自检等待的帧数（等世界与各系统装配完）
+var _plant_demo := false              # --plantdemo：截图时把归入树木/花草的植物按分类摆一片
+var _plant3d_demo := false            # --plant3d：只有几何体植物的近景（验收造型用）
+var _plant_sheet := ""                 # --sheet=N：--plant3d 只摆第 N 张参考表的植株
+var _staff_panel_demo := false         # --staffpanel：截图时打开装备（法杖）面板
+var _staff_demo := false               # --staffdemo：截图时连按 3 次 Q，验收换杖提示与手持模型
+var _staff_run_demo := false           # --staffrun：截图时让角色全速跑（验收法杖前挥姿态）
+var _coltest := false                 # --coltest：远距离碰撞流式加载的功能测试
+var _coltest_frame := 0
 
 # 预览节点（结构在场景中，材质为可复用资源）
 @onready var preview_wall: MeshInstance3D = $PreviewWall
@@ -82,8 +93,6 @@ func _ready() -> void:
 		elders.call("build", self)
 		if not elders.is_connected("elder_spoke", _on_elder_spoke):
 			elders.connect("elder_spoke", _on_elder_spoke)
-		if not elders.is_connected("staff_granted", _on_staff_granted):
-			elders.connect("staff_granted", _on_staff_granted)
 	Game.world = self
 	Settings.world_environment = env
 	Settings.vegetation_root = vegetation
@@ -123,9 +132,36 @@ func _ready() -> void:
 				_seq_step = maxi(2, int(a.split("=")[1]))
 	if "--verify" in OS.get_cmdline_user_args():
 		_verify = true
-		if "--no-ui" in OS.get_cmdline_user_args():
-			ui.visible = false
-			_minimap.visible = false
+	if "--plantdemo" in OS.get_cmdline_user_args():
+		_plant_demo = true
+	if "--plant3d" in OS.get_cmdline_user_args():
+		_plant3d_demo = true
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--sheet="):
+			_plant_sheet = a.split("=")[1]
+	if "--staffpanel" in OS.get_cmdline_user_args():
+		_staff_panel_demo = true
+	if "--staffdemo" in OS.get_cmdline_user_args():
+		_staff_demo = true
+	if "--staffrun" in OS.get_cmdline_user_args():
+		_staff_run_demo = true
+	if "--no-veg" in OS.get_cmdline_user_args():
+		# 注意：渲染用的 MultiMesh 挂在 Vegetation/Chunk_x_y 下，**不是** Spawned
+		# （Spawned 只是烘焙的位置数据）。第一版藏了 Spawned，前后三角面只差 2%，
+		# 等于没隔离 —— 要藏的是 Chunk_* 这批块节点。
+		var hid := 0
+		for c in vegetation.get_children():
+			if str(c.name).begins_with("Chunk_"):
+				(c as Node3D).visible = false
+				hid += 1
+		print("Capture | [no-veg] 隐藏了 %d 个植被块（隔离植被开销）" % hid)
+	if "--coltest" in OS.get_cmdline_user_args():
+		_coltest = true
+	# --no-ui 是独立的截图开关，别缩进到上面任何一个 if 里面去
+	if "--capture" in OS.get_cmdline_user_args() \
+			and "--no-ui" in OS.get_cmdline_user_args():
+		ui.visible = false
+		_minimap.visible = false
 
 func _process(delta: float) -> void:
 	# 拖拽预览跟随准星持续更新（第一人称下相机在移动）
@@ -158,8 +194,20 @@ func _process(delta: float) -> void:
 		# 才建出来。同一帧里装备完立刻查 _fx 必然查到 null（第一版就这么误报过 FAIL）。
 		if _verify_frame == 40:
 			_run_verify()
-		elif _verify_frame >= 70:
+		elif _verify_frame == 70:
 			_run_verify_late()
+		elif _verify_frame >= 150:
+			# 第 150 帧（约 2.5 秒，远超 0.8 秒的跑步剪辑）再查动画还在不在播
+			_verify_anim_loop()
+			get_tree().quit()
+			return
+	# 碰撞流式加载的功能测试（与截图无关，独立跑）
+	if _coltest:
+		_coltest_frame += 1
+		if _coltest_frame == 60:
+			_run_coltest_teleport()
+		elif _coltest_frame == 300:
+			_run_coltest_report()
 			get_tree().quit()
 			return
 	# 连拍模式优先：一次运行内依次装备多根法杖，每根稳定 16 帧后存图
@@ -211,6 +259,13 @@ func _save_capture(out_path: String) -> void:
 	var err := img.save_png(out_path)
 	print("Capture | 已保存 %s err=%d abs=%s"
 			% [out_path, err, ProjectSettings.globalize_path(out_path)])
+	# 植被换成自制模型之后，"一帧画多少三角面"必须能直接读出来 ——
+	# 密度（PLANT_KEEP）就是照这个数调的，靠目测帧率太不稳。
+	print("Perf | 三角面=%d 绘制调用=%d 渲染物件=%d FPS=%.1f"
+			% [RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME),
+			   RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME),
+			   RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_OBJECTS_IN_FRAME),
+			   Performance.get_monitor(Performance.TIME_FPS)])
 
 ## --verify：无人值守自检。
 ##
@@ -221,83 +276,74 @@ func _save_capture(out_path: String) -> void:
 ##     godot --headless --path . -- --verify
 func _run_verify() -> void:
 	print("Verify | ==== Cozy Vale 自检 ====")
-	_verify_staff()
+	print("Verify | 法杖/植物建模已整体移除，这部分自检项不再适用（见 _verify_elders）")
 
 
-## 自检的第二段：换杖那一帧之后才能查手持模型与粒子（见 _process 里的说明）
+## 自检的第二段
 func _run_verify_late() -> void:
-	_verify_held()
 	_verify_elders()
 	print("Verify | ==== 自检结束 ====")
 
 
-func _verify_staff() -> void:
-	var sys := get_node_or_null("/root/StaffSystem")
-	if sys == null:
-		print("Verify | [FAIL] StaffSystem 未注册")
-		return
-	var ids: Array = sys.call("all_ids")
-	var missing: Array = []
-	var by_elem := {}
+
+
+
+
+
+
+
+
+
+
+## 把 defs 里的元素全部还原成登记时的基准值（自检里抹内存态用）
+func _reset_def_elements(sys: Node, ids: Array) -> void:
+	var base: Dictionary = sys.get("base_element")
 	for i in ids:
-		var d: Dictionary = sys.call("get_def", i)
-		if not ResourceLoader.exists(str(d.get("model", ""))):
-			missing.append(str(i))
-		var e := int(sys.call("element_of", i))
-		by_elem[e] = int(by_elem.get(e, 0)) + 1
-	var dist := {}
-	for e in by_elem.keys():
-		dist[str(sys.call("element_name", int(e)))] = by_elem[e]
-	print("Verify | 法杖注册=%d 格数=%d 格名=%s 缺模型=%d"
-			% [ids.size(), int(sys.get("SLOT_COUNT")), str(sys.get("SLOT_STAFF")),
-			   missing.size()])
-	if not missing.is_empty():
-		print("Verify | [FAIL] 缺模型: %s" % str(missing))
-	print("Verify | 元素分布(合计 %d)=%s" % [ids.size(), str(dist)])
-	# 装备格互斥：连装两根，第二根必须顶掉第一根
-	if ids.size() >= 2:
-		var a := str(ids[0])
-		var b := str(ids[min(5, ids.size() - 1)])
-		sys.call("unlock", a)
-		var ok1: bool = bool(sys.call("equip", a))
-		var held_a := _held_id()
-		sys.call("unlock", b)
-		var ok2: bool = bool(sys.call("equip", b))
-		var held_b := _held_id()
-		var cur := str(sys.get("equipped"))
-		print("Verify | 装备 %s -> %s (手里 %s) ; 再装 %s -> %s (手里 %s)"
-				% [a, ok1, held_a, b, ok2, held_b])
-		var exclusive := ok1 and ok2 and cur == b and held_b == b and held_a == a
-		print("Verify | %s 单格互斥（第二根顶掉第一根，手里同步）"
-				% ["[OK]" if exclusive else "[FAIL]"])
+		var d: Dictionary = sys.call("get_def", str(i))
+		d["element"] = int(base.get(str(i), 0))
 
 
-func _held_id() -> String:
-	var hs = player.get("held_staff")
-	if hs == null:
-		return "-"
-	return str(hs.get("staff_id"))
 
 
-func _verify_held() -> void:
-	var hs = player.get("held_staff")
-	if hs == null:
-		print("Verify | [FAIL] 手里没有 HeldStaff")
+
+
+
+
+
+
+
+
+
+
+## 「跑一段后动画静止」的回归测试。
+##
+## 真因：Mage.glb 导进来的 76 个动画 + kaykit 库那 12 个，`loop_mode` **全是
+## LOOP_NONE**。Running_A 只有 0.8 秒，播完 AnimationPlayer 就停住，角色定格在
+## 最后一帧 —— 表现就是"跑一段就静止"，时长和剪辑长度完全对得上。
+## 修法是 player._ensure_loop_anims() 把该循环的剪辑设成 LOOP_LINEAR。
+##
+## 这里做两个断言：(1) 白名单里的剪辑都得是循环；(2) 启动约 2.5 秒后动画仍在播。
+func _verify_anim_loop() -> void:
+	var ap: AnimationPlayer = player.anim_player
+	if ap == null:
+		print("Verify | [FAIL] 角色没有 AnimationPlayer")
 		return
-	var n: Node3D = hs as Node3D
-	print("Verify | 手持 id=%s 元素=%s 世界长度=%.3f 子节点=%d"
-			% [str(hs.get("staff_id")), str(sys_elem_name(int(hs.get("element")))),
-			   float(hs.get("_head_top")), n.get_child_count()])
-	var fx: Node3D = hs.get("_fx") as Node3D
-	if fx == null:
-		print("Verify | [FAIL] 法杖没有动态效果节点 _fx")
-	else:
-		var names := PackedStringArray()
-		for c in fx.get_children():
-			names.append(c.name)
-		print("Verify | %s 动态效果 %d 组: %s"
-				% [("[OK]" if fx.get_child_count() > 0 else "[FAIL]"),
-				   fx.get_child_count(), ", ".join(names)])
+	var bad := PackedStringArray()
+	for n in player.LOOP_CLIPS:
+		if not ap.has_animation(n):
+			continue
+		if ap.get_animation(n).loop_mode != Animation.LOOP_LINEAR:
+			bad.append(n)
+	print("Verify | 应循环的剪辑 %d 个，仍不是循环的：%s"
+			% [player.LOOP_CLIPS.size(),
+			   ("无" if bad.is_empty() else ", ".join(bad))])
+	var cur := str(ap.current_animation)
+	var playing := ap.is_playing()
+	print("Verify | 启动约 2.5 秒后：当前剪辑=%s 播放中=%s 位置=%.3f"
+			% [cur, str(playing), ap.current_animation_position])
+	var ok := bad.is_empty() and playing
+	print("Verify | %s 移动/待机剪辑会一直循环（不再播完就定格）"
+			% ["[OK]" if ok else "[FAIL]"])
 
 
 func sys_elem_name(e: int) -> String:
@@ -349,6 +395,57 @@ func _verify_elders() -> void:
 	print("Verify | 刷到好感 %d 后：已赠 %d 根, 下一份=%s"
 			% [f2, got, str(el.call("next_gift", first))])
 	print("Verify | %s 达到阈值即赠杖" % ["[OK]" if got > 0 else "[FAIL]"])
+
+
+
+
+
+
+
+
+## --coltest：把玩家瞬移到世界另一端，等若干帧后统计"碰撞半径内还有多少实例没建碰撞体"。
+## 这是"远处物体碰撞失效"的直接判据 —— 不用走过去，也不靠肉眼看。
+func _run_coltest_teleport() -> void:
+	var target := Vector3(252.0, 0.0, 64.0)     # 村庄（远离出生点）
+	if terrain != null and terrain.has_method("get_height_at"):
+		target.y = terrain.get_height_at(target.x, target.z)
+	player.global_position = target
+	print("ColTest | 瞬移到 (%.0f, %.1f, %.0f)" % [target.x, target.y, target.z])
+
+
+func _run_coltest_report() -> void:
+	var anchor: Vector3 = vegetation.call("_collision_anchor")
+	var rad := float(vegetation.get("collision_radius"))
+	var r2 := rad * rad
+	var blocks: Array = vegetation.get("_blocks")
+	var need := 0
+	var have := 0
+	var missing_near := 0
+	var missing_far := 0
+	var pend: Array = vegetation.get("_pending_blocks")
+	for b in blocks:
+		var q: Array = b["col_queue"]
+		var bodies: Array = b["col_bodies"]
+		for i in q.size():
+			var pos: Vector3 = (q[i] as Dictionary)["pos"]
+			var dx := pos.x - anchor.x
+			var dz := pos.z - anchor.z
+			var near := (dx * dx + dz * dz) <= r2
+			var has := i < bodies.size() and is_instance_valid(bodies[i])
+			if near:
+				need += 1
+				if has:
+					have += 1
+				else:
+					missing_near += 1
+			elif not has:
+				missing_far += 1
+	print("ColTest | 锚点=(%.0f, %.0f) 半径=%.0f 待办块=%d" % [anchor.x, anchor.z, rad, pend.size()])
+	print("ColTest | 半径内应建 %d，已建 %d，**缺 %d**；半径外未建 %d（正常）"
+			% [need, have, missing_near, missing_far])
+	print("ColTest | %s 半径内实例碰撞齐全" % ["[OK]" if missing_near == 0 else "[FAIL]"])
+
+
 
 
 ## 解析 --cam=x,y,z / --look=x,y,z
@@ -404,18 +501,11 @@ func _setup_previews() -> void:
 	house_mi.mesh = _extract_mesh(buildings.house_scene)
 	house_mi.scale = Vector3.ONE * buildings.HOUSE_BASE_SCALE
 	preview_place.add_child(house_mi)
-	# 树预览：真实树模型半透明（scale 取种树中值）
-	var tree_mi := MeshInstance3D.new()
-	tree_mi.name = "TreePreview"
-	tree_mi.mesh = _extract_mesh(load(VegetationSystem.TREE_MODELS[0]))
-	tree_mi.scale = Vector3.ONE * 1.2
-	preview_place.add_child(tree_mi)
-	# 花预览：真实花模型半透明
-	var flower_mi := MeshInstance3D.new()
-	flower_mi.name = "FlowerPreview"
-	flower_mi.mesh = _extract_mesh(load(VegetationSystem.FLOWER_MODELS[0]))
-	flower_mi.scale = Vector3.ONE * 1.1
-	preview_place.add_child(flower_mi)
+	# 树/花预览：花草树木的整体移除后分类表是空的，`category_model_path()` 会返回 ""，
+	# 直接 `load("")` 会在启动时报 `Resource file not found: res://`（实测两条）。
+	# 所以这里按"有模型才建预览"处理，新模型做好后自动恢复。
+	_add_plant_preview(preview_place, "TreePreview", "tree", 1.2)
+	_add_plant_preview(preview_place, "FlowerPreview", "flower", 1.1)
 	# 家具预览：真实家具模型半透明（scale 与放置一致）
 	var furniture_mi := MeshInstance3D.new()
 	furniture_mi.name = "FurniturePreview"
@@ -559,23 +649,6 @@ func _on_elder_spoke(_id: String, line: String) -> void:
 	print("[elder] %s" % line)
 
 
-func _on_staff_granted(id: String, staff_id: String) -> void:
-	var elders := get_node_or_null("/root/Elders")
-	var nm := id if elders == null else str(elders.call("elder_name", id))
-	print("[elder] %s 赠予 %s" % [nm, staff_id])
-	# 立刻换上，让玩家马上看到效果
-	var sys := get_node_or_null("/root/StaffSystem")
-	if sys != null:
-		sys.call("equip", staff_id)
-		staff_hint_staff = staff_id
-
-
-var staff_hint_staff := ""
-
-
-## ---------- 家具互动（E 键触发） ----------
-
-const INTERACT_RADIUS := 2.6
 
 ## 交互/退出交互：交互中按 E 退出；否则触发附近家具互动
 func _try_interact() -> void:
@@ -638,7 +711,8 @@ func _begin_tool() -> void:
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 			# 传入滚轮选中的变体；Placement 与半透明预览保证是同一个模型
 			# 不再额外抬高：重定位偏移已保证模型底面落在放置点上
-			_set_used_variant("tree", vegetation.add_tree(p, 1.2, _place_yaw, _current_variant("tree")))
+			# 3.4：KayKit 树原生约 1.2~1.7m，乘完约 4~6m，与"树是角色 2.5~5 倍高"一致
+			_set_used_variant("tree", vegetation.add_tree(p, 3.4, _place_yaw, _current_variant("tree")))
 			player.play_cast_gesture()
 		Game.Tool.FLOWER:
 			if _is_occupied(p):
@@ -799,6 +873,18 @@ func _cycle_variant(dir: int) -> void:
 	_variant_hint_time = 1.6
 
 
+## 建一个"真实模型半透明"的放置预览。分类表为空（植物已移除）时**不建**，
+## 免得 `load("")` 报 res:// 找不到。
+func _add_plant_preview(parent: Node3D, node_name: String, cat: String, scale: float) -> void:
+	var path := vegetation.category_model_path(cat, 0)
+	if path.is_empty():
+		return
+	var mi := MeshInstance3D.new()
+	mi.name = node_name
+	mi.mesh = _extract_mesh(load(path))
+	mi.scale = Vector3.ONE * scale
+	parent.add_child(mi)
+
 ## 按分类取模型文件名（不含扩展名），用于提示
 func _model_basename(cat: String, variant: int) -> String:
 	return vegetation.category_model_path(cat, variant).get_file().get_basename()
@@ -810,23 +896,28 @@ func _set_place_preview_mesh(cat: String) -> void:
 	if node == null:
 		return
 	_apply_preview_offset(node, cat)
-	var path := vegetation.category_model_path(cat, _current_variant(cat))
-	if path.is_empty():
-		return
-	var scene: Variant = load(path)
-	var mesh: Mesh = null
-	if scene is PackedScene:
-		mesh = _extract_mesh(scene)
-	elif scene is Mesh:
-		mesh = scene
+	var mesh: Mesh = vegetation.category_model_mesh(cat, _current_variant(cat))
 	if mesh != null:
 		node.mesh = mesh
-	var base := _preview_base_scale(Game.current_tool)
+	var base := _preview_base_scale_for(cat)
 	if base > 0.0:
 		node.scale = Vector3.ONE * base
 	# 换模型后立刻把半透明材质挂回去，不等下一帧的落点更新
 	node.material_override = PREVIEW_PLACE_OK
 	_apply_place_material(node, PREVIEW_PLACE_OK)
+
+
+## 预览缩放：分类基准缩放，但归到分类下的植物是按真实尺寸建的（见 _add_plant_extra），
+## 套上树木的 3.4 倍会变成三米高的草，所以植物一律 1.0。
+func _preview_base_scale_for(cat: String) -> float:
+	if vegetation.is_plant_extra(cat, _current_variant(cat)):
+		return 1.0
+	match cat:
+		"tree": return 3.4
+		"flower": return 1.1
+		"furniture": return 1.0
+		"mountain": return 4.0
+	return -1.0
 
 
 ## 预览也要用与放置相同的重定位偏移，否则点下去模型会"跳"（ghost 与实物不一致）
@@ -847,20 +938,6 @@ func _apply_preview_offset(node: MeshInstance3D, cat: String) -> void:
 ## 某分类的模型数量（无多变体时为 0）
 func _tool_variant_count(cat: String) -> int:
 	return vegetation.category_variant_count(cat)
-
-
-## 各工具预览的基准缩放（与 _setup_previews 保持一致）
-func _preview_base_scale(tool: int) -> float:
-	match tool:
-		Game.Tool.TREE:
-			return 1.2
-		Game.Tool.FLOWER:
-			return 1.1
-		Game.Tool.DECOR:
-			return 1.0
-		Game.Tool.MOUNTAIN:
-			return 4.0
-	return -1.0
 
 
 ## 取某工具对应的预览 MeshInstance3D（预览节点结构在场景中）

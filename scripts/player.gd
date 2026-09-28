@@ -7,7 +7,7 @@ extends CharacterBody3D
 var body: Node3D
 var anim_player: AnimationPlayer = null
 ## 手持法杖（挂在右手 handslot_r 骨骼上，负责悬浮/自转/元素粒子）
-var held_staff: Node = null
+## 手持法杖已移除（见 flash_staff 的说明）
 ## 角色自带的手持道具节点（自带法杖/魔杖/法书，装自定义法杖时要藏起来）
 var _native_props: Array[Node3D] = []
 var _moving := false
@@ -90,6 +90,8 @@ var _turn_timer := 0.0
 var _turn_dir := 1.0
 ## 当前播放的移动动画名（避免每帧重播）
 var _move_anim := ""
+## 动画看门狗计时（见 _watch_move_anim）
+var _anim_watch := 0.0
 
 # 移动动画
 const ANIM_IDLE := "Idle"
@@ -174,6 +176,45 @@ func _ready() -> void:
 	var kk_lib: AnimationLibrary = load(KAYKIT_LIB_PATH)
 	if kk_lib != null and anim_player != null:
 		anim_player.add_animation_library("kaykit", kk_lib)
+	_ensure_loop_anims()
+
+
+## 把"本来就该循环"的剪辑设成循环播放。
+##
+## **这是"跑一段后动画静止"的真因。** Mage.glb 导入进来的 76 个动画、
+## 以及 kaykit_library.tres 里那 12 个，`loop_mode` **全部是 0（LOOP_NONE）**：
+##
+##     Idle       len=1.067 loop=0
+##     Walking_A  len=1.067 loop=0
+##     Running_A  len=0.800 loop=0     <- 跑 0.8 秒播完就停住
+##
+## 于是跑动 0.8 秒后剪辑走到末尾、AnimationPlayer 停下，角色定格在最后一帧 ——
+## 表现就是"跑一段就静止"，而且时长和剪辑长度完全对得上。
+## 站着不动 1.067 秒后也会同样定格。
+##
+## 为什么不在导入设置里改：该循环的只有十来个剪辑，剩下几十个（攻击/受击/坐下/死亡）
+## 本来就该播一次停住；逐个导入设置反而容易漏。这里用白名单，一眼能看出意图。
+const LOOP_CLIPS := [
+	"Idle", "Unarmed_Idle", "2H_Melee_Idle", "Blocking",
+	"Walking_A", "Walking_B", "Walking_C", "Walking_Backwards",
+	"Running_A", "Running_B", "Running_Strafe_Left", "Running_Strafe_Right",
+	"Jump_Idle", "Sit_Chair_Idle", "Sit_Floor_Idle", "Lie_Idle", "Spellcasting",
+	"kaykit/DashLeft", "kaykit/DashRight", "kaykit/LayingDownIdle",
+]
+
+
+func _ensure_loop_anims() -> void:
+	if anim_player == null:
+		return
+	var fixed := 0
+	for n in LOOP_CLIPS:
+		if not anim_player.has_animation(n):
+			continue
+		var a := anim_player.get_animation(n)
+		if a != null and a.loop_mode != Animation.LOOP_LINEAR:
+			a.loop_mode = Animation.LOOP_LINEAR
+			fixed += 1
+	print("[player] 循环动画已修正 %d 个（原本全是 LOOP_NONE）" % fixed)
 
 	# 角色碰撞体：主体胶囊 + 底部平底圆柱（凸形状组合，底部对齐脚底）
 	var col := CollisionShape3D.new()
@@ -236,6 +277,8 @@ func _physics_process(delta: float) -> void:
 			_action_active = false
 			if not _jump_air:
 				_update_move_anim()
+	# 动画看门狗：兜底，真因见 _ensure_loop_anims
+	_watch_move_anim(delta)
 	# 爬梯上升：直到梯顶后结束互动
 	if _interact == "climb":
 		var ny := minf(global_position.y + CLIMB_SPEED * delta, _interact_top_y)
@@ -354,73 +397,15 @@ func _instantiate_character() -> Node3D:
 	anim_player = _find_animation_player(inst)
 	if anim_player != null:
 		_play_anim(ANIM_IDLE)
-	_attach_held_staff(inst)
 	return inst
 
-## 把可替换的法杖挂到右手骨骼上。Mage 模型自带 1H_Wand / 2H_Staff / Spellbook，
-## 装自定义法杖时先把它们藏起来，避免两根杖叠在一起。
-func _attach_held_staff(inst: Node) -> void:
-	_native_props.clear()
-	for nm in ["1H_Wand", "2H_Staff", "Spellbook", "Spellbook_open"]:
-		var p := inst.find_child(nm, true, false)
-		if p is Node3D:
-			_native_props.append(p as Node3D)
-		elif p != null:
-			# Godot 的 find_child 只返回 Node，MeshInstance3D 也是 Node3D
-			pass
-	if _native_props.is_empty():
-		print("[staff] 未找到角色自带手持道具节点（不影响自定义法杖）")
-	var slot := inst.find_child("handslot_r", true, false)
-	if slot == null:
-		push_warning("[staff] 角色没有 handslot_r 骨骼，法杖无法挂载")
-		return
-	held_staff = load("res://scripts/held_staff.gd").new()
-	held_staff.name = "HeldStaff"
-	# 位置归零：尺寸与握点由 HeldStaff 自己的 _place_head() 按"目标世界长度 +
-	# 握点比例"在世界空间里算。之前在这里写死 Vector3(0,-0.30,0.08) 是有害的 ——
-	# handslot_r 的局部 Y 在世界里是**水平**的，这个偏移只是把法杖往旁边推了 0.3m。
-	held_staff.position = Vector3.ZERO
-	# handslot_r 骨骼的局部轴向实测结果：模型局部 +Z 是水平的，
-	# 而局部 Y/Z 都是水平的。靠推理很容易错（试了 -12° / -90° 都是横的），
-	# 最后是旁举扫描求解出来的：扫描一批旋转组合、量世界包围盒的竖直度，
-	# 最优解 (-90, 0, -90) 下包围盒 2.25m 高 × 0.39m 宽。
-	var flip := "--staff-flip" in OS.get_cmdline_user_args()
-	held_staff.rotation_degrees = Vector3.ZERO
-	slot.add_child(held_staff)
-	var sys := _staff_system()
-	if sys != null:
-		_apply_staff(str(sys.get("equipped")), int(sys.get("equipped_element")))
-		sys.connect("staff_equipped", _on_staff_equipped)
 
-
-## 切换手持法杖（id 为空表示收起）
-func _apply_staff(id: String, elem: int) -> void:
-	if held_staff == null:
-		return
-	held_staff.set_staff(id, elem)
-	# 有自定义法杖时藏掉模型自带的手持道具
-	var hide_native := id != ""
-	for p in _native_props:
-		if is_instance_valid(p):
-			p.visible = not hide_native
-
-
-## 运行期取法杖系统。**不要直接写 autoload 标识符 StaffSystem**：
-## 那样 player.gd 在 autoload 未注册的编译上下文里（--script 探针、依赖链编译）
-## 会直接编译失败，并连锁把 main.gd 也拖死（实测整棵依赖链报错）。
-func _staff_system() -> Node:
-	return get_node_or_null("/root/StaffSystem")
-
-
-func _on_staff_equipped(id: String) -> void:
-	var sys := _staff_system()
-	_apply_staff(id, int(sys.get("equipped_element")) if sys != null else 0)
-
-
-## 供外部（技能/长老仪式）触发杖头闪光
-func flash_staff(strength: float = 1.6) -> void:
-	if held_staff != null:
-		held_staff.flash(strength)
+## 手持法杖的挂载与渲染**已按用户要求移除**（模型面数过低，等新参考图重做）。
+## 角色的 1H_Wand / 2H_Staff / Spellbook 是模型自带的道具，保持原样显示即可。
+## 新法杖做好后，这里按原来的做法重新挂 handslot_r 即可（旧实现见 git 历史）。
+## 供外部（技能/长老仪式）调用：现在是无操作，保留签名免得调用点全要改。
+func flash_staff(_strength: float = 1.6) -> void:
+	pass
 
 
 func _find_animation_player(node: Node) -> AnimationPlayer:
@@ -482,10 +467,16 @@ func update_turn(delta: float, moving: bool, running: bool) -> void:
 		_play_move_anim(want)
 
 
-## 播放移动类动画（同名前不重播，避免动画抖动）
+## 播放移动类动画（同一个剪辑且**确实还在播**才跳过，避免动画抖动）
 ## 缺失的剪辑回退到 Idle，绝不能"什么都不播" —— 否则角色会定格成滑行。
+##
+## 注意判据**不能只看名字**：`_move_anim == name` 就早退的话，
+## "动作/跳跃动画播完后要恢复跑步"这条恢复路径会被自己挡住 ——
+## 名字没变、但 AnimationPlayer 已经停了，于是角色永远定格。
+## 必须再确认"当前正在播的剪辑就是它"。
 func _play_move_anim(name: String) -> void:
-	if _move_anim == name:
+	if _move_anim == name and anim_player != null \
+			and anim_player.is_playing() and anim_player.current_animation == name:
 		return
 	if anim_player != null and not anim_player.has_animation(name):
 		if anim_player.has_animation(ANIM_WALK):
@@ -496,6 +487,28 @@ func _play_move_anim(name: String) -> void:
 			return
 	_move_anim = name
 	_play_anim(name)
+
+
+## 动画看门狗：兜底用。
+##
+## 真因已经修掉了（剪辑不循环，见 _ensure_loop_anims），但"角色定格不动"
+## 这种表现很难一眼看出原因、排查成本又高，所以再加一道保险：
+## **在移动、没在播动作、没滞空，动画却没在播（或播的不是当前该播的剪辑）**
+## → 强制重播，并打一条 warning 方便以后顺藤摸瓜。
+func _watch_move_anim(delta: float) -> void:
+	if anim_player == null:
+		return
+	_anim_watch += delta
+	if _anim_watch < 0.2:
+		return
+	_anim_watch = 0.0
+	if _action_active or _jump_air or not _moving or _move_anim == "":
+		return
+	if anim_player.is_playing() and anim_player.current_animation == _move_anim:
+		return
+	push_warning("[player] 移动动画停了（应为 %s，当前 %s）—— 看门狗强制重播"
+			% [_move_anim, str(anim_player.current_animation)])
+	anim_player.play(_move_anim)
 
 
 ## 当前侧倾角（供测试/调试）

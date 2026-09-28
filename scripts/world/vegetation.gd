@@ -9,39 +9,26 @@ extends Node3D
 # ---- 分块 ----
 const CHUNK_SIZE := 150.0          # 每块边长（米），900m 地图 → 6×6 块
 
+# ============================================================
+# 花草树木：**当前为空表**。
+#
+# 这里先后放过两版自制模型（第三方 KayKit/Kenney 自然包 -> 自建几何体），
+# 两版都按用户要求移除了（自建那版是"面数过低、无法使用"）。
+# 分类表留空 = 世界暂时只长岩石 / 树桩 / 家具 / 山体这些非植物件，
+# 等新的建模参考图到了再填回来。
+#
+# 关键：**不需要动烘焙好的 59220 个场景节点**。那些节点只存 `cat` + 变换
+# （metadata/cat、px/py/pz、scale、yaw、variant），具体模型是运行时从
+# `_category_models[cat]` 取的 —— 所以填回这张表就等于把整张地图的植被种回来。
+# 撒点布局是烘焙出来的、带地形/道路/村庄的相对关系，**特意保留**，
+# 空分类在 build_from_scene() 里直接跳过（不会逐个尝试放置再失败）。
+# ============================================================
+
 # ---- 类别模型（多样化） ----
-const TREE_MODELS := [
-	"res://assets/models/nature/tree_default.glb",
-	"res://assets/models/nature/tree_oak.glb",
-	"res://assets/models/nature/tree_pineRoundA.glb",
-	"res://assets/models/nature/tree_pineTallA.glb",
-	"res://assets/models/nature/tree_tall.glb",
-	"res://assets/models/nature/tree_cone.glb",
-	"res://assets/models/nature/tree_fat.glb",
-	"res://assets/models/nature/tree_default_fall.glb",
-]
-const BUSH_MODELS := [
-	"res://assets/models/nature/plant_bush.glb",
-	"res://assets/models/nature/plant_bushSmall.glb",
-	"res://assets/models/nature/plant_bushDetailed.glb",
-	"res://assets/models/nature/plant_bushLarge.glb",
-	"res://assets/models/nature/plant_flatShort.glb",
-	"res://assets/models/nature/plant_flatTall.glb",
-]
-const FLOWER_MODELS := [
-	"res://assets/models/nature/flower_purpleA.glb",
-	"res://assets/models/nature/flower_purpleB.glb",
-	"res://assets/models/nature/flower_redA.glb",
-	"res://assets/models/nature/flower_redB.glb",
-	"res://assets/models/nature/flower_yellowA.glb",
-	"res://assets/models/nature/flower_yellowC.glb",
-]
-const GRASS_MODELS := [
-	"res://assets/models/nature/grass.glb",
-	"res://assets/models/nature/grass_large.glb",
-	"res://assets/models/nature/grass_leafs.glb",
-	"res://assets/models/nature/grass_leafsLarge.glb",
-]
+
+
+
+
 const ROCK_MODELS := [
 	"res://assets/models/nature/rock_smallB.glb",
 	"res://assets/models/nature/rock_smallD.glb",
@@ -50,12 +37,7 @@ const ROCK_MODELS := [
 	"res://assets/models/nature/stone_largeA.glb",
 	"res://assets/models/nature/rock_smallFlatA.glb",
 ]
-const MUSHROOM_MODELS := [
-	"res://assets/models/nature/mushroom_red.glb",
-	"res://assets/models/nature/mushroom_redGroup.glb",
-	"res://assets/models/nature/mushroom_tan.glb",
-	"res://assets/models/nature/mushroom_tanGroup.glb",
-]
+
 const STUMP_MODELS := [
 	"res://assets/models/nature/stump_round.glb",
 	"res://assets/models/nature/stump_square.glb",
@@ -216,12 +198,13 @@ var _furniture_height_cache: Dictionary = {}  # 家具模型路径 -> 站立面/
 
 # 类别元数据
 var _category_models := {
-	"tree": TREE_MODELS,
-	"bush": BUSH_MODELS,
-	"flower": FLOWER_MODELS,
-	"grass": GRASS_MODELS,
+	# 植物五类留空（模型已全部移除，见文件顶部说明）
+	"tree": [],
+	"bush": [],
+	"flower": [],
+	"grass": [],
 	"rock": ROCK_MODELS,
-	"mushroom": MUSHROOM_MODELS,
+	"mushroom": [],
 	"stump": STUMP_MODELS,
 	"furniture": FURNITURE_MODELS,
 	"mountain": MOUNTAIN_MODELS,
@@ -249,12 +232,17 @@ var _category_total := {
 	"mountain": 0,
 }
 var _scale_ranges := {
-	"tree": [0.7, 1.6],
-	"bush": [0.8, 1.6],
-	"flower": [0.8, 1.5],
-	"grass": [0.8, 1.5],
+	# 花草树木**已经换成自制模型**，它们是按参考图的真实尺寸建的（catalog3d.json 的
+	# height_m），所以这里的倍数只做"个体差异"，不再需要补偿小模型 ——
+	# 旧范围里的 2.6~5.2 是给第三方 1.15~1.71m 的小树配的，套到自制树上会长成 25m 巨树。
+	# 参考表 4 做完后树用的是真正的大树模型（catalog 里 3.4~5.1m），
+	# 所以这里只要个体差异，不再是"用倍数把小树撑大"。
+	"tree": [0.85, 1.25],
+	"bush": [0.85, 1.45],
+	"flower": [0.80, 1.25],
+	"grass": [0.85, 1.40],
 	"rock": [0.6, 1.6],
-	"mushroom": [0.8, 1.5],
+	"mushroom": [0.60, 1.00],
 	"stump": [0.8, 1.6],
 	"furniture": [1.0, 1.0],
 	"mountain": [1.0, 1.0],
@@ -286,6 +274,14 @@ var _wind_materials: Array[ShaderMaterial] = []
 
 func _ready() -> void:
 	_rng.randomize()
+	# 花草树木（含图鉴里那 222 株）已按用户要求整体移除，分类表**留空**：
+	# 世界暂时只长岩石/树桩/家具/山体这些非植物件，等新参考图重做后再填回来。
+	# 注意 main.tscn 里烘焙好的 59220 个撒点节点**保留**（那是布局数据，不是模型），
+	# 空分类会在 build_from_scene() 里直接跳过，不再逐个尝试放置。
+
+
+
+
 
 
 ## 取某分类的风摇材质；首次访问时复制一份并把 sway_scale 设成该分类的值
@@ -304,7 +300,131 @@ func _wind_material_for(cat: String) -> ShaderMaterial:
 
 ## 供天气系统接管风参数：返回所有分类的风摇材质（风参数相同，sway_scale 各异）
 func wind_materials() -> Array[ShaderMaterial]:
-	return _wind_materials
+	return _wind_materials.duplicate()
+
+
+# ============================================================ 几何体植物
+
+
+
+
+
+
+
+
+
+## 把 GLB 里的**所有**子网格合并成一张单面网格（应用各自的节点变换）。
+##
+## 为什么必须合并：这些几何体植物是"一丛几十片叶子"，每片叶子在 Blender 里是独立
+## 对象、各有自己的 loc/rot/scale。GLB 导入后是几十个 MeshInstance3D 子节点，
+## 而 `_extract_mesh()` 只取**第一个** —— 结果整丛植物只剩一片叶子。
+## 实测症状：草丛在游戏里是一根细条、白铃花只剩一个白点、穗草只剩一根穗
+## （AABB 量出来 0.219 x 0.379 x 0.0039，几乎是一张纸）。
+## 合并成单面网格后每株只占 1 个节点，也顺便省掉几十次 draw call。
+func _extract_mesh_merged(path: String) -> Mesh:
+	var scene: PackedScene = load(path)
+	if scene == null:
+		return null
+	var inst := scene.instantiate()
+	var verts := PackedVector3Array()
+	var norms := PackedVector3Array()
+	var cols := PackedColorArray()
+	var idx := PackedInt32Array()
+	_collect_merged(inst, Transform3D.IDENTITY, verts, norms, cols, idx)
+	inst.free()
+	if verts.is_empty():
+		return null
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = norms
+	arrays[Mesh.ARRAY_COLOR] = cols
+	arrays[Mesh.ARRAY_INDEX] = idx
+	var out := ArrayMesh.new()
+	out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return out
+
+
+func _collect_merged(n: Node, xf: Transform3D, verts: PackedVector3Array,
+		norms: PackedVector3Array, cols: PackedColorArray,
+		idx: PackedInt32Array) -> void:
+	var t := xf
+	if n is Node3D:
+		t = xf * (n as Node3D).transform
+	if n is MeshInstance3D:
+		var mi := n as MeshInstance3D
+		if mi.mesh != null:
+			var nb := t.basis.inverse().transposed()   # 法线要用逆转置
+			for s in mi.mesh.get_surface_count():
+				var a: Array = mi.mesh.surface_get_arrays(s)
+				if a.size() == 0 or a[Mesh.ARRAY_VERTEX] == null:
+					continue
+				var v: PackedVector3Array = a[Mesh.ARRAY_VERTEX]
+				var nn: Variant = a[Mesh.ARRAY_NORMAL]
+				var cc: Variant = a[Mesh.ARRAY_COLOR]
+				var ind: Variant = a[Mesh.ARRAY_INDEX]
+				var base := verts.size()
+				for i in v.size():
+					verts.append(t * v[i])
+					if nn != null and i < (nn as PackedVector3Array).size():
+						norms.append((nb * (nn as PackedVector3Array)[i]).normalized())
+					else:
+						norms.append(Vector3.UP)
+					if cc != null and i < (cc as PackedColorArray).size():
+						cols.append((cc as PackedColorArray)[i])
+					else:
+						cols.append(Color.WHITE)
+				if ind != null:
+					for i in (ind as PackedInt32Array):
+						idx.append(base + i)
+				else:
+					for i in v.size():
+						idx.append(base + i)
+	for c in n.get_children():
+		_collect_merged(c, t, verts, norms, cols, idx)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## 统一取"某分类某变体"要画的网格
+func category_model_mesh(cat: String, variant: int) -> Mesh:
+	var path := category_model_path(cat, variant)
+	if path.is_empty():
+		return null
+	return _extract_mesh(path)
+
+
+# ============================================================ 植物卡片
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ## 从 glb 场景中提取第一个 MeshInstance3D 的 Mesh（提取后释放临时实例，Mesh 为共享资源）
 ##
@@ -455,6 +575,11 @@ func _create_block(bx: int, bz: int) -> Dictionary:
 	}
 	for cat in _category_models:
 		var models: Array = _category_models[cat]
+		if models.is_empty():
+			# 自制模型没载入（缺 catalog3d.json）时不能除零
+			block["mmis"][cat] = []
+			block["counts"][cat] = []
+			continue
 		# 每分类一份材质，只为让 sway_scale 不同（树摆得多、草摆得少）
 		var cat_mat: ShaderMaterial = _wind_material_for(cat)
 		var cap_per := ceili(_category_max[cat] / float(_block_n * _block_n * models.size()))
@@ -559,6 +684,9 @@ func _resort_block_queue(bi: int) -> void:
 		return da < db)
 	block["col_queue"] = head + tail
 	block["col_order_dirty"] = false
+	# 记住这次排序用的锚点：建体循环"遇到第一条超出半径的就停"，只有排序是最新的，
+	# 边界才准；锚点一动排序就过期，边缘处的实例会被误判成更远而永远建不到。
+	block["sort_anchor"] = p
 
 
 ## 碰撞判断用的参考点：优先相机，其次玩家
@@ -608,7 +736,18 @@ func _stream_collisions() -> void:
 			remaining.append(bi)
 			continue
 		var block: Dictionary = _blocks[bi]
-		if block["col_order_dirty"]:
+		# 排序必须"新鲜到 1 米以内"才敢用。
+		#
+		# 原因：建体循环是"遇到第一条超出 collision_radius 的项就停"，前提是
+		# **队列按到锚点的距离升序、已建的是前缀**。但锚点一直在动（相机平滑跟随
+		# 玩家，瞬移后要 lerp 好几帧），排序一过期这条边界就不准 —— 半径边缘
+		# （也就是**远处**）本来该建体的实例会排在一条"更远"的项后面，被 break 挡掉，
+		# 而且锚点静止后没有任何东西再触发重排，它们就永远没有碰撞。
+		# 实测：headless 下相机不动 → 缺 0；窗口模式下相机在 lerp → 半径内缺 1。
+		# 原来只在锚点移动超过 12 米时才重排，12 米的过期量足以造出一整圈缺口。
+		var last_anchor: Vector3 = block.get("sort_anchor", Vector3.INF)
+		if bool(block["col_order_dirty"]) or last_anchor == Vector3.INF \
+				or last_anchor.distance_to(p) > 1.0:
 			_resort_block_queue(bi)
 		var queue: Array = block["col_queue"]
 		var bodies: Array = block["col_bodies"]
@@ -800,6 +939,8 @@ func _add_instance(cat: String, pos: Vector3, scale: float, hist: Array, yaw: fl
 	var block: Dictionary = _blocks[bz * _block_n + bx]
 	var mmis: Array = block["mmis"][cat]
 	var counts: Array = block["counts"][cat]
+	if mmis.is_empty():
+		return {"ok": false, "vi": -1, "pos": pos}
 	var cap: int = mmis[0].multimesh.instance_count
 	# 指定变体（场景烘焙）优先，否则随机起始变体
 	var start: int = force_variant if force_variant >= 0 and force_variant < mmis.size() else _rng.randi_range(0, mmis.size() - 1)
@@ -904,17 +1045,26 @@ func build_from_scene() -> void:
 	_ensure_blocks()
 	var placed := 0
 	var failed := 0
+	var thinned := 0
 	for cat in _category_models.keys():
 		var holder := spawned.get_node_or_null(str(cat))
 		if holder == null:
 			continue
+		# 分类表为空（植物已移除）：整支跳过。否则这 59220 个撒点会逐个
+		# 尝试放置再失败，白白刷一屏失败数。
+		if (_category_models[cat] as Array).is_empty():
+			thinned += holder.get_child_count()
+			continue
 		for c in holder.get_children():
-			if c is Node3D and place_scene_item(c, str(cat)):
+			if not (c is Node3D):
+				failed += 1
+				continue
+			if place_scene_item(c, str(cat)):
 				placed += 1
 			else:
 				failed += 1
 	_rebuild_interactables()
-	print("Vegetation | 从场景重建 %d 株（跳过 %d）" % [placed, failed])
+	print("Vegetation | 从场景重建 %d 株（抽稀跳过 %d，失败 %d）" % [placed, thinned, failed])
 
 
 ## 地形高度改变后，把所有已放置实例重新贴合到新地表。
@@ -963,7 +1113,14 @@ func sync_heights() -> int:
 							var lxf := mm.get_instance_transform(last)
 							mm.set_instance_transform(i, lxf)
 						n -= 1
-						i -= 1
+						# **这里绝对不能 `i -= 1`。**
+						# 这是 while 循环、自增是手写的（见下面两个分支的 i += 1），
+						# continue 不会自增，再减一就等于回退到上一项；i == 0 时更会变成
+						# -1，下一轮 get_instance_transform(-1) 直接越界报错，整个块的地形
+						# 贴合和 counts/visible_instance_count 写回全部作废。
+						# 交换进来的新元素正好落在 i 上，下一轮自然会处理它，不用动 i。
+						# （实测：窗口模式每次运行报 22 条越界，headless 0 条 —— 因为
+						#   headless 下随机撒点的顺序碰巧没让河道实例落在下标 0 上。）
 						continue
 					if absf(h - raw.y) < 0.005:
 						i += 1          # while 循环必须手动推进，否则原地死循环
@@ -1058,6 +1215,7 @@ func _random_in_block(terrain: TerrainSystem, bx: int, bz: int) -> Vector3:
 
 ## 添加一棵树（随机变体 + 模型 trimesh 碰撞体；yaw>=0 指定朝向；满员时顶掉最近一棵保证可种）
 ## variant >= 0 时指定模型变体（滚轮选中的那一个），否则随机；返回实际使用的变体下标
+## variant 落在额外变体区间（即归到树木下的植物）时走植物放置：不建碰撞、不吃 3.4 倍缩放。
 func add_tree(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> int:
 	if _category_total["tree"] >= MAX_TREES:
 		remove_last_tree()
@@ -1069,13 +1227,15 @@ func add_tree(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> int:
 	var vi: int = int(placed["vi"])
 	if layout_mode:
 		return vi
-	_queue_collision("tree", TREE_MODELS[vi], placed["pos"] as Vector3, scale, yaw, true)
+	_queue_collision("tree", str((_category_models["tree"] as Array)[vi]),
+			placed["pos"] as Vector3, scale, yaw, true)
 	return vi
 
 func add_bush(pos: Vector3, scale := 1.0) -> void:
 	_add_instance("bush", pos, scale, _bush_hist)
 
 ## variant >= 0 时指定模型变体；返回实际使用的变体下标
+## variant 落在额外变体区间（即归到花草下的植物）时走植物放置。
 func add_flower(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> int:
 	if _category_total["flower"] >= MAX_FLOWERS:
 		remove_last_flower()
@@ -1157,10 +1317,15 @@ func add_furniture(pos: Vector3, scale := 1.0, yaw := -1.0, with_collision := tr
 	_rebuild_interactables()
 	return vi
 
-## 某分类的模型变体数量（供 UI 滚轮切换用）
-func category_variant_count(cat: String) -> int:
+## 某分类原来（分块 MultiMesh 那套）的模型数量
+func category_base_count(cat: String) -> int:
 	var models: Variant = _category_models.get(cat, null)
 	return (models as Array).size() if models is Array else 0
+
+
+## 某分类的模型变体数量（供 UI 滚轮切换用）
+func category_variant_count(cat: String) -> int:
+	return category_base_count(cat)
 
 ## 某分类某个变体对应的模型路径（供预览加载真实模型）
 func category_model_path(cat: String, variant: int) -> String:
