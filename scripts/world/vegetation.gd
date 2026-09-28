@@ -29,21 +29,13 @@ const CHUNK_SIZE := 150.0          # 每块边长（米），900m 地图 → 6×
 
 
 
-const ROCK_MODELS := [
-	"res://assets/models/nature/rock_smallB.glb",
-	"res://assets/models/nature/rock_smallD.glb",
-	"res://assets/models/nature/rock_tallA.glb",
-	"res://assets/models/nature/stone_smallA.glb",
-	"res://assets/models/nature/stone_largeA.glb",
-	"res://assets/models/nature/rock_smallFlatA.glb",
-]
+## ROCK_MODELS：已清空 —— 用户要用第三方工具做地形/植被，先留白。
+## 要恢复就把模型路径填回来。
+const ROCK_MODELS := []
 
-const STUMP_MODELS := [
-	"res://assets/models/nature/stump_round.glb",
-	"res://assets/models/nature/stump_square.glb",
-	"res://assets/models/nature/log.glb",
-	"res://assets/models/nature/log_large.glb",
-]
+## STUMP_MODELS：已清空 —— 用户要用第三方工具做地形/植被，先留白。
+## 要恢复就把模型路径填回来。
+const STUMP_MODELS := []
 
 # ---- 家具/梯子（Kenney Furniture Kit + KayKit Dungeon，CC0，低多边形卡通风） ----
 const FURNITURE_MODELS := [

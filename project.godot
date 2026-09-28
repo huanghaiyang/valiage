@@ -27,7 +27,6 @@ Settings="*res://scripts/settings.gd"
 _mcp_game_helper="*res://addons/godot_ai/runtime/game_helper.gd"
 Weather="*res://scripts/world/weather.gd"
 StaffSystem="*res://scripts/staff_system.gd"
-Elders="*res://scripts/world/elders.gd"
 
 [display]
 
@@ -40,7 +39,7 @@ window/stretch/aspect="expand"
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/godot_ai/plugin.cfg")
+enabled=PackedStringArray("res://addons/godot_ai/plugin.cfg", "res://addons/sky_3d/plugin.cfg", "res://addons/terrain_3d/plugin.cfg")
 
 [input]
 
@@ -58,23 +57,8 @@ renderer/anti_aliasing/quality/msaa_3d=1
 
 [shader_globals]
 
-occ_player_uv={
+wind_direction={
 "type": "vec2",
-"value": Vector2(0.5, 0.5)
-}
-occ_radius={
-"type": "float",
-"value": 0.1
-}
-occ_softness={
-"type": "float",
-"value": 0.035
-}
-occ_hole_alpha={
-"type": "float",
-"value": 0.25
-}
-wind_direction={"type": "vec2",
 "value": Vector2(1, 0)
 }
 wind_strength={
@@ -92,4 +76,20 @@ wind_speed={
 wind_turbulence={
 "type": "float",
 "value": 0.3
+}
+occ_player_uv={
+"type": "vec2",
+"value": Vector2(0.5, 0.5)
+}
+occ_radius={
+"type": "float",
+"value": 0.1
+}
+occ_softness={
+"type": "float",
+"value": 0.035
+}
+occ_hole_alpha={
+"type": "float",
+"value": 0.25
 }

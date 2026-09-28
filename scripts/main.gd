@@ -398,6 +398,14 @@ func sys_elem_name(e: int) -> String:
 
 
 func _verify_elders() -> void:
+	# 长老已从项目里移除（用户要求），自检项跳过，不再刷 FAIL
+	if get_node_or_null("/root/Elders") == null:
+		print("Verify | 长老已移除，跳过长老自检")
+		return
+	_verify_elders_impl()
+
+
+func _verify_elders_impl() -> void:
 	var el := get_node_or_null("/root/Elders")
 	if el == null:
 		print("Verify | [FAIL] Elders 未注册")

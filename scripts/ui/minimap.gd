@@ -8,12 +8,8 @@ const WORLD_HALF := 450.0
 const MARGIN := 14.0
 const ARROW_RATIO := 0.08      # 玩家箭头半径相对地图尺寸比例（缩小）
 
-const LANDMARKS: Array = [
-	["家", Vector2(0.0, 0.0)],
-	["村庄", Vector2(260.0, 60.0)],
-	["哨站", Vector2(-160.0, 220.0)],
-	["哨站", Vector2(60.0, -240.0)],
-]
+## 地标：村庄/哨站已随场景清空，这里留空（原来写死三个坐标）
+const LANDMARKS: Array = []
 
 var main: Node3D
 var viewport: SubViewport
