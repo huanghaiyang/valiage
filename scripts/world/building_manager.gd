@@ -244,6 +244,87 @@ func _place_tower(center: Vector3, radius: float, yaw: float, target: Node3D = n
 	_add_mesh_collision(inst, tower_scene)
 
 ## 放置一栋房屋（对应原"屋顶"工具，改用预制小屋模型；yaw>=0 指定朝向，-1 随机）
+## ---------------- 参天大树（自制） ----------------
+##
+## **为什么走这里而不是植被系统**：植被用 MultiMesh 摆，而 MultiMesh 一个实例
+## 只渲染一个 surface —— 参天大树是"树皮 + 叶片(带 alpha)"两个材质的高精度模型，
+## 放进 MultiMesh 必然串材质（实测：叶子先变成无贴图白片、再变成棕色木片）。
+## 房屋那条路用真实节点摆放，多材质天然支持，所以树照抄房屋这条路。
+## 参天大树模型表（**当前为空**：自制那棵已从项目里撤掉，用户将用 Tripo3D 重做）。
+## 接入新模型只需在这里加一行，例如：
+##   {"id": "tripo_maple", "name": "参天枫树", "base": 1.0,
+##    "path": "res://assets/models/trees/xxx.glb"}
+## `base` 是模型自带的基准缩放：按真实米数建模的填 1.0，玩具尺寸的按需放大。
+## 表为空时 add_tree 会直接返回（不会报错），树木工具点了没反应是正常的。
+const TREE_MODELS := []
+var tree_variant := 0
+var _tree_cache := {}
+
+
+func tree_variant_count() -> int:
+	return TREE_MODELS.size()
+
+
+func tree_variant_name(i: int = -1) -> String:
+	var idx := tree_variant if i < 0 else i
+	if idx < 0 or idx >= TREE_MODELS.size():
+		return ""
+	return str((TREE_MODELS[idx] as Dictionary).get("name", ""))
+
+
+func tree_base_scale(i: int = -1) -> float:
+	var idx := tree_variant if i < 0 else i
+	if idx < 0 or idx >= TREE_MODELS.size():
+		return 1.0
+	return float((TREE_MODELS[idx] as Dictionary).get("base", 1.0))
+
+
+## 取某号树的场景（带缓存）
+func tree_scene_at(i: int = -1) -> PackedScene:
+	var idx := tree_variant if i < 0 else i
+	if idx < 0 or idx >= TREE_MODELS.size():
+		return null
+	var path := str((TREE_MODELS[idx] as Dictionary).get("path", ""))
+	if path.is_empty():
+		return null
+	if not _tree_cache.has(path):
+		_tree_cache[path] = load(path) if ResourceLoader.exists(path) else null
+	return _tree_cache[path] as PackedScene
+
+
+func cycle_tree_variant(dir: int = 1) -> void:
+	if TREE_MODELS.is_empty():
+		return
+	tree_variant = posmod(tree_variant + dir, TREE_MODELS.size())
+
+
+func set_tree_variant(i: int) -> void:
+	if i >= 0 and i < TREE_MODELS.size():
+		tree_variant = i
+
+
+func add_tree(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> void:
+	_place_tree(pos, scale, yaw, null, variant)
+	_undo_stack.append({"type": "tree", "p": pos, "s": scale, "y": yaw,
+			"v": tree_variant if variant < 0 else variant})
+
+
+func _place_tree(pos: Vector3, scale: float, yaw: float, target: Node3D = null,
+		variant: int = -1) -> void:
+	var sc := tree_scene_at(variant)
+	if sc == null:
+		return
+	var inst := _instantiate(sc, target)
+	if inst == null:
+		return
+	inst.global_position = Vector3(pos.x, pos.y, pos.z)
+	inst.scale = Vector3.ONE * (maxf(0.05, scale) * tree_base_scale(variant))
+	inst.rotation = Vector3(0, yaw if yaw >= 0.0 else _rng.randf_range(0.0, TAU), 0)
+	# 树干碰撞：三角网格（树叶卡片也在里面，但角色撞上去就是"树"的感觉，
+	# 而且可以顺着树干站上枝桠）
+	_add_mesh_collision(inst, sc)
+
+
 func add_house(pos: Vector3, scale := 1.0, yaw := -1.0, variant := -1) -> void:
 	_place_house(pos, scale, yaw, null, variant)
 	_undo_stack.append({"type": "house", "p": pos, "s": scale, "y": yaw,
@@ -306,7 +387,11 @@ func _rebuild_from_history() -> void:
 			"tower":
 				_place_tower(op.c, op.r, op.get("y", -1.0), cache)
 			"house":
-				_place_house(op.p, op.s, op.get("y", -1.0), cache)
+				_place_house(op.p, op.s, op.get("y", -1.0), cache,
+						int(op.get("v", -1)))
+			"tree":
+				_place_tree(op.p, op.s, op.get("y", -1.0), cache,
+						int(op.get("v", -1)))
 	_undo_stack = history
 	for c in cache.get_children():
 		cache.remove_child(c)

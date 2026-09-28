@@ -197,8 +197,14 @@ var _interactables: Array = []          # 可交互家具注册表（kind/pos/ya
 var _furniture_height_cache: Dictionary = {}  # 家具模型路径 -> 站立面/爬升高度缓存
 
 # 类别元数据
+## 自制参天大树（参考图"魔法山谷"系列）。真实尺寸建模，约 19.6m 高
+## = 角色 1.7m 的 11.5 倍；树干/树枝/板根是真几何，树叶是带 alpha 的叶片卡片，
+## 树皮 2048² / 叶簇 1024² 各有 BaseColor + Normal（树皮另有 ORM）。
 var _category_models := {
-	# 植物五类留空（模型已全部移除，见文件顶部说明）
+	# 花/草/蘑菇仍留空。
+	# 自制参天大树（TREE_MODELS）**暂不接入**：见 .runtime 第 55 轮记录 ——
+	# 植被是 MultiMesh 摆的，一个实例只渲染一个 surface，树皮/叶簇两个材质会串，
+	# 需要先把"叶簇用图集 alpha 通道"这条路在引擎里验证通过再接。
 	"tree": [],
 	"bush": [],
 	"flower": [],

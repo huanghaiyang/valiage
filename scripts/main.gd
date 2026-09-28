@@ -539,12 +539,22 @@ func _setup_previews() -> void:
 	# 树/花预览：花草树木的整体移除后分类表是空的，`category_model_path()` 会返回 ""，
 	# 直接 `load("")` 会在启动时报 `Resource file not found: res://`（实测两条）。
 	# 所以这里按"有模型才建预览"处理，新模型做好后自动恢复。
-	_add_plant_preview(preview_place, "TreePreview", "tree", 1.2)
+	# 树木预览：由 buildings.tree_scene_at() 提供（图表当前为空 -> tsc==null -> 不建预览）。
+	# 接入 Tripo 模型后这里自动生效，不用改。
+
 	_add_plant_preview(preview_place, "FlowerPreview", "flower", 1.1)
 	# 家具预览：真实家具模型半透明（scale 与放置一致）
 	var furniture_mi := MeshInstance3D.new()
 	furniture_mi.name = "FurniturePreview"
 	furniture_mi.mesh = _extract_mesh(load(VegetationSystem.FURNITURE_MODELS[0]))
+	# 参天大树预览：用 building_manager 的树场景（多材质，和实际放置同一个模型）
+	var tree_mi := MeshInstance3D.new()
+	tree_mi.name = "TreePreview"
+	var tsc := buildings.tree_scene_at()
+	if tsc != null:
+		tree_mi.mesh = _extract_mesh_merged(tsc)
+		tree_mi.scale = Vector3.ONE * buildings.tree_base_scale()
+	preview_place.add_child(tree_mi)
 	furniture_mi.scale = Vector3.ONE
 	preview_place.add_child(furniture_mi)
 	# 山体预览：真实 cliff 模型半透明（scale 与放置一致，用山体中值）
@@ -798,13 +808,16 @@ func _begin_tool() -> void:
 			buildings.flush_all()
 			player.play_cast_gesture()
 		Game.Tool.TREE:
+			# TREE_MODELS 为空（等 Tripo 模型）时什么都不做，也不会误回收植被
+			if buildings.tree_variant_count() == 0:
+				return
 			if _is_occupied(p):
 				return
 			_recycle_vegetation(p, PLACE_RECYCLE_RADIUS)
 			# 传入滚轮选中的变体；Placement 与半透明预览保证是同一个模型
 			# 不再额外抬高：重定位偏移已保证模型底面落在放置点上
 			# 3.4：KayKit 树原生约 1.2~1.7m，乘完约 4~6m，与"树是角色 2.5~5 倍高"一致
-			_set_used_variant("tree", vegetation.add_tree(p, 3.4, _place_yaw, _current_variant("tree")))
+			buildings.add_tree(p, 1.0, _place_yaw, _current_variant("tree"))
 			player.play_cast_gesture()
 		Game.Tool.FLOWER:
 			if _is_occupied(p):
@@ -1032,7 +1045,7 @@ func _set_place_preview_mesh(cat: String) -> void:
 ## 不要再依赖植物专属接口。
 func _preview_base_scale_for(cat: String) -> float:
 	match cat:
-		"tree": return 3.4
+		"tree": return 1.0
 		"flower": return 1.1
 		"furniture": return 1.0
 		"mountain": return 4.0
