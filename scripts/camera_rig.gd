@@ -54,10 +54,12 @@ const ISO_ZOOM_STEP := 0.12
 @export var hole_softness := 0.035       # 洞边缘过渡宽度（UV）
 @export var hole_alpha := 0.08           # 洞内保留的不透明度（0=全透，1=不淡）
 @export var occlusion_probe_interval := 0.08   # 采样间隔（秒）
-## 只处理这一层上的物体。这个项目里：地形=2，**建筑（树/房/墙/塔）=4**，植被=8。
-## 不做过滤的话，射线平时打到地面，会把整块地形也淡化掉（实测踩过这个 Bug）。
-## 地面也不需要挖洞：角色站在地上，地面本来挡不住他，挖洞反而露出天空盒。
-@export_flags_3d_physics var occlusion_layer_mask := 4
+## 候选物体名单的重建间隔（秒）。树/房子会被笔刷不断增删，定期重扫一遍最简单。
+@export var occlusion_candidate_interval := 1.0
+## 只考虑离角色这么近的候选（米）。更远的树不可能挡住近在眼前的角色。
+@export var occlusion_candidate_range := 40.0
+## 放进这个组的节点（含子树）永不挖洞，给"不想被透视"的物件留后门。
+const OCCLUSION_IGNORE_GROUP := &"occlusion_ignore"
 ## 挖洞着色器（只影响被遮挡的那一块，不是整棵变透明）
 const OCCLUSION_SHADER := preload("res://scripts/shaders/occlusion_hole.gdshader")
 
@@ -72,6 +74,13 @@ var interact_freeze := false    # 家具互动期间冻结角色物理驱动（�
 ## 遮挡挖洞：MeshInstance3D -> 是否已装洞材质
 var _occ_holes := {}
 var _occ_seen := {}
+## MeshInstance3D -> 烘好的挖洞材质（按 surface 下标）。
+## 挖洞是"命中就装、离开就卸"，树一多会每 0.08s 反复 new/丢 ShaderMaterial；
+## 缓存下来只切换 override，省掉分配与材质重建的抖动。
+var _occ_mat_cache := {}
+## 可能挡住角色的网格（场景里的 MeshInstance3D，排除角色自身），定期重建
+var _occ_candidates: Array = []
+var _occ_cand_timer := 0.0
 var _occ_timer := 0.0
 # ---- 卡墙自救 ----
 ## 持续想走却走不动时，侧向蹭一下绕过障碍。
@@ -178,87 +187,165 @@ func _update_occlusion_fade(delta: float) -> void:
 	RenderingServer.global_shader_parameter_set("occ_softness", hole_softness)
 	RenderingServer.global_shader_parameter_set("occ_hole_alpha", hole_alpha)
 
-	# --- 定期重新采样 ---
+	# --- 定期重建候选名单 + 重新采样 ---
+	_occ_cand_timer -= delta
+	if _occ_cand_timer <= 0.0 or _occ_candidates.is_empty():
+		_occ_cand_timer = occlusion_candidate_interval
+		_collect_occlusion_candidates()
 	_occ_timer -= delta
 	if _occ_timer <= 0.0:
 		_occ_timer = occlusion_probe_interval
 		_rescan_occluders()
 
 
-## 找出挡住角色的建筑，给它们装"挖洞"材质；没挡住的恢复原材质。
+## 重建"可能挡住角色"的候选网格名单。
+##
+## **为什么不再用物理射线找遮挡物**：射线只能回答"这条线上最近的是谁"。
+## 实测：屏幕上包围盒盖住角色的树有 19 棵，射线方案只挖到 4 棵 —— 就是反馈的
+## "遮挡角色的树木过多，还是看不到角色"。屏幕空间判定问的是"这块网格在屏幕上
+## 盖不盖住角色"，几十棵叠在一起也能一次全挖掉。
+## 附带好处：不再要求物体有碰撞体、也不用管碰撞层，编辑器里手摆的模型照样生效。
+func _collect_occlusion_candidates() -> void:
+	_occ_candidates.clear()
+	var scene := get_tree().current_scene
+	if scene == null:
+		return
+	_collect_candidates_under(scene, player as Node)
+
+
+func _collect_candidates_under(n: Node, player_node: Node) -> void:
+	for c in n.get_children():
+		if c == player_node:
+			continue                       # 角色自己的模型：挖自己的洞就成透明的了
+		if c.is_in_group(OCCLUSION_IGNORE_GROUP):
+			continue                       # 留后门：这棵子树永不挖洞
+		if c is MeshInstance3D:
+			var mi := c as MeshInstance3D
+			if mi.mesh != null:
+				_occ_candidates.append(mi)
+		_collect_candidates_under(c, player_node)
+
+
+## 每轮：找出"在屏幕上盖住角色、且比角色更靠近相机"的网格，给它们挖洞。
 func _rescan_occluders() -> void:
 	_occ_seen.clear()
-	var from: Vector3 = camera.global_position
+	if camera == null or player == null:
+		return
+	var vp := get_viewport().get_visible_rect().size
+	if vp.y < 1.0:
+		return
 	var base: Vector3 = player.global_position
-	var probes := [base + Vector3(0.0, 1.35, 0.0),
-			base + Vector3(0.0, 0.75, 0.0),
-			base + Vector3(0.0, 0.15, 0.0)]
-	var exclude: Array[RID] = []
-	var body: Variant = player.get("body")
-	if body is CollisionObject3D:
-		exclude.append((body as CollisionObject3D).get_rid())
-	for to in probes:
-		var params := PhysicsRayQueryParameters3D.create(from, to)
-		params.exclude = exclude
-		params.collide_with_areas = false
-		var hit := get_world_3d().direct_space_state.intersect_ray(params)
-		if hit.is_empty():
+	var cam_pos: Vector3 = camera.global_position
+	var view_dir: Vector3 = -camera.global_transform.basis.z
+	var mid := base + Vector3(0.0, 0.9, 0.0)
+	var center: Vector2 = camera.unproject_position(mid)
+	var p_top: Vector2 = camera.unproject_position(base + Vector3(0.0, 1.75, 0.0))
+	var p_bot: Vector2 = camera.unproject_position(base)
+	# 和着色器里的洞半径同一套算法，只是这里用像素
+	var radius_px: float = maxf(hole_min_radius * vp.y,
+			(p_top - p_bot).length() * hole_radius_scale)
+	var player_depth: float = (mid - cam_pos).dot(view_dir)
+	var range_sq := occlusion_candidate_range * occlusion_candidate_range
+	for c in _occ_candidates:
+		var mi := c as MeshInstance3D
+		if not is_instance_valid(mi) or mi.mesh == null or not mi.is_visible_in_tree():
 			continue
-		var col: Object = hit.get("collider")
-		if col == null or not (col is Node):
-			continue
-		if col is CollisionObject3D:
-			var co := col as CollisionObject3D
-			if (co.collision_layer & occlusion_layer_mask) == 0:
-				continue                     # 地形/植被：跳过
-		var root := _occluder_root(col as Node)
-		if root == null:
-			continue
-		for gi in _geometry_instances(root):
-			if gi is MeshInstance3D:
-				_occ_seen[gi] = true
-				if not _occ_holes.has(gi):
-					_install_hole(gi as MeshInstance3D)
+		if mi.global_position.distance_squared_to(base) > range_sq:
+			continue                       # 太远，不可能挡住近在眼前的角色
+		var center_depth: float = (mi.global_position - cam_pos).dot(view_dir)
+		if center_depth < 0.0:
+			continue                       # 在相机后面
+		if center_depth > player_depth + occlusion_candidate_range * 0.15:
+			continue                       # 明显在角色后面，挡不住他
+		var ab: AABB = mi.mesh.get_aabb()
+		var xf: Transform3D = mi.global_transform
+		var mn := Vector2(INF, INF)
+		var mx := Vector2(-INF, -INF)
+		var min_depth := INF
+		var front := 0
+		var partial := false
+		for i in 8:
+			var wp: Vector3 = xf * ab.get_endpoint(i)
+			if camera.is_position_behind(wp):
+				# 相机在这棵树里面（包围盒跨过近平面）：投影不可靠，
+				# 按"铺满整屏"保守处理 —— 宁可多挖，也别让叶子糊住角色
+				partial = true
+				continue
+			front += 1
+			min_depth = minf(min_depth, (wp - cam_pos).dot(view_dir))
+			var sp: Vector2 = camera.unproject_position(wp)
+			mn.x = minf(mn.x, sp.x)
+			mn.y = minf(mn.y, sp.y)
+			mx.x = maxf(mx.x, sp.x)
+			mx.y = maxf(mx.y, sp.y)
+		if front == 0 or min_depth > player_depth:
+			continue                       # 整棵树都在角色后面
+		if not partial:
+			var nearest := Vector2(clampf(center.x, mn.x, mx.x), clampf(center.y, mn.y, mx.y))
+			if nearest.distance_to(center) > radius_px:
+				continue                   # 屏幕上根本盖不到角色
+		# 不做数量上限：包围盒判定天生宽松（树冠的 AABB 很大），但宽松在这里是安全的
+		# —— 着色器只会 discard 它**真的画到**的那些像素，判多了最多是白挖一个洞；
+		# 反过来漏挖才会让角色看不见（实测反馈："树木过多还是看不到角色"）。
+		# 实测教训：一旦按"离相机最近"取前 N 棵，相机所在的那圈树冠会把名额占光，
+		# 真正盖住角色的树反而进不了名单。
+		_occ_seen[mi] = true
+		if not _occ_holes.has(mi):
+			_install_hole(mi)
 	# 不再挡路的：恢复
 	for gi in _occ_holes.keys():
 		if not is_instance_valid(gi):
 			_occ_holes.erase(gi)
+			_occ_mat_cache.erase(gi)
 			continue
 		if not _occ_seen.has(gi):
 			_remove_hole(gi as MeshInstance3D)
 
 
+## 装洞：优先复用缓存材质，只切 override（树木多时别再每轮重新 new 一遍）
 func _install_hole(mi: MeshInstance3D) -> void:
 	if mi.mesh == null:
 		return
 	var n := mi.mesh.get_surface_count()
+	var mats: Array = _occ_mat_cache.get(mi, [])
+	if mats.size() != n:
+		mats = _build_hole_materials(mi, n)
+		_occ_mat_cache[mi] = mats
+	for i in n:
+		if mats[i] != null:
+			mi.set_surface_override_material(i, mats[i])
+	_occ_holes[mi] = true
+
+
+## 按原材质烘出每个 surface 的挖洞材质；拿不到原材质的 surface 记 null（保持原样）
+func _build_hole_materials(mi: MeshInstance3D, n: int) -> Array:
+	var out: Array = []
+	out.resize(n)
 	for i in n:
 		var src := mi.get_active_material(i)
+		if not (src is StandardMaterial3D):
+			# 自定义着色器材质：拿不到它的贴图，退回原材质不动（别把模型弄白）
+			out[i] = null
+			continue
+		var std := src as StandardMaterial3D
 		var m := ShaderMaterial.new()
 		m.shader = OCCLUSION_SHADER
-		var tint := Color.WHITE
-		if src is StandardMaterial3D:
-			var std := src as StandardMaterial3D
-			if std.albedo_texture != null:
-				m.set_shader_parameter("albedo_tex", std.albedo_texture)
-			tint = std.albedo_color
-			m.set_shader_parameter("roughness", std.roughness)
-			m.set_shader_parameter("metallic", std.metallic)
-			# 这三样以前漏了，才导致"被挖洞的物体贴图变了"
-			m.set_shader_parameter("uv_scale_offset",
-					Vector4(std.uv1_scale.x, std.uv1_scale.y,
-							std.uv1_offset.x, std.uv1_offset.y))
-			m.set_shader_parameter("use_vertex_color", std.vertex_color_use_as_albedo)
-			if std.normal_enabled and std.normal_texture != null:
-				m.set_shader_parameter("normal_tex", std.normal_texture)
-				m.set_shader_parameter("normal_strength", std.normal_scale)
-				m.set_shader_parameter("use_normal_map", true)
-		else:
-			# 自定义着色器材质：拿不到它的贴图，退回原材质不动（别把模型弄白）
-			continue
-		m.set_shader_parameter("tint", tint)
-		mi.set_surface_override_material(i, m)
-	_occ_holes[mi] = true
+		if std.albedo_texture != null:
+			m.set_shader_parameter("albedo_tex", std.albedo_texture)
+		m.set_shader_parameter("roughness", std.roughness)
+		m.set_shader_parameter("metallic", std.metallic)
+		# 这三样以前漏了，才导致"被挖洞的物体贴图变了"
+		m.set_shader_parameter("uv_scale_offset",
+				Vector4(std.uv1_scale.x, std.uv1_scale.y,
+						std.uv1_offset.x, std.uv1_offset.y))
+		m.set_shader_parameter("use_vertex_color", std.vertex_color_use_as_albedo)
+		if std.normal_enabled and std.normal_texture != null:
+			m.set_shader_parameter("normal_tex", std.normal_texture)
+			m.set_shader_parameter("normal_strength", std.normal_scale)
+			m.set_shader_parameter("use_normal_map", true)
+		m.set_shader_parameter("tint", std.albedo_color)
+		out[i] = m
+	return out
 
 
 func _remove_hole(mi: MeshInstance3D) -> void:
@@ -274,46 +361,11 @@ func _clear_all_holes() -> void:
 	for gi in _occ_holes.keys():
 		if is_instance_valid(gi):
 			_remove_hole(gi as MeshInstance3D)
+		else:
+			_occ_mat_cache.erase(gi)
 	_occ_holes.clear()
 	_occ_seen.clear()
-
-
-## 射线打到的是碰撞体（挂在模型实例下面的子节点），往上找到"那一个被放置的物体"。
-func _occluder_root(n: Node) -> Node3D:
-	var cur: Node = n
-	var depth := 0
-	while cur != null and depth < 4:
-		var p := cur.get_parent()
-		if p == null or p == get_tree().current_scene:
-			return null
-		if not (cur is Node3D):
-			return null
-		if _has_geometry(cur):
-			return cur as Node3D
-		cur = p
-		depth += 1
-	return null
-
-
-func _has_geometry(n: Node) -> bool:
-	if n is GeometryInstance3D:
-		return true
-	for c in n.get_children():
-		if c is GeometryInstance3D:
-			return true
-	return false
-
-
-func _geometry_instances(root: Node3D) -> Array:
-	var out: Array = []
-	var stack: Array = [root]
-	while not stack.is_empty():
-		var n: Node = stack.pop_back()
-		if n is GeometryInstance3D:
-			out.append(n)
-		for c in n.get_children():
-			stack.append(c)
-	return out
+	_occ_mat_cache.clear()
 
 
 func _physics_process(delta: float) -> void:
