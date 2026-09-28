@@ -180,7 +180,17 @@ var _pending_blocks: Array = []          # 需要补建碰撞的块下标
 var _requeue_timer := 0                  # 重新排队的节流计数（帧）
 ## 上次给队列排序时用的参考位置；玩家离它超过阈值就让排序失效并重排
 var _sort_anchor := Vector3.INF
-var _stream_budget_ms := 12.0            # 每帧用于建碰撞的时间预算（分摊，避免卡顿）
+var _stream_budget_ms := 3.0             # 每帧用于建碰撞的时间预算（分摊，避免卡顿）
+## 单个实例建碰撞（StaticBody3D + 入树 + 物理服务器 BVH 插入）实测要好几毫秒，
+## 所以预算必须**每个实例都查一次**：以前是每 16 个才查，一次突发能冲到 150ms+
+## （实测：走路时 p95 = 169ms，把预算降到 0.2ms 后 p95 = 48ms）。
+## 12ms 的预算也太大：整帧才 30ms 上下，建碰撞最多只该占一小块。
+## 重排触发：锚点移动超过这个距离 / 距上次重排至少这么久（毫秒）。
+## 原来只有 1 米且无时间下限 —— 走路时几乎每帧都重排，是卡顿尖峰的源头。
+const RESORT_DISTANCE := 8.0
+const RESORT_INTERVAL_MS := 800
+## 建体循环遇到"超出半径"的项时，最多往后扫描/挪动多少项（代替直接 break）。
+const BUILD_SCAN_WINDOW := 64
 ## 碰撞体只在这个半径内建。必须**远小于** view_radius：视野 220m 内的块有几十个，
 ## 按 12ms/帧的预算根本追不上玩家前进速度 —— 于是"视野外走进来"的树到了跟前
 ## 还没建好碰撞，表现就是穿模。60m 内通常 2~3 个块，一两帧就建完。
@@ -682,6 +692,7 @@ func _resort_block_queue(bi: int) -> void:
 		return da < db)
 	block["col_queue"] = head + tail
 	block["col_order_dirty"] = false
+	block["sort_ms"] = Time.get_ticks_usec()
 	# 记住这次排序用的锚点：建体循环"遇到第一条超出半径的就停"，只有排序是最新的，
 	# 边界才准；锚点一动排序就过期，边缘处的实例会被误判成更远而永远建不到。
 	block["sort_anchor"] = p
@@ -734,30 +745,40 @@ func _stream_collisions() -> void:
 			remaining.append(bi)
 			continue
 		var block: Dictionary = _blocks[bi]
-		# 排序必须"新鲜到 1 米以内"才敢用。
-		#
-		# 原因：建体循环是"遇到第一条超出 collision_radius 的项就停"，前提是
-		# **队列按到锚点的距离升序、已建的是前缀**。但锚点一直在动（相机平滑跟随
-		# 玩家，瞬移后要 lerp 好几帧），排序一过期这条边界就不准 —— 半径边缘
-		# （也就是**远处**）本来该建体的实例会排在一条"更远"的项后面，被 break 挡掉，
-		# 而且锚点静止后没有任何东西再触发重排，它们就永远没有碰撞。
-		# 实测：headless 下相机不动 → 缺 0；窗口模式下相机在 lerp → 半径内缺 1。
-		# 原来只在锚点移动超过 12 米时才重排，12 米的过期量足以造出一整圈缺口。
+		# 重排很贵（对整条队列做 GDScript 闭包排序，上千项时实测几十毫秒），
+		# 所以**不能"锚点一动就重排"**：1 米的阈值在走路时几乎每帧都成立，
+		# 实测这正是走路卡顿的尖峰来源。排序不够新鲜带来的"半径边缘漏建"，
+		# 由下面的扫描窗口兜底：遇到超出半径的项不再直接 break，而是挪到队尾继续往后看。
 		var last_anchor: Vector3 = block.get("sort_anchor", Vector3.INF)
+		var since_sort_ms := Time.get_ticks_usec() - int(block.get("sort_ms", 0))
 		if bool(block["col_order_dirty"]) or last_anchor == Vector3.INF \
-				or last_anchor.distance_to(p) > 1.0:
+				or (last_anchor.distance_to(p) > RESORT_DISTANCE \
+						and since_sort_ms > RESORT_INTERVAL_MS):
 			_resort_block_queue(bi)
 		var queue: Array = block["col_queue"]
 		var bodies: Array = block["col_bodies"]
+		var far_run := 0
 		while bodies.size() < queue.size():
-			if bodies.size() % 16 == 0 					and (Time.get_ticks_usec() - t0) / 1000.0 >= _stream_budget_ms:
+			# 预算**每个实例都查**（原来 `% 16 == 0` 才查，突发能冲 150ms+）
+			if (Time.get_ticks_usec() - t0) / 1000.0 >= _stream_budget_ms:
 				break
-			var pos: Vector3 = (queue[bodies.size()] as Dictionary)["pos"]
+			var idx := bodies.size()
+			var d: Dictionary = queue[idx]
+			var pos: Vector3 = d["pos"]
 			var dx := pos.x - p.x
 			var dz := pos.z - p.z
 			if dx * dx + dz * dz > r2:
-				break
-			var d: Dictionary = queue[bodies.size()]
+				# 超出碰撞半径：挪到队尾（已建前缀 [0, built) 不受影响）再看下一项。
+				# 这样"排序过期"只会让个别项**晚**建，不会把它后面那些其实在
+				# 半径内的项永远堵住（原来是 break，正是漏建的真因）。
+				far_run += 1
+				if far_run > BUILD_SCAN_WINDOW:
+					break
+				var last_idx := queue.size() - 1
+				queue[idx] = queue[last_idx]
+				queue[last_idx] = d
+				continue
+			far_run = 0
 			var sb := _make_instance_collision(str(d["cat"]), str(d["path"]),
 					pos, float(d["scale"]), float(d["yaw"]))
 			sb.set_meta("veg_block", bi)

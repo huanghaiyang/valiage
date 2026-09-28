@@ -11,6 +11,12 @@ const MARGIN := 14.0
 
 const ARROW_RATIO := 0.08      # 玩家箭头半径相对地图尺寸比例（缩小）
 
+## 坐标文本/地标的重绘间隔（秒）。0.066 ≈ 15Hz。
+## 每帧给中文 Label 赋文本要 TextServer 重新 shaping，地标 overlay 每帧重绘，
+## 实测这块每帧值 ~2.2ms；小地图不需要 60Hz。
+const MAP_UPDATE_INTERVAL := 0.066
+var _map_timer := 0.0
+
 ## 地标：村庄/哨站已随场景清空，这里留空（原来写死三个坐标）
 const LANDMARKS: Array = []
 
@@ -227,7 +233,7 @@ func _build_big_map() -> void:
 	big_coord.add_theme_stylebox_override("normal", csb)
 	big_root.add_child(big_coord)
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if main == null or main.player == null:
 		return
 	var p: Vector3 = main.player.global_position
@@ -249,6 +255,13 @@ func _process(_delta: float) -> void:
 	# 箭头是屏幕空间自绘的，要抵消地图的旋转 -> 减 cam_yaw（这一项原代码就是对的，别动）
 	# 箭头钉在正中（传 0,0）；转的只是地图，玩家不动
 	arrow.update_arrow(0.0, 0.0, yaw - cam_yaw)
+	# ---- 以下节流到 ~15Hz ----
+	# 中文 Label 赋文本要 TextServer 重新 shaping、地标 overlay 每帧重绘，
+	# 实测这块每帧值 ~2.2ms；小地图没必要跟满帧率（箭头仍在上面每帧更新）。
+	_map_timer -= delta
+	if _map_timer > 0.0:
+		return
+	_map_timer = MAP_UPDATE_INTERVAL
 	# 北向标记跟着地图转（大地图是正北，传 0）
 	if landmarks != null:
 		landmarks.set_map_yaw(cam_yaw)
