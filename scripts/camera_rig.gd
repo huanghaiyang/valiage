@@ -244,6 +244,15 @@ func _install_hole(mi: MeshInstance3D) -> void:
 			tint = std.albedo_color
 			m.set_shader_parameter("roughness", std.roughness)
 			m.set_shader_parameter("metallic", std.metallic)
+			# 这三样以前漏了，才导致"被挖洞的物体贴图变了"
+			m.set_shader_parameter("uv_scale_offset",
+					Vector4(std.uv1_scale.x, std.uv1_scale.y,
+							std.uv1_offset.x, std.uv1_offset.y))
+			m.set_shader_parameter("use_vertex_color", std.vertex_color_use_as_albedo)
+			if std.normal_enabled and std.normal_texture != null:
+				m.set_shader_parameter("normal_tex", std.normal_texture)
+				m.set_shader_parameter("normal_strength", std.normal_scale)
+				m.set_shader_parameter("use_normal_map", true)
 		else:
 			# 自定义着色器材质：拿不到它的贴图，退回原材质不动（别把模型弄白）
 			continue

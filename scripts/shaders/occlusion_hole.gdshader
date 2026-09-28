@@ -1,14 +1,13 @@
-// 遮挡挖洞（不丢阴影版）
+// 遮挡挖洞（保留原材质外观）
 //
-// 上一版用 blend_mix（alpha 混合）做半透明 —— 而 **Godot 的阴影 pass 会跳过
-// 混合材质**，于是整棵树都不投影了（用户："挖洞后，模型的阴影没了"）。
+// 之前只把 albedo 贴图和颜色搬过来，丢了原材质的三样东西，所以"被挖洞的物体贴图变了"：
+//   * uv1_scale / uv1_offset  -> 贴图平铺比例不一样
+//   * 法线贴图                 -> 表面细节消失（红枫树刚补的法线图就丢了）
+//   * 顶点色                   -> KayKit/Kenney 那批建筑的明暗主要靠顶点色
+// 现在这三样都从原材质取过来（着色器里都有对应 uniform）。
 //
-// 这一版改用 **discard + 抖动**：
-//   * 材质走"不透明 + discard"这条路 -> 参与阴影 pass，投影回来了
-//   * 用屏幕空间的 4x4 Bayer 抖动，把"半透明"表现成一格格的稀疏像素，
-//     远看仍是一层薄纱（而不是实心）
-//
-// 角色屏幕位置/半径通过 global uniform 每帧写一次，一份着色器全场景共用。
+// 另外：**绝不写 ALPHA**。Godot 判断材质是否透明就是看着色器有没有写 ALPHA，
+// 写了就进透明队列、不参与阴影绘制（已经踩过两次）。形状全部靠 discard 出。
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back,
 	diffuse_burley, specular_schlick_ggx;
@@ -16,14 +15,19 @@ render_mode blend_mix, depth_draw_opaque, cull_back,
 global uniform vec2 occ_player_uv;      // 角色屏幕 UV
 global uniform float occ_radius;        // 洞半径（UV）
 global uniform float occ_softness;      // 边缘过渡
-global uniform float occ_hole_alpha;    // 洞内"看起来"的不透明度（0~1）
+global uniform float occ_hole_alpha;    // 洞内"看起来"的不透明度
 
 uniform sampler2D albedo_tex : source_color, hint_default_white;
+uniform sampler2D normal_tex : hint_normal;
+uniform float normal_strength : hint_range(0.0, 2.0) = 1.0;
 uniform vec4 tint : source_color = vec4(1.0);
 uniform float roughness : hint_range(0.0, 1.0) = 0.75;
 uniform float metallic : hint_range(0.0, 1.0) = 0.0;
+uniform vec4 uv_scale_offset = vec4(1.0, 1.0, 0.0, 0.0);   // xy=scale zw=offset
+uniform bool use_vertex_color = false;
+uniform bool use_normal_map = false;
 
-// 4x4 Bayer 矩阵：把连续的不透明度量化成"网格状稀疏像素"
+// 4x4 Bayer：把"半透明"量化成网格状稀疏像素（discard 出形，才能投影）
 float bayer4(vec2 p) {
 	int x = int(mod(p.x, 4.0));
 	int y = int(mod(p.y, 4.0));
@@ -37,22 +41,26 @@ float bayer4(vec2 p) {
 }
 
 void fragment() {
-	vec4 c = texture(albedo_tex, UV) * tint;
+	vec2 uv = UV * uv_scale_offset.xy + uv_scale_offset.zw;
+	vec4 c = texture(albedo_tex, uv) * tint;
+	if (use_vertex_color) {
+		c.rgb *= COLOR.rgb;
+	}
 	ALBEDO = c.rgb;
 	ROUGHNESS = roughness;
 	METALLIC = metallic;
+	if (use_normal_map) {
+		NORMAL_MAP = texture(normal_tex, uv).rgb;
+		NORMAL_MAP_DEPTH = normal_strength;
+	}
 
 	// 洞内 -> occ_hole_alpha，洞外 -> 1.0
 	float d = distance(SCREEN_UV, occ_player_uv);
 	float k = smoothstep(occ_radius - occ_softness, occ_radius + occ_softness, d);
 	float a = mix(occ_hole_alpha, 1.0, k);
-
-	// Bayer 抖动：a 越小，被丢弃的格子越多 -> 看起来越透。
-	// 用 discard 而不是 ALPHA，是为了让材质留在不透明路径上（才能投影）。
 	if (a < 1.0) {
 		if (bayer4(FRAGCOORD.xy) > a) {
 			discard;
 		}
 	}
-	ALPHA = 1.0;
 }
