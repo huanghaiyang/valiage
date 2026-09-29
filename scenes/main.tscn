@@ -327,38 +327,8 @@ transform = Transform3D(1.1920846, -0.18197294, 0.019599304, 0.18302536, 1.18522
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
 
-[node name="autumn_tree_4" parent="WorldBrushInstances" unique_id=489476299 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(0.9965253, 6.8022266e-05, 1.8375813e-07, -6.802251e-05, 0.9965217, 0.0026920445, 0, -0.0026920445, 0.9965217, 6.8903813, 7.671064e-05, -26.972176)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_6" parent="WorldBrushInstances" unique_id=1608931269 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(1.157631, -0.013682617, -0.0005745334, 0.013694674, 1.1566118, 0.04856616, 0, -0.048569556, 1.1566927, -27.08064, 0.3952757, -14.16732)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_7" parent="WorldBrushInstances" unique_id=1867668705 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(0.96067923, 0.019400783, 0.0039778138, -0.019804377, 0.94110155, 0.19295749, 0, -0.19299848, 0.94130147, -35.014427, 0.2421875, -13.501617)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
 [node name="autumn_tree_8" parent="WorldBrushInstances" unique_id=386387138 instance=ExtResource("20_gqmmt")]
 transform = Transform3D(0.848898, 0.18463683, 0.054513812, -0.19251627, 0.81415373, 0.24037793, -3.2426941e-09, -0.24648185, 0.8348275, 35.818626, 1.2734375, -71.65643)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_11" parent="WorldBrushInstances" unique_id=1326525183 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(0.9627601, -0.02548512, -0.00019909976, 0.0254859, 0.9627307, 0.007521229, 1.401491e-11, -0.0075238645, 0.9630679, 12.47113, 0.0234375, -45.721275)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_13" parent="WorldBrushInstances" unique_id=12430350 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(1.2153776, -0.006337489, -0.00030133277, 0.006344649, 1.2140061, 0.05772315, 0, -0.057723936, 1.2140226, -40.36651, 0.140625, 6.1460495)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_14" parent="WorldBrushInstances" unique_id=1126776888 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(0.92136836, -0.04632514, 0.0006859375, 0.04633022, 0.92126733, -0.013641229, 0, 0.013658464, 0.9224313, 1.7091827, 0.1796875, -20.955055)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
 
@@ -367,38 +337,8 @@ transform = Transform3D(1.0498873, -0.0015229625, 3.9709874e-05, 0.0015234799, 1
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
 
-[node name="autumn_tree_16" parent="WorldBrushInstances" unique_id=304374721 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(0.8341706, -0.0022476471, -0.00035505573, 0.0022755181, 0.82395357, 0.13015807, 2.4277648e-11, -0.13015856, 0.82395655, -11.361749, 0.22450514, -0.27683973)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_18" parent="WorldBrushInstances" unique_id=2012743060 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(1.0098956, 0, 0, 0, 1.0098956, 0, 0, 0, 1.0098956, 3.1489182, 0.0078125, -42.518074)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_21" parent="WorldBrushInstances" unique_id=1140900137 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(0.92748344, 0.17393762, 0.037386216, -0.17791015, 0.9067738, 0.19490229, 0, -0.19845563, 0.92330545, -6.035095, 0.1953125, 6.807083)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
 [node name="autumn_tree_23" parent="WorldBrushInstances" unique_id=608927716 instance=ExtResource("20_gqmmt")]
 transform = Transform3D(1.2439551, 0.069906175, -0.0035753604, -0.06999755, 1.2423314, -0.06353921, -2.9008904e-10, 0.06363972, 1.2442966, -41.109894, 0.296875, 51.271553)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_24" parent="WorldBrushInstances" unique_id=2050320779 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(0.9861478, -0.0649116, -0.002904824, 0.06497656, 0.98516184, 0.044086445, 2.3010333e-10, -0.044182036, 0.987298, -12.912082, 0.43865636, 26.124527)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_27" parent="WorldBrushInstances" unique_id=34996428 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(1.156689, -0.1191206, -0.008776667, 0.11944349, 1.1535622, 0.084993124, -5.414895e-10, -0.085445076, 1.1596962, -10.195642, 0.51171046, 35.664238)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_31" parent="WorldBrushInstances" unique_id=784781635 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(0.9262153, 0.25831506, 0.047971062, -0.2627316, 0.9106455, 0.16911379, 3.5865524e-09, -0.17578593, 0.9465738, -28.546883, 0.8984375, 29.08422)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
 
@@ -502,11 +442,6 @@ transform = Transform3D(1.054605, -0.00084196747, 4.718067e-06, 0.0008419807, 1.
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
 
-[node name="autumn_tree_43" parent="WorldBrushInstances" unique_id=230538410 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(1.1258719, -0.1818823, -6.961329e-05, 0.18188232, 1.1258719, 0.00043091408, 4.1490006e-12, -0.00043650082, 1.1404686, 38.961315, 0.010295839, -0.94050825)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
 [node name="autumn_tree_47" parent="WorldBrushInstances" unique_id=501478006 instance=ExtResource("20_gqmmt")]
 transform = Transform3D(1.2203375, 0.09059421, -0.010611886, -0.091213614, 1.2120506, -0.14197533, 0, 0.14237137, 1.2154316, 76.62483, 1.2156545, -46.59299)
 metadata/world_brush_instance = true
@@ -514,31 +449,6 @@ metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
 
 [node name="autumn_tree_50" parent="WorldBrushInstances" unique_id=608586023 instance=ExtResource("20_gqmmt")]
 transform = Transform3D(1.0523359, 0.0388395, 0.0013315845, -0.03886232, 1.0517179, 0.036057398, 1.2259153e-10, -0.03608198, 1.0524348, 60.970444, 0.2421875, 15.130577)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_51" parent="WorldBrushInstances" unique_id=1634012609 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(1.2390057, -0.019719787, -0.00038900223, 0.019723622, 1.2387648, 0.024436483, 3.6064384e-11, -0.024439579, 1.2389216, 39.820656, 0.0625, -7.8541183)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_55" parent="WorldBrushInstances" unique_id=1608342375 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(0.9048174, -0.04233259, -0.0054508667, 0.04268208, 0.89740855, 0.1155529, 4.2180695e-10, -0.1156814, 0.89840645, 22.739967, 0.1640625, -34.66069)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_59" parent="WorldBrushInstances" unique_id=408414442 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(0.8780354, 0.12543389, -0.0046861614, -0.1255214, 0.8774232, -0.032780185, 4.130239e-10, 0.03311345, 0.8863437, 11.40618, 0.2177256, 7.968593)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_65" parent="WorldBrushInstances" unique_id=848630051 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(0.9813767, 0.017812908, 0.0012117341, -0.017854076, 0.9791139, 0.06660484, 0, -0.06661586, 0.97927594, 17.411486, 0.37809587, 17.431784)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_67" parent="WorldBrushInstances" unique_id=224064571 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(1.2245208, 0.0066533475, 3.09762e-05, -0.0066534197, 1.2245075, 0.0057009775, -2.227423e-12, -0.005701062, 1.2245256, 31.339737, 0.03125, -10.286163)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
 
@@ -557,38 +467,8 @@ transform = Transform3D(0.9562497, 0.043703098, 0.00018284815, -0.04370348, 0.95
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
 
-[node name="autumn_tree_84" parent="WorldBrushInstances" unique_id=167077317 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(0.8713599, -0.007968309, -0.00022323699, 0.007971436, 0.8710181, 0.024402099, 0, -0.024403121, 0.8710546, 10.14695, 0.32136658, 14.6969595)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_86" parent="WorldBrushInstances" unique_id=1584765938 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(1.1497436, 0.09283452, -0.012352339, -0.09365269, 1.1396991, -0.15164565, 0, 0.15214792, 1.1434736, -0.43715668, 0.171875, 5.4477234)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_87" parent="WorldBrushInstances" unique_id=1265800809 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(1.0203533, 0.30086315, 0.00031439768, -0.3008633, 1.0203527, 0.0010662541, 3.096023e-11, -0.0011116401, 1.063785, 21.460587, 0.1640625, 2.371643)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_88" parent="WorldBrushInstances" unique_id=51177114 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(1.0165794, -0.004507038, 2.4555961e-06, 0.004507038, 1.0165794, -0.000553869, 0, 0.0005538744, 1.0165893, 38.302345, 0.0078125, 23.211807)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_90" parent="WorldBrushInstances" unique_id=735407383 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(0.8226544, -0.08890461, -0.029881252, 0.093791895, 0.7797877, 0.26209027, 0, -0.2637882, 0.7848394, -17.575203, 0.5499352, 37.17605)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
 [node name="autumn_tree_92" parent="WorldBrushInstances" unique_id=2091206326 instance=ExtResource("20_gqmmt")]
 transform = Transform3D(1.0086272, 0.18130353, 0.04587708, -0.18701786, 0.97780854, 0.24742489, 3.821473e-09, -0.25164214, 0.99447507, -8.365265, 1.203125, 83.14366)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
-
-[node name="autumn_tree_94" parent="WorldBrushInstances" unique_id=1990608400 instance=ExtResource("20_gqmmt")]
-transform = Transform3D(1.2720293, 0.03255305, 0.0022208195, -0.03262872, 1.2690793, 0.086578555, 0, -0.086607024, 1.2694969, -7.751717, 0.5097488, 42.62861)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
 
@@ -837,278 +717,198 @@ transform = Transform3D(1.1740382, -0.083091706, 0.0023148987, 0.083123945, 1.17
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
 
+[node name="autumn_tree_4" parent="WorldBrushInstances" unique_id=489476299 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(0.9965253, 6.8022266e-05, 1.8375813e-07, -6.802251e-05, 0.9965217, 0.0026920445, 0, -0.0026920445, 0.9965217, 6.8903813, 7.671064e-05, -26.972176)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_6" parent="WorldBrushInstances" unique_id=1608931269 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(1.157631, -0.013682617, -0.0005745334, 0.013694674, 1.1566118, 0.04856616, 0, -0.048569556, 1.1566927, -27.08064, 0.3952757, -14.16732)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_7" parent="WorldBrushInstances" unique_id=1867668705 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(0.96067923, 0.019400783, 0.0039778138, -0.019804377, 0.94110155, 0.19295749, 0, -0.19299848, 0.94130147, -35.014427, 0.2421875, -13.501617)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_11" parent="WorldBrushInstances" unique_id=1326525183 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(0.9627601, -0.02548512, -0.00019909976, 0.0254859, 0.9627307, 0.007521229, 1.401491e-11, -0.0075238645, 0.9630679, 12.47113, 0.0234375, -45.721275)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_13" parent="WorldBrushInstances" unique_id=12430350 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(1.2153776, -0.006337489, -0.00030133277, 0.006344649, 1.2140061, 0.05772315, 0, -0.057723936, 1.2140226, -40.36651, 0.140625, 6.1460495)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_14" parent="WorldBrushInstances" unique_id=1126776888 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(0.92136836, -0.04632514, 0.0006859375, 0.04633022, 0.92126733, -0.013641229, 0, 0.013658464, 0.9224313, 1.7091827, 0.1796875, -20.955055)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_16" parent="WorldBrushInstances" unique_id=304374721 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(0.8341706, -0.0022476471, -0.00035505573, 0.0022755181, 0.82395357, 0.13015807, 2.4277648e-11, -0.13015856, 0.82395655, -11.361749, 0.22450514, -0.27683973)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_18" parent="WorldBrushInstances" unique_id=2012743060 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(1.0098956, 0, 0, 0, 1.0098956, 0, 0, 0, 1.0098956, 3.1489182, 0.0078125, -42.518074)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_21" parent="WorldBrushInstances" unique_id=1140900137 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(0.92748344, 0.17393762, 0.037386216, -0.17791015, 0.9067738, 0.19490229, 0, -0.19845563, 0.92330545, -6.035095, 0.1953125, 6.807083)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_24" parent="WorldBrushInstances" unique_id=2050320779 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(0.9861478, -0.0649116, -0.002904824, 0.06497656, 0.98516184, 0.044086445, 2.3010333e-10, -0.044182036, 0.987298, -12.912082, 0.43865636, 26.124527)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_27" parent="WorldBrushInstances" unique_id=34996428 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(1.156689, -0.1191206, -0.008776667, 0.11944349, 1.1535622, 0.084993124, -5.414895e-10, -0.085445076, 1.1596962, -10.195642, 0.51171046, 35.664238)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_31" parent="WorldBrushInstances" unique_id=784781635 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(0.9262153, 0.25831506, 0.047971062, -0.2627316, 0.9106455, 0.16911379, 3.5865524e-09, -0.17578593, 0.9465738, -28.546883, 0.8984375, 29.08422)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_43" parent="WorldBrushInstances" unique_id=230538410 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(1.1258719, -0.1818823, -6.961329e-05, 0.18188232, 1.1258719, 0.00043091408, 4.1490006e-12, -0.00043650082, 1.1404686, 38.961315, 0.010295839, -0.94050825)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_51" parent="WorldBrushInstances" unique_id=1634012609 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(1.2390057, -0.019719787, -0.00038900223, 0.019723622, 1.2387648, 0.024436483, 3.6064384e-11, -0.024439579, 1.2389216, 39.820656, 0.0625, -7.8541183)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_55" parent="WorldBrushInstances" unique_id=1608342375 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(0.9048174, -0.04233259, -0.0054508667, 0.04268208, 0.89740855, 0.1155529, 4.2180695e-10, -0.1156814, 0.89840645, 22.739967, 0.1640625, -34.66069)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_59" parent="WorldBrushInstances" unique_id=408414442 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(0.8780354, 0.12543389, -0.0046861614, -0.1255214, 0.8774232, -0.032780185, 4.130239e-10, 0.03311345, 0.8863437, 11.40618, 0.2177256, 7.968593)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_65" parent="WorldBrushInstances" unique_id=848630051 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(0.9813767, 0.017812908, 0.0012117341, -0.017854076, 0.9791139, 0.06660484, 0, -0.06661586, 0.97927594, 17.411486, 0.37809587, 17.431784)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_67" parent="WorldBrushInstances" unique_id=224064571 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(1.2245208, 0.0066533475, 3.09762e-05, -0.0066534197, 1.2245075, 0.0057009775, -2.227423e-12, -0.005701062, 1.2245256, 31.339737, 0.03125, -10.286163)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_84" parent="WorldBrushInstances" unique_id=167077317 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(0.8713599, -0.007968309, -0.00022323699, 0.007971436, 0.8710181, 0.024402099, 0, -0.024403121, 0.8710546, 10.14695, 0.32136658, 14.6969595)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_86" parent="WorldBrushInstances" unique_id=1584765938 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(1.1497436, 0.09283452, -0.012352339, -0.09365269, 1.1396991, -0.15164565, 0, 0.15214792, 1.1434736, -0.43715668, 0.171875, 5.4477234)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_87" parent="WorldBrushInstances" unique_id=1265800809 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(1.0203533, 0.30086315, 0.00031439768, -0.3008633, 1.0203527, 0.0010662541, 3.096023e-11, -0.0011116401, 1.063785, 21.460587, 0.1640625, 2.371643)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_88" parent="WorldBrushInstances" unique_id=51177114 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(1.0165794, -0.004507038, 2.4555961e-06, 0.004507038, 1.0165794, -0.000553869, 0, 0.0005538744, 1.0165893, 38.302345, 0.0078125, 23.211807)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_90" parent="WorldBrushInstances" unique_id=735407383 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(0.8226544, -0.08890461, -0.029881252, 0.093791895, 0.7797877, 0.26209027, 0, -0.2637882, 0.7848394, -17.575203, 0.5499352, 37.17605)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
+[node name="autumn_tree_94" parent="WorldBrushInstances" unique_id=1990608400 instance=ExtResource("20_gqmmt")]
+transform = Transform3D(1.2720293, 0.03255305, 0.0022208195, -0.03262872, 1.2690793, 0.086578555, 0, -0.086607024, 1.2694969, -7.751717, 0.5097488, 42.62861)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/autumn_tree_brush.tscn"
+
 [node name="craystal_red_tree" parent="WorldBrushInstances" unique_id=879261914 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.80545247, 0, -0.33680645, 0, 0.8730362, 0, 0.33680645, 0, 0.80545247, 17.679176, 0.1484375, -40.42457)
+transform = Transform3D(-3.6465778, 0, 1.2251319, 0, 3.846879, 0, -1.2251319, 0, -3.6465778, -41.096714, 0.47147536, 22.618397)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
 
-[node name="craystal_red_tree2" parent="WorldBrushInstances" unique_id=681816443 instance=ExtResource("21_yc10j")]
-transform = Transform3D(1.0970178, 0, -0.12002379, 0, 1.103564, 0, 0.12002379, 0, 1.0970178, 14.980483, 0.2191652, 32.264126)
+[node name="craystal_red_tree2" parent="WorldBrushInstances" unique_id=67643224 instance=ExtResource("21_yc10j")]
+transform = Transform3D(2.3427505, 0, -3.0877743, 0, 3.8759294, 0, 3.0877743, 0, 2.3427505, 36.41967, 0.05781241, 16.882782)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
 
-[node name="craystal_red_tree3" parent="WorldBrushInstances" unique_id=640009172 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.37294966, 0, 1.1497484, 0, 1.2087237, 0, -1.1497484, 0, -0.37294966, -44.028313, 0.484375, -2.3289185)
+[node name="craystal_red_tree3" parent="WorldBrushInstances" unique_id=1607863269 instance=ExtResource("21_yc10j")]
+transform = Transform3D(-2.0604305, 0, 3.816036, 0, 4.336762, 0, -3.816036, 0, -2.0604305, -1.7177349, 0.25919348, 24.945011)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
 
-[node name="craystal_red_tree4" parent="WorldBrushInstances" unique_id=1173552604 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.540774, 0, 1.0528209, 0, 1.1835828, 0, -1.0528209, 0, -0.540774, -21.983366, 0.3366542, 28.993092)
+[node name="craystal_red_tree4" parent="WorldBrushInstances" unique_id=275018590 instance=ExtResource("21_yc10j")]
+transform = Transform3D(4.090149, 0, -1.1521052, 0, 4.2493134, 0, 1.1521052, 0, 4.090149, 6.359538, 0.18854365, 18.203125)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
 
-[node name="craystal_red_tree5" parent="WorldBrushInstances" unique_id=573573983 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.25758994, 0, -1.2296884, 0, 1.2563782, 0, 1.2296884, 0, 0.25758994, -18.97235, 0.5256194, -0.66270703)
+[node name="craystal_red_tree5" parent="WorldBrushInstances" unique_id=578329275 instance=ExtResource("21_yc10j")]
+transform = Transform3D(-0.031034682, 0, -4.244938, 0, 4.2450514, 0, 4.244938, 0, -0.031034682, -2.6948671, 0.6114014, 40.936638)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
 
-[node name="craystal_red_tree6" parent="WorldBrushInstances" unique_id=102635902 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.013538158, 0, 1.064637, 0, 1.064723, 0, -1.064637, 0, 0.013538158, -4.930969, 0.078125, 23.722084)
+[node name="craystal_red_tree6" parent="WorldBrushInstances" unique_id=250068617 instance=ExtResource("21_yc10j")]
+transform = Transform3D(-4.291329, 0, -0.7155029, 0, 4.350569, 0, 0.7155029, 0, -4.291329, -30.70155, 0.5020538, 10.338017)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
 
-[node name="craystal_red_tree7" parent="WorldBrushInstances" unique_id=603205486 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.10907343, 0, 0.8134981, 0, 0.8207778, 0, -0.8134981, 0, -0.10907343, -19.916199, 0.0078125, -38.34884)
+[node name="craystal_red_tree7" parent="WorldBrushInstances" unique_id=1043405590 instance=ExtResource("21_yc10j")]
+transform = Transform3D(-0.21087144, 0, 4.742281, 0, 4.746967, 0, -4.742281, 0, -0.21087144, 17.866968, 0.4337399, -59.988567)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
 
-[node name="craystal_red_tree8" parent="WorldBrushInstances" unique_id=908244998 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.39622548, 0, 0.9333852, 0, 1.0140033, 0, -0.9333852, 0, -0.39622548, -44.859062, 0.125, -17.436989)
+[node name="craystal_red_tree8" parent="WorldBrushInstances" unique_id=1095968667 instance=ExtResource("21_yc10j")]
+transform = Transform3D(-2.0250082, 0, 4.033173, 0, 4.5129967, 0, -4.033173, 0, -2.0250082, -36.13912, 0.33123633, -27.338272)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
 
-[node name="craystal_red_tree9" parent="WorldBrushInstances" unique_id=1347757241 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-1.1771764, 0, 0.44796422, 0, 1.2595301, 0, -0.44796422, 0, -1.1771764, 8.674179, 0.109375, -13.188362)
+[node name="craystal_red_tree9" parent="WorldBrushInstances" unique_id=1777037461 instance=ExtResource("21_yc10j")]
+transform = Transform3D(2.3005757, 0, 3.1754794, 0, 3.921265, 0, -3.1754794, 0, 2.3005757, 13.931771, 0.4556365, 2.5205145)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
 
-[node name="craystal_red_tree10" parent="WorldBrushInstances" unique_id=1392410284 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.2828333, 0, -0.85320294, 0, 0.89886034, 0, 0.85320294, 0, -0.2828333, 15.620407, 0.109375, -17.097595)
+[node name="craystal_red_tree10" parent="WorldBrushInstances" unique_id=119942101 instance=ExtResource("21_yc10j")]
+transform = Transform3D(3.304238, 0, 2.4777758, 0, 4.130056, 0, -2.4777758, 0, 3.304238, 24.527578, 0.5490564, -41.116493)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
 
-[node name="craystal_red_tree11" parent="WorldBrushInstances" unique_id=509070665 instance=ExtResource("21_yc10j")]
-transform = Transform3D(1.0900958, 0, -0.69607264, 0, 1.2933778, 0, 0.69607264, 0, 1.0900958, -37.96084, 0.2890625, -6.468445)
+[node name="craystal_red_tree11" parent="WorldBrushInstances" unique_id=1589253502 instance=ExtResource("21_yc10j")]
+transform = Transform3D(-0.80803907, 0, -4.6216297, 0, 4.691736, 0, 4.6216297, 0, -0.80803907, 25.292536, 0.07343742, -7.1675153)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
 
-[node name="craystal_red_tree12" parent="WorldBrushInstances" unique_id=1995595813 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.27432293, 0, -0.9434612, 0, 0.9825335, 0, 0.9434612, 0, 0.27432293, -21.980972, 0.046875, 9.663185)
+[node name="craystal_red_tree12" parent="WorldBrushInstances" unique_id=1413399129 instance=ExtResource("21_yc10j")]
+transform = Transform3D(4.2957616, 0, 0.5845514, 0, 4.335351, 0, -0.5845514, 0, 4.2957616, 10.750715, 0.065624535, -23.218452)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
 
-[node name="craystal_red_tree13" parent="WorldBrushInstances" unique_id=659790458 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.8519214, 0, -0.34575427, 0, 0.9194107, 0, 0.34575427, 0, 0.8519214, -16.368584, 0.53125, -6.598175)
+[node name="craystal_red_tree13" parent="WorldBrushInstances" unique_id=531724884 instance=ExtResource("21_yc10j")]
+transform = Transform3D(-2.0471663, 0, 4.2651596, 0, 4.731012, 0, -4.2651596, 0, -2.0471663, -8.200344, 0.073398635, -18.628763)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
 
-[node name="craystal_red_tree14" parent="WorldBrushInstances" unique_id=1215977635 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-1.2083361, 0, -0.23420289, 0, 1.2308238, 0, 0.23420289, 0, -1.2083361, -26.483818, 0.3828125, 16.564575)
+[node name="craystal_red_tree14" parent="WorldBrushInstances" unique_id=1951338781 instance=ExtResource("21_yc10j")]
+transform = Transform3D(3.6001072, 0, -2.8335311, 0, 4.5814486, 0, 2.8335311, 0, 3.6001072, 9.24724, 0.11246666, -9.99118)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
 
-[node name="craystal_red_tree15" parent="WorldBrushInstances" unique_id=709560688 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.48929232, 0, 0.9076464, 0, 1.03113, 0, -0.9076464, 0, -0.48929232, -32.75563, 0.32894692, 3.9531133)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree16" parent="WorldBrushInstances" unique_id=418260026 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.44777372, 0, -0.9603927, 0, 1.0596488, 0, 0.9603927, 0, 0.44777372, 56.944225, 0.35974485, -33.96872)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree17" parent="WorldBrushInstances" unique_id=1573247056 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.81935155, 0, -0.35712108, 0, 0.8937967, 0, 0.35712108, 0, 0.81935155, -10.650238, 0.375, 12.955917)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree18" parent="WorldBrushInstances" unique_id=2145652572 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-1.0467986, 0, 0.19626285, 0, 1.0650382, 0, -0.19626285, 0, -1.0467986, 43.699963, 0.0029458925, 32.596905)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree19" parent="WorldBrushInstances" unique_id=1904959477 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.19323309, 0, 0.8388883, 0, 0.8608557, 0, -0.8388883, 0, 0.19323309, 6.223549, 0.1953125, 26.96975)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree20" parent="WorldBrushInstances" unique_id=171097211 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.83185893, 0, -0.55179656, 0, 0.9982328, 0, 0.55179656, 0, -0.83185893, -3.1353912, 0.1484375, -18.538094)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree21" parent="WorldBrushInstances" unique_id=1246202461 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.49379805, 0, 0.92686164, 0, 1.0501947, 0, -0.92686164, 0, -0.49379805, -15.320129, 0.203125, -11.83548)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree22" parent="WorldBrushInstances" unique_id=1262429005 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.0313443, 0, -0.99217755, 0, 0.9926725, 0, 0.99217755, 0, -0.0313443, -21.231445, 0.2622707, -14.28043)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree23" parent="WorldBrushInstances" unique_id=2119756177 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.9460987, 0, 0.7086473, 0, 1.1820675, 0, -0.7086473, 0, -0.9460987, -33.848953, 0.03125, 13.567329)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree24" parent="WorldBrushInstances" unique_id=1265378194 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.31864834, 0, 1.2157907, 0, 1.2568548, 0, -1.2157907, 0, 0.31864834, 39.879673, 0.0070116282, 12.009586)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree25" parent="WorldBrushInstances" unique_id=820760476 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.8606665, 0, -0.6246923, 0, 1.0634788, 0, 0.6246923, 0, -0.8606665, 7.069435, 0.1796875, 2.2675858)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree26" parent="WorldBrushInstances" unique_id=1724336453 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.60812587, 0, 0.5360308, 0, 0.81064546, 0, -0.5360308, 0, 0.60812587, -0.5081394, 0.6640153, 63.891994)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree27" parent="WorldBrushInstances" unique_id=1766399793 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.5581681, 0, -0.7680495, 0, 0.949448, 0, 0.7680495, 0, 0.5581681, 59.54444, 0.0078125, 53.76239)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree28" parent="WorldBrushInstances" unique_id=60410687 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.7086964, 0, 0.56795484, 0, 0.9081978, 0, -0.56795484, 0, 0.7086964, 48.89969, 0.0078125, 65.27902)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree29" parent="WorldBrushInstances" unique_id=692738701 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.90065473, 0, 0.5570304, 0, 1.058991, 0, -0.5570304, 0, -0.90065473, 2.0106125, 0.2265625, 52.89068)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree30" parent="WorldBrushInstances" unique_id=1869649302 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.31661215, 0, 0.9950161, 0, 1.0441744, 0, -0.9950161, 0, -0.31661215, 51.88604, 0.009340198, 21.086164)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree31" parent="WorldBrushInstances" unique_id=2063598606 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-1.1620933, 0, -0.2861052, 0, 1.1967945, 0, 0.2861052, 0, -1.1620933, 16.729342, 0.095202416, 38.064655)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree32" parent="WorldBrushInstances" unique_id=1153640522 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.6650551, 0, 0.45341066, 0, 0.80490965, 0, -0.45341066, 0, -0.6650551, 92.69232, 0.5078125, 28.302254)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree33" parent="WorldBrushInstances" unique_id=1013163271 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.8243774, 0, -0.79419464, 0, 1.1447022, 0, 0.79419464, 0, 0.8243774, 69.246704, 0.0078125, 53.942337)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree34" parent="WorldBrushInstances" unique_id=113224393 instance=ExtResource("21_yc10j")]
-transform = Transform3D(1.1200953, 0, -0.4944938, 0, 1.2243927, 0, 0.4944938, 0, 1.1200953, 30.803818, 0.109375, 42.373444)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree35" parent="WorldBrushInstances" unique_id=1677640411 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.6931089, 0, -0.9427609, 0, 1.1701274, 0, 0.9427609, 0, 0.6931089, 35.48124, 0.0078125, 38.84774)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree36" parent="WorldBrushInstances" unique_id=58940015 instance=ExtResource("21_yc10j")]
-transform = Transform3D(1.0657077, 0, -0.0058793887, 0, 1.0657239, 0, 0.0058793887, 0, 1.0657077, 77.0797, 0.015625, 35.57689)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree37" parent="WorldBrushInstances" unique_id=792570481 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.85466886, 0, 0.6049811, 0, 1.0471203, 0, -0.6049811, 0, -0.85466886, 108.04909, 0.8671875, 24.475212)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree38" parent="WorldBrushInstances" unique_id=186458819 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.98188, 0, -0.37997696, 0, 1.0528394, 0, 0.37997696, 0, 0.98188, 45.179737, 0.0028331205, 44.151577)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree39" parent="WorldBrushInstances" unique_id=819962740 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.012817584, 0, 1.1259111, 0, 1.1259841, 0, -1.1259111, 0, -0.012817584, 33.00875, 0.015625, 0.56762695)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree40" parent="WorldBrushInstances" unique_id=1164622816 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.8759561, 0, -0.35302874, 0, 0.9444196, 0, 0.35302874, 0, -0.8759561, 98.67613, 0.6796875, 12.741966)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree41" parent="WorldBrushInstances" unique_id=199213454 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-1.0572195, 0, 0.15737769, 0, 1.0688689, 0, -0.15737769, 0, -1.0572195, 39.185966, 0.1484375, -40.24424)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree42" parent="WorldBrushInstances" unique_id=1432077054 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-1.1888793, 0, -0.030470379, 0, 1.1892697, 0, 0.030470379, 0, -1.1888793, 76.8103, 0.125, 19.269264)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree43" parent="WorldBrushInstances" unique_id=609680271 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.1909264, 0, -0.8349007, 0, 0.8564531, 0, 0.8349007, 0, -0.1909264, 80.90579, 0.7578125, -49.42238)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree44" parent="WorldBrushInstances" unique_id=285723792 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-1.1628966, 0, 0.24325936, 0, 1.1880672, 0, -0.24325936, 0, -1.1628966, 108.47837, 0.8455417, 12.602116)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree45" parent="WorldBrushInstances" unique_id=1155001965 instance=ExtResource("21_yc10j")]
-transform = Transform3D(1.0222684, 0, 0.08529623, 0, 1.0258207, 0, -0.08529622, 0, 1.0222684, 115.840454, 0.80756384, 3.328178)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree46" parent="WorldBrushInstances" unique_id=334464062 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.83012474, 0, 0.33922604, 0, 0.8967616, 0, -0.33922604, 0, 0.83012474, 26.710123, 0.5451463, -42.324814)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree47" parent="WorldBrushInstances" unique_id=342018040 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.11700652, 0, -0.9627182, 0, 0.96980244, 0, 0.9627182, 0, -0.11700652, 89.525894, 0.90625, 0.45197296)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree48" parent="WorldBrushInstances" unique_id=2072675905 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.23174742, 0, -0.79206705, 0, 0.8252739, 0, 0.79206705, 0, -0.23174742, 57.644817, 0.8285117, -48.18165)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree49" parent="WorldBrushInstances" unique_id=333851073 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.024567395, 0, 1.1557283, 0, 1.1559894, 0, -1.1557283, 0, -0.024567395, 51.566116, 0.8061918, -47.198895)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree50" parent="WorldBrushInstances" unique_id=424828601 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.5892473, 0, -0.81273985, 0, 1.0038717, 0, 0.81273985, 0, -0.5892473, 56.87352, 0.4453125, -26.949326)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree51" parent="WorldBrushInstances" unique_id=805274249 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.1658544, 0, -1.1170869, 0, 1.1293321, 0, 1.1170869, 0, 0.1658544, 59.34439, 0.33882803, -10.885546)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree52" parent="WorldBrushInstances" unique_id=883001956 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.39012766, 0, -0.730422, 0, 0.82807964, 0, 0.730422, 0, -0.39012766, -1.0804863, 0.003451985, -25.723568)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree53" parent="WorldBrushInstances" unique_id=1442594117 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.79018205, 0, -0.9129333, 0, 1.2074083, 0, 0.9129333, 0, -0.79018205, 52.372307, 0.3359375, -8.075172)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree54" parent="WorldBrushInstances" unique_id=1669651007 instance=ExtResource("21_yc10j")]
-transform = Transform3D(0.73537713, 0, 0.38651976, 0, 0.83076894, 0, -0.38651976, 0, 0.73537713, 35.112892, 0.2276683, -49.04015)
-metadata/world_brush_instance = true
-metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
-
-[node name="craystal_red_tree55" parent="WorldBrushInstances" unique_id=871127290 instance=ExtResource("21_yc10j")]
-transform = Transform3D(-0.36828244, 0, -1.0706959, 0, 1.1322639, 0, 1.0706959, 0, -0.36828244, -6.6413383, 3.654039e-08, -43.833096)
+[node name="craystal_red_tree15" parent="WorldBrushInstances" unique_id=1766056273 instance=ExtResource("21_yc10j")]
+transform = Transform3D(-3.6155806, 0, 1.5906197, 0, 3.9499993, 0, -1.5906197, 0, -3.6155806, 27.942356, 0.6806888, -36.617348)
 metadata/world_brush_instance = true
 metadata/world_brush_source_scene_path = "res://scenes/craystal_red_tree_brush.tscn"
 

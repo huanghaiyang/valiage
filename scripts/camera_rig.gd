@@ -36,8 +36,14 @@ extends Node3D
 ## 但 WASD 仍然是"按相机朝向"移动（这条别改，否则锁定后手感全乱）。
 @export var iso_locked := true
 @export var iso_yaw_deg := 45.0      # 斜 45 度是经典等距视角
-@export var iso_pitch_deg := 52.0    # 从上往下压 52 度
-@export var iso_distance := 14.0     # 默认再拉远一档（用户要求）
+## 相机俯角。**52° 太陡**：那个角度基本在俯视头顶，角色的侧身/轮廓看不见
+## （用户反馈"只能看到角色头部"）。42° 保留斜俯视观感，同时能看到身体侧面。
+@export var iso_pitch_deg := 42.0
+## 到角色的距离。14m 时角色只占屏幕高度约 10%（720p 下实测 ~74px），
+## 那个尺寸下只能辨认出头顶的帽子。12m 放大 17%；再把俯角从 52° 降到 42°
+## （角色竖直方向的投影系数 cos42°/cos52° ≈ 1.21），屏幕上高度约 74px → 104px。
+## 滚轮仍可在 75%~200% 之间缩放（0.75 时约 9m）。
+@export var iso_distance := 12.0
 ## 滚轮缩放：只是 iso_distance 的倍率。0.75 = 最近（当前距离的 75%），2.0 = 最远
 @export var iso_zoom := 1.0
 const ISO_ZOOM_MIN := 0.75
@@ -58,6 +64,14 @@ const ISO_ZOOM_STEP := 0.12
 @export var occlusion_candidate_interval := 1.0
 ## 只考虑离角色这么近的候选（米）。更远的树不可能挡住近在眼前的角色。
 @export var occlusion_candidate_range := 40.0
+## 挡路判定用**物理射线打真实碰撞体**，而不是包围盒。
+## 包围盒分不清"树干在旁边"和"树叶真的挡在前面"：树冠的盒子有 4.6×10.7×4.3m，
+## 角色一走进盒子范围（离树 2~3m）线段就已经穿过盒子，于是被判成"被挡住"
+## （用户反馈："人物一靠近物体，物体就会被挖洞"）。
+## 只有这一层上的碰撞体算遮挡物。本项目：地形=2，**建筑/树=4**，植被=8。
+@export_flags_3d_physics var occlusion_layer_mask := 4
+## 单条采样线最多穿透几层遮挡物（密林里相机到角色之间可能叠着好几棵）。
+@export var occlusion_max_hits := 8
 ## 放进这个组的节点（含子树）永不挖洞，给"不想被透视"的物件留后门。
 const OCCLUSION_IGNORE_GROUP := &"occlusion_ignore"
 ## 挖洞着色器（只影响被遮挡的那一块，不是整棵变透明）
@@ -80,6 +94,9 @@ var _occ_seen := {}
 var _occ_mat_cache := {}
 ## 可能挡住角色的网格（场景里的 MeshInstance3D，排除角色自身），定期重建
 var _occ_candidates: Array = []
+## 上面这些网格里哪些**有碰撞体**（MeshInstance3D -> true）。
+## 有碰撞体的走物理射线精确判定；没有的（编辑器里手摆的模型）才退回包围盒兜底。
+var _occ_backed := {}
 var _occ_cand_timer := 0.0
 var _occ_timer := 0.0
 # ---- 卡墙自救 ----
@@ -207,6 +224,7 @@ func _update_occlusion_fade(delta: float) -> void:
 ## 附带好处：不再要求物体有碰撞体、也不用管碰撞层，编辑器里手摆的模型照样生效。
 func _collect_occlusion_candidates() -> void:
 	_occ_candidates.clear()
+	_occ_backed.clear()
 	var scene := get_tree().current_scene
 	if scene == null:
 		return
@@ -223,72 +241,125 @@ func _collect_candidates_under(n: Node, player_node: Node) -> void:
 			var mi := c as MeshInstance3D
 			if mi.mesh != null:
 				_occ_candidates.append(mi)
+				_occ_backed[mi] = _mesh_has_collider(mi)
 		_collect_candidates_under(c, player_node)
 
 
-## 每轮：找出"在屏幕上盖住角色、且比角色更靠近相机"的网格，给它们挖洞。
+## 网格是否"有碰撞体"：自己、子孙、或往上 3 层内出现 CollisionObject3D。
+## 有碰撞体的走物理射线（贴着模型，精确）；没有的才退回包围盒兜底。
+func _mesh_has_collider(mi: MeshInstance3D) -> bool:
+	var cur: Node = mi
+	var depth := 0
+	while cur != null and depth < 3:
+		if cur is CollisionObject3D:
+			return true
+		for c in cur.get_children():
+			if c is CollisionObject3D:
+				return true
+		cur = cur.get_parent()
+		depth += 1
+	return false
+
+
+## 角色身上用于"是否被挡"判定的采样点（世界空间）：头 / 胸 / 胯 + 左右肩。
+## 用多个点是为了覆盖轮廓：只打中线的话，从侧后方斜着盖住半个身子的树冠会被漏掉
+## （那是"树木过多还是看不到角色"的老问题）。
+func _char_sample_points() -> Array:
+	var base: Vector3 = player.global_position
+	var right: Vector3 = camera.global_transform.basis.x
+	var chest := base + Vector3(0.0, 1.0, 0.0)
+	return [base + Vector3(0.0, 1.7, 0.0),
+			chest,
+			base + Vector3(0.0, 0.25, 0.0),
+			chest + right * 0.35,
+			chest - right * 0.35]
+
+
+## 每轮：找出真正挡在"相机 → 角色"之间的物体，给它们的网格挖洞。
+##
+## **判定用物理射线打真实碰撞体**，不用包围盒。包围盒分不清"树干在旁边"和
+## "树叶真的挡在前面"：树冠的盒子有 4.6×10.7×4.3m，角色只要走进盒子范围
+## （离树 2~3m），"相机→角色"的线段就已经从盒子空着的上半部分穿过去了，
+## 于是被判成"被挡住" —— 表现就是"人物一靠近物体，物体就被挖洞"（用户反馈）。
+## 碰撞体是贴着模型的（秋树笔刷场景用的就是模型的三角网），射线打上去才知道真假。
+##
+## 每条采样线**一路打穿**：`intersect_ray` 只返回最近的一个碰撞体，密林里
+## 相机到角色之间叠着好几棵，只挖最近那棵的话，透过洞看到的还是第二棵完整的树
+## （老反馈："树木过多还是看不到角色"）。
 func _rescan_occluders() -> void:
 	_occ_seen.clear()
 	if camera == null or player == null:
 		return
-	var vp := get_viewport().get_visible_rect().size
-	if vp.y < 1.0:
-		return
 	var base: Vector3 = player.global_position
 	var cam_pos: Vector3 = camera.global_position
-	var view_dir: Vector3 = -camera.global_transform.basis.z
-	var mid := base + Vector3(0.0, 0.9, 0.0)
-	var center: Vector2 = camera.unproject_position(mid)
-	var p_top: Vector2 = camera.unproject_position(base + Vector3(0.0, 1.75, 0.0))
-	var p_bot: Vector2 = camera.unproject_position(base)
-	# 和着色器里的洞半径同一套算法，只是这里用像素
-	var radius_px: float = maxf(hole_min_radius * vp.y,
-			(p_top - p_bot).length() * hole_radius_scale)
-	var player_depth: float = (mid - cam_pos).dot(view_dir)
+	var samples := _char_sample_points()
+	var space := get_world_3d().direct_space_state
+	# 角色自己的碰撞体永远排除：否则射线停在角色身上，后面的树一棵都查不到
+	var player_rid := RID()
+	var body: Variant = player.get("body")
+	if body is CollisionObject3D:
+		player_rid = (body as CollisionObject3D).get_rid()
+	# ---- ① 物理射线（贴着真实模型，精确）----
+	for sp in samples:
+		var to: Vector3 = sp
+		var from: Vector3 = cam_pos
+		var dir: Vector3 = to - from
+		if dir.length_squared() < 0.0001:
+			continue
+		dir = dir.normalized()
+		var exclude: Array[RID] = []
+		if player_rid.is_valid():
+			exclude.append(player_rid)
+		for _i in occlusion_max_hits:
+			var params := PhysicsRayQueryParameters3D.create(from, to)
+			params.exclude = exclude
+			params.collide_with_areas = false
+			params.collision_mask = occlusion_layer_mask
+			var hit := space.intersect_ray(params)
+			if hit.is_empty():
+				break
+			var col: Object = hit.get("collider")
+			if col is CollisionObject3D:
+				# 已命中的物体排除掉，否则下一轮打到的还是它
+				exclude.append((col as CollisionObject3D).get_rid())
+			from = (hit.get("position", from) as Vector3) + dir * 0.05
+			if from.distance_squared_to(to) < 0.01:
+				break                      # 已经贴到采样点，别再往回打
+			if col == null or not (col is Node):
+				continue
+			var root := _occluder_root(col as Node)
+			if root == null:
+				continue
+			for gi in _geometry_instances(root):
+				if gi is MeshInstance3D:
+					_occ_seen[gi] = true
+					if not _occ_holes.has(gi):
+						_install_hole(gi as MeshInstance3D)
+	# ---- ② 没有碰撞体的物件（编辑器里手摆的模型）：才退回包围盒兜底 ----
+	# **但要求角色在它包围盒之外** —— 否则"人走进树冠盒子就挖洞"的误判又回来了。
+	# 宁可漏挖这类物件，也不要一靠近就乱挖。
 	var range_sq := occlusion_candidate_range * occlusion_candidate_range
 	for c in _occ_candidates:
 		var mi := c as MeshInstance3D
+		if _occ_backed.has(mi):
+			continue                       # 有碰撞体：上面射线已经处理过
 		if not is_instance_valid(mi) or mi.mesh == null or not mi.is_visible_in_tree():
 			continue
 		if mi.global_position.distance_squared_to(base) > range_sq:
-			continue                       # 太远，不可能挡住近在眼前的角色
-		var center_depth: float = (mi.global_position - cam_pos).dot(view_dir)
-		if center_depth < 0.0:
-			continue                       # 在相机后面
-		if center_depth > player_depth + occlusion_candidate_range * 0.15:
-			continue                       # 明显在角色后面，挡不住他
-		var ab: AABB = mi.mesh.get_aabb()
-		var xf: Transform3D = mi.global_transform
-		var mn := Vector2(INF, INF)
-		var mx := Vector2(-INF, -INF)
-		var min_depth := INF
-		var front := 0
-		var partial := false
-		for i in 8:
-			var wp: Vector3 = xf * ab.get_endpoint(i)
-			if camera.is_position_behind(wp):
-				# 相机在这棵树里面（包围盒跨过近平面）：投影不可靠，
-				# 按"铺满整屏"保守处理 —— 宁可多挖，也别让叶子糊住角色
-				partial = true
-				continue
-			front += 1
-			min_depth = minf(min_depth, (wp - cam_pos).dot(view_dir))
-			var sp: Vector2 = camera.unproject_position(wp)
-			mn.x = minf(mn.x, sp.x)
-			mn.y = minf(mn.y, sp.y)
-			mx.x = maxf(mx.x, sp.x)
-			mx.y = maxf(mx.y, sp.y)
-		if front == 0 or min_depth > player_depth:
-			continue                       # 整棵树都在角色后面
-		if not partial:
-			var nearest := Vector2(clampf(center.x, mn.x, mx.x), clampf(center.y, mn.y, mx.y))
-			if nearest.distance_to(center) > radius_px:
-				continue                   # 屏幕上根本盖不到角色
-		# 不做数量上限：包围盒判定天生宽松（树冠的 AABB 很大），但宽松在这里是安全的
-		# —— 着色器只会 discard 它**真的画到**的那些像素，判多了最多是白挖一个洞；
-		# 反过来漏挖才会让角色看不见（实测反馈："树木过多还是看不到角色"）。
-		# 实测教训：一旦按"离相机最近"取前 N 棵，相机所在的那圈树冠会把名额占光，
-		# 真正盖住角色的树反而进不了名单。
+			continue
+		var ab_world: AABB = mi.global_transform * mi.mesh.get_aabb()
+		if ab_world.has_point(base):
+			continue                       # 角色就在盒子里，分不清 -> 不挖
+		var blocks := false
+		for sp in samples:
+			var pt: Vector3 = sp
+			# 4.7 的 intersects_segment 返回交点 Vector3 或 null（不是 bool），按类型判断
+			var hit: Variant = ab_world.intersects_segment(cam_pos, pt)
+			if typeof(hit) == TYPE_VECTOR3 or (typeof(hit) == TYPE_BOOL and bool(hit)):
+				blocks = true
+				break
+		if not blocks:
+			continue
 		_occ_seen[mi] = true
 		if not _occ_holes.has(mi):
 			_install_hole(mi)
@@ -300,6 +371,44 @@ func _rescan_occluders() -> void:
 			continue
 		if not _occ_seen.has(gi):
 			_remove_hole(gi as MeshInstance3D)
+
+
+## 射线打到的是碰撞体（通常挂在模型实例下面），往上找到"那一个被放置的物体"。
+## **先看自己有没有几何体、再看父节点**：上一版先判 `父 == 场景根` 就 return，
+## 结果"直接挂在场景根下的手摆物体"永远找不到（早期 Bug）。
+func _occluder_root(n: Node) -> Node3D:
+	var cur: Node = n
+	var depth := 0
+	var scene := get_tree().current_scene
+	while cur != null and depth < 6:
+		if cur == scene:
+			return null                   # 兜底：别把整个场景当成一个物体
+		if cur is Node3D and _has_geometry(cur):
+			return cur as Node3D
+		cur = cur.get_parent()
+		depth += 1
+	return null
+
+
+func _has_geometry(n: Node) -> bool:
+	if n is GeometryInstance3D:
+		return true
+	for c in n.get_children():
+		if c is GeometryInstance3D:
+			return true
+	return false
+
+
+func _geometry_instances(root: Node3D) -> Array:
+	var out: Array = []
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is GeometryInstance3D:
+			out.append(n)
+		for c in n.get_children():
+			stack.append(c)
+	return out
 
 
 ## 装洞：优先复用缓存材质，只切 override（树木多时别再每轮重新 new 一遍）
