@@ -11,6 +11,21 @@ extends Node3D
 @export var run_speed := 9.0
 @export var jump_speed := 6.5
 @export var gravity := 18.0
+## 坡度速度规则（只影响"平常走路/跑步"的水平速度）：
+##   上坡减速、下坡加速，两者都按坡度角线性过渡，并被下面两个比例**钳住**。
+## 两个限制都是"相对当前基础速度"的比例 —— 基础速度已经含 Shift 跑步，
+## 所以走路(5)与跑步(9)各自按同一比例受限，不需要为跑步再写一套。
+## slope_speed_angle 设为 0 或负数 = 关闭整条规则。
+@export var slope_speed_angle := 40.0
+@export var slope_speed_min_ratio := 0.45   ## 上坡最低速度比例（走路 5→2.25，跑步 9→4.05）
+@export var slope_speed_max_ratio := 1.25   ## 下坡最高速度比例（走路 5→6.25，跑步 9→11.25）
+## 裂缝/窄坑守卫：角色走进窄缝会扎进地形，move_and_slide 去穿插时会把它"瞬间弹走"。
+## 所以在缝边就拦住：向前探一步，若前方地面下沉、而对面在 crack_max_width 内又回到脚面高度，
+## 判定为"缝"（不是悬崖），本帧不允许朝这个方向移动。
+@export var crack_guard := true
+@export var crack_probe_ahead := 0.55      ## 向前探多远（约半个身位）
+@export var crack_max_drop := 0.45         ## 下沉超过这个深度才算"前方是坑"
+@export var crack_max_width := 1.6         ## 对面在这么远内重新升高 → 是缝而非悬崖
 @export var mouse_sensitivity := 0.0028
 ## 垂直视角是否反转。默认关：鼠标上移 = 抬头。
 ## 不同玩家习惯差别很大，运行时按 F2 切换，也可以在检查器里改。
@@ -484,12 +499,19 @@ func _physics_process(delta: float) -> void:
 	player.set_running(running)
 	if dir.x != 0.0 or dir.y != 0.0:
 		moved = true
-		var speed := run_speed if running else move_speed
 		var forward := Vector3(-sin(_current_yaw), 0.0, -cos(_current_yaw))
 		var right := Vector3(cos(_current_yaw), 0.0, -sin(_current_yaw))
-		move_xz = (forward * dir.y + right * dir.x) * speed
-		# 角色面向水平移动方向
 		var face := forward * dir.y + right * dir.x
+		var base_speed := run_speed if running else move_speed
+		# 上坡减速、下坡加速、限制在 min/max 比例内。地形和物体模型的坡面走的是同一套
+		# floor_normal，所以"在物体上移动"自动同样生效。
+		var factor := slope_speed_factor(player.get_floor_normal(), face.normalized(), player.is_on_floor())
+		move_xz = face * base_speed * factor
+		# 裂缝守卫：前方是窄缝时本帧停下（否则会扎进地形、被去穿插弹飞）
+		if player.is_on_floor() and face.length_squared() > 0.001:
+			if crack_ahead(get_world_3d().direct_space_state, player.global_position, face.normalized()):
+				move_xz = Vector3.ZERO
+		# 角色面向水平移动方向
 		if face.length_squared() > 0.001:
 			player.face_direction(face.normalized())
 		# 鼠标释放时旋转视线短暂面向移动方向，便于无鼠标浏览
@@ -643,6 +665,80 @@ func _update_camera_only() -> void:
 		camera.global_transform = Transform3D(rot, player.global_position + Vector3(0.0, eye_height, 0.0))
 
 ## 朝向坐标系下的侧向速度分量（右为正）：用于选择侧移动画与压弯方向
+## 坡度速度系数：只影响水平移动速度。
+##   平地 / 空中 / 没输入 → 1.0（完全不影响现有手感）
+##   上坡 → 1.0 向 slope_speed_min_ratio 过渡（越陡越慢）
+##   下坡 → 1.0 向 slope_speed_max_ratio 过渡（越陡越快，但有上限）
+##   斜着走 → 按"顺着坡走的分量"过渡，所以沿坡横移不会被误减速/误加速
+## 返回前统一用 [min_ratio, max_ratio] 钳住，这就是最大/最小速度限制。
+## 纯判定：脚下高度 feet_y，前方地面 ahead_y（可能没有），对面 far_y（可能没有）。
+## 前方下沉、且对面在 crack_max_width 内回到脚面高度 → 是"缝"，返回 true（要拦住）。
+func crack_verdict(feet_y: float, has_ahead: bool, ahead_y: float,
+		has_far: bool, far_y: float) -> bool:
+	if not crack_guard:
+		return false
+	if not has_ahead:
+		return has_far                       # 前方是空的，对面有地 → 缝
+	if feet_y - ahead_y <= crack_max_drop:
+		return false                         # 前方地面没怎么下沉（小坑洼），照常走
+	if not has_far:
+		return false                         # 对面也没有地 → 悬崖/深渊，允许过去（该掉就掉）
+	return far_y > feet_y - crack_max_drop   # 对面回到脚面附近 → 是缝
+
+
+## 物理探针：沿 dir 向前探，判断前方是不是"能卡住人的缝"
+func crack_ahead(space: PhysicsDirectSpaceState3D, feet: Vector3, dir: Vector3) -> bool:
+	if not crack_guard or space == null:
+		return false
+	var d := Vector3(dir.x, 0.0, dir.z)
+	if d.length_squared() < 0.0001:
+		return false
+	d = d.normalized()
+	var from := feet + Vector3.UP * 0.4
+	var ahead_from := from + d * crack_probe_ahead
+	var far_from := from + d * (crack_probe_ahead + crack_max_width)
+	var a := _ray_down(space, ahead_from, 4.0)
+	var b := _ray_down(space, far_from, 4.0)
+	var has_a := not a.is_empty()
+	var has_b := not b.is_empty()
+	var ay: float = (a.get("position", Vector3.ZERO) as Vector3).y
+	var by: float = (b.get("position", Vector3.ZERO) as Vector3).y
+	return crack_verdict(feet.y, has_a, ay, has_b, by)
+
+
+func _ray_down(space: PhysicsDirectSpaceState3D, from: Vector3, dist: float) -> Dictionary:
+	var q := PhysicsRayQueryParameters3D.new()
+	q.from = from
+	q.to = from + Vector3.DOWN * dist
+	q.collide_with_areas = false
+	if player != null:
+		q.exclude = [player.get_rid()]
+	return space.intersect_ray(q)
+
+
+func slope_speed_factor(normal: Vector3, move_dir: Vector3, on_floor: bool) -> float:
+	if not on_floor or move_dir.length_squared() < 0.000001:
+		return 1.0
+	if slope_speed_angle <= 0.0:
+		return 1.0
+	var n := normal.normalized()
+	var angle := n.angle_to(Vector3.UP)
+	if angle < 0.01:
+		return 1.0                                  # 平地
+	# 法线的水平投影指向"下坡方向"；移动方向与它相反 = 上坡
+	var downhill := Vector3(n.x, 0.0, n.z)
+	if downhill.length_squared() < 0.000001:
+		return 1.0                                  # 坡面几乎垂直，交给物理挡
+	var along := move_dir.normalized().dot(-downhill.normalized())   # +1 正上坡，-1 正下坡
+	var t := clampf(angle / deg_to_rad(slope_speed_angle), 0.0, 1.0)
+	var factor := 1.0
+	if along > 0.0:
+		factor = lerpf(1.0, slope_speed_min_ratio, t * along)        # 上坡：减速
+	elif along < 0.0:
+		factor = lerpf(1.0, slope_speed_max_ratio, t * -along)       # 下坡：加速
+	return clampf(factor, slope_speed_min_ratio, slope_speed_max_ratio)
+
+
 func _lateral_speed(move_xz: Vector3, facing_yaw: float) -> float:
 	if move_xz.length_squared() < 0.0001:
 		return 0.0
