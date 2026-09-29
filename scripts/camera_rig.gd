@@ -99,25 +99,6 @@ var _occ_candidates: Array = []
 var _occ_backed := {}
 var _occ_cand_timer := 0.0
 var _occ_timer := 0.0
-# ---- 卡墙自救 ----
-## 持续想走却走不动时，侧向蹭一下绕过障碍。
-## 正面顶墙时 move_and_slide 正好把速度抵消为零，玩家会完全钉在原地；
-## 单靠玩家自己转向才能脱困，手感很差（试玩反馈：跑一段就推不动了）。
-const STUCK_FRAMES := 12        # 连续多少物理帧没位移算被卡住（0.2s，越短越跟手）
-const STUCK_EPS := 0.015        # 一帧位移小于这个值算没动
-const UNSTUCK_SPEED := 4.4      # 自救侧移速度（米/秒），要接近正常步速才不拖沓
-const UNSTUCK_TIME := 0.5       # 每次自救持续时长（秒）
-var _stuck_frames := 0
-var _unstuck_timer := 0.0
-var _unstuck_side := 1.0
-var _last_pos := Vector3.ZERO
-var _last_move_dir := Vector3.ZERO
-## 本帧 move_and_slide 撞到的墙面法线（世界空间），卡墙自救用它算切向
-var _wall_normal := Vector3.ZERO
-## 是否正在卡墙自救（供 UI 提示）
-var unstuck_active := false
-## 打印卡墙自救的诊断信息（排查用）
-var stuck_debug := false
 var ui_override := false     # UI（动作菜单等）占用时让出鼠标/键盘控制
 
 func _ready() -> void:
@@ -493,8 +474,6 @@ func _physics_process(delta: float) -> void:
 	var dir := _get_move_input()
 	var move_xz := Vector3.ZERO
 	var running := Input.is_key_pressed(KEY_SHIFT)
-	if _last_pos == Vector3.ZERO:
-		_last_pos = player.global_position
 	var yaw_before: float = player.get_facing_yaw()
 	player.set_running(running)
 	if dir.x != 0.0 or dir.y != 0.0:
@@ -529,23 +508,11 @@ func _physics_process(delta: float) -> void:
 	var was_air := not player.is_on_floor()
 	player.velocity = Vector3(move_xz.x, _velocity_y, move_xz.z)
 	player.move_and_slide()
-	# 记录本帧墙面法线：卡墙自救要用它算切向（见 _wall_slide_dir）
-	_wall_normal = Vector3.ZERO
-	for ci in player.get_slide_collision_count():
-		var c := player.get_slide_collision(ci)
-		var nrm := c.get_normal()
-		# 只关心接近竖直的墙（地面法线朝上，不算卡墙）
-		if absf(nrm.y) < 0.6:
-			_wall_normal = Vector3(nrm.x, 0.0, nrm.z).normalized()
-			break
 
 	# 自动抬步：被低台阶挡住时跨上去（楼梯无需按 E；E 只留给梯子）
 	if moved and move_xz.length_squared() > 0.001 and player.is_on_floor():
 		if player.try_step_up(move_xz):
 			_velocity_y = 0.0
-
-	# 卡墙自救：想走却完全没位移时侧向蹭出去（见 STUCK_* 常量注释）
-	_update_stuck(delta, moved, move_xz)
 
 	# 转向过渡：侧向速度 → 侧移动画；朝向突变 → 转向动画 + 压弯
 	var yaw_after: float = player.get_facing_yaw()
@@ -679,110 +646,6 @@ func _lateral_speed(move_xz: Vector3, facing_yaw: float) -> float:
 
 ## 自动化测试用：非零时替代键盘输入（headless 探测无法模拟按键）
 var test_move_override := Vector2.ZERO
-
-
-## 检测想走但走不动，并给一个持续 0.55s 的侧向速度把玩家从墙上蹭开。
-## 侧向正负按卡住前一瞬间的移动方向取，保证是绕过障碍而不是原地抖。
-func _update_stuck(delta: float, moved: bool, move_xz: Vector3) -> void:
-	var p := player.global_position
-	var step := Vector2(p.x - _last_pos.x, p.z - _last_pos.z).length()
-	_last_pos = p
-	if move_xz.length_squared() > 0.001:
-		_last_move_dir = move_xz.normalized()
-	if not moved:
-		_stuck_frames = 0
-		_unstuck_timer = 0.0
-		unstuck_active = false
-		return
-	if _unstuck_timer > 0.0:
-		_unstuck_timer = maxf(0.0, _unstuck_timer - delta)
-		if _unstuck_timer <= 0.0:
-			unstuck_active = false
-	if step < STUCK_EPS and moved:
-		_stuck_frames += 1
-	else:
-		_stuck_frames = 0
-		# 已经能动就把自救窗口收掉，避免持续被推着走
-		_unstuck_timer = 0.0
-		unstuck_active = false
-	if _unstuck_timer > 0.0:
-		# 自救：找一个**站得下的落点**直接瞬移过去。
-		#
-		# 试过两版都是错的：
-		#   1. 沿墙切向推 —— 卡进楔形缝隙时相邻两帧拿到法线相反的墙，切向抵消，
-		#      位置在 0.001m 内反复横跳，表现为完全冻结；
-		#   2. 检查 p+dir*0.55 是否干净 —— 通过也不代表能走：胶囊此刻可能仍嵌在
-		#      碰撞体里，move_and_slide 会把整帧速度吃掉，人还是不动。
-		# 所以这里由近及远做环状搜索，找到一个真正干净的落点就瞬移过去。
-		var escape: Variant = _find_free_spot(p)
-		if escape != null:
-			player.global_position = escape
-	elif _stuck_frames >= STUCK_FRAMES:
-		_stuck_frames = 0
-		_unstuck_timer = UNSTUCK_TIME
-		unstuck_active = true
-		if stuck_debug:
-			print("[stuck] 卡住 pos=%s normal=%s move=%s air=%s floor=%s" % [str(p), str(_wall_normal), str(_last_move_dir), str(player._jump_air), str(player.is_on_floor())])
-
-
-## 由近及远环状搜索一个"胶囊放得下"的落点；找不到返回 null。
-##
-## 半径从 0.9m 递到 4.2m，方向先试墙面切向/侧后方，再绕整圈。
-## 找到就返回该点，调用方直接瞬移 —— 这样无论卡在多窄的缝隙里都能出来。
-func _find_free_spot(p: Vector3) -> Variant:
-	var space := player.get_world_3d().direct_space_state
-	var pref := _wall_slide_dir()
-	if pref == Vector3.ZERO:
-		pref = Vector3(-_last_move_dir.z, 0.0, _last_move_dir.x)
-	if pref == Vector3.ZERO:
-		pref = Vector3.RIGHT
-	# 候选方向：优先与 preferred 同向的（沿墙滑更像是"绕过去"而不是"弹开"）
-	var dirs: Array = []
-	for step in 16:
-		var ang := TAU * float(step) / 16.0
-		var d := Vector3(cos(ang), 0.0, sin(ang))
-		if d.dot(pref) > 0.35:
-			dirs.append(d)
-	for step in 16:
-		var ang2 := TAU * float(step) / 16.0
-		var d2 := Vector3(cos(ang2), 0.0, sin(ang2))
-		if d2.dot(pref) <= 0.35:
-			dirs.append(d2)
-	for radius in [0.9, 1.4, 2.0, 2.8, 3.6, 4.4]:
-		for d in dirs:
-			var cand: Vector3 = p + (d as Vector3) * radius
-			if _spot_is_free(space, cand):
-				return cand
-	return null
-
-
-## 该位置站得住吗（用略瘦的胶囊做形状查询；只查水平位移后的落点）
-func _spot_is_free(space: PhysicsDirectSpaceState3D, at: Vector3) -> bool:
-	var shape := CapsuleShape3D.new()
-	if player != null:
-		shape.radius = player.COLLIDER_RADIUS * 0.8
-		shape.height = maxf(shape.radius * 2.0 + 0.05, player.COLLIDER_HEIGHT * 0.8)
-	else:
-		shape.radius = 0.22
-		shape.height = 0.9
-	var q := PhysicsShapeQueryParameters3D.new()
-	q.shape = shape
-	q.collision_mask = 2 | 4 | 8
-	q.transform = Transform3D(Basis.IDENTITY, at + Vector3(0.0, shape.height * 0.5, 0.0))
-	if player != null:
-		q.exclude = [player.get_rid()]
-	return space.intersect_shape(q, 1).is_empty()
-
-
-## 从本帧 move_and_slide 记录的墙面法线里推出一个顺墙方向。
-## 取与当前移动方向夹角更小的一侧，也就是障碍物更靠边的那一侧。
-func _wall_slide_dir() -> Vector3:
-	if _wall_normal == Vector3.ZERO or _last_move_dir == Vector3.ZERO:
-		return Vector3.ZERO
-	var tangent := Vector3(-_wall_normal.z, 0.0, _wall_normal.x).normalized()
-	if tangent.dot(_last_move_dir) < 0.0:
-		tangent = -tangent
-	return tangent
 
 
 func _get_move_input() -> Vector2:

@@ -20,3 +20,6 @@ check_shot.gd.uid
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Python 工具缓存
+__pycache__/

@@ -65,7 +65,7 @@ window/stretch/aspect="expand"
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/godot_ai/plugin.cfg", "res://addons/simplegrasstextured/plugin.cfg", "res://addons/sky_3d/plugin.cfg", "res://addons/terrain_3d/plugin.cfg", "res://addons/world_brush/plugin.cfg")
+enabled=PackedStringArray("res://addons/concave_collision_tuner/plugin.cfg", "res://addons/godot_ai/plugin.cfg", "res://addons/simplegrasstextured/plugin.cfg", "res://addons/sky_3d/plugin.cfg", "res://addons/terrain_3d/plugin.cfg", "res://addons/world_brush/plugin.cfg")
 
 [input]
 
