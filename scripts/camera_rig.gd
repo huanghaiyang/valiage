@@ -321,7 +321,13 @@ func _rescan_occluders() -> void:
 	# 宁可漏挖这类物件，也不要一靠近就乱挖。
 	var range_sq := occlusion_candidate_range * occlusion_candidate_range
 	for c in _occ_candidates:
+		# 先判存活再转换：候选可能已被释放（例如卡位监测的标记会自行回收），
+		# 对已释放对象做 as 转换会报 "Trying to cast a freed object"。
+		if not is_instance_valid(c):
+			continue
 		var mi := c as MeshInstance3D
+		if mi == null:
+			continue
 		if _occ_backed.has(mi):
 			continue                       # 有碰撞体：上面射线已经处理过
 		if not is_instance_valid(mi) or mi.mesh == null or not mi.is_visible_in_tree():

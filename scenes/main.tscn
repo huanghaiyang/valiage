@@ -21,6 +21,7 @@
 [ext_resource type="Script" uid="uid://2juaclm8gc1n" path="res://addons/simplegrasstextured/grass.gd" id="19_jscy8"]
 [ext_resource type="PackedScene" uid="uid://dfkmuq4mq28k5" path="res://scenes/石拱门3d模型_mid.tscn" id="22_jscy8"]
 [ext_resource type="PackedScene" uid="uid://bcurel43tktrh" path="res://scenes/墓地场景3d模型_地面三角面碰撞体_降面.tscn" id="22_pm3ni"]
+[ext_resource type="Script" uid="uid://cjl5g2p8tdivf" path="res://addons/stuck_monitor/stuck_monitor.gd" id="23_pm3ni"]
 [ext_resource type="PackedScene" uid="uid://b8kxwyl0jqcha" path="res://scenes/墓地场景3d模型.tscn" id="25_og1vs"]
 
 [sub_resource type="ProceduralSkyMaterial" id="sky_mat"]
@@ -131,7 +132,7 @@ uv_scale = 0.016
 mesh_list = Array[Terrain3DMeshAsset]([SubResource("Terrain3DMeshAsset_jbj1t")])
 texture_list = Array[Terrain3DTextureAsset]([SubResource("Terrain3DTextureAsset_jkv2x"), SubResource("Terrain3DTextureAsset_muem4"), SubResource("Terrain3DTextureAsset_jbj1t")])
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_y6deb"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_jscy8"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -303,7 +304,7 @@ top_level = true
 metadata/_edit_lock_ = true
 
 [node name="SimpleGrassTextured" type="MultiMeshInstance3D" parent="." unique_id=494743626]
-material_override = SubResource("ShaderMaterial_y6deb")
+material_override = SubResource("ShaderMaterial_jscy8")
 cast_shadow = 0
 multimesh = SubResource("MultiMesh_pm3ni")
 script = ExtResource("19_jscy8")
@@ -334,3 +335,7 @@ transform = Transform3D(8.420716, 0, 18.14088, 0, 20, 0, -18.14088, 0, 8.420716,
 
 [node name="墓地场景3d模型2" parent="." unique_id=697985140 instance=ExtResource("22_pm3ni")]
 transform = Transform3D(20, 0, 0, 0, 20, 0, 0, 0, 20, -48.327194, -0.0035846233, 2.3006582)
+
+[node name="StuckMonitor" type="Node3D" parent="." unique_id=2098627901]
+script = ExtResource("23_pm3ni")
+player_path = NodePath("../Player")

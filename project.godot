@@ -65,13 +65,18 @@ window/stretch/aspect="expand"
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/blender_bridge/plugin.cfg", "res://addons/concave_collision_tuner/plugin.cfg", "res://addons/glb_tools/plugin.cfg", "res://addons/godot_ai/plugin.cfg", "res://addons/simplegrasstextured/plugin.cfg", "res://addons/sky_3d/plugin.cfg", "res://addons/terrain_3d/plugin.cfg", "res://addons/world_brush/plugin.cfg")
+enabled=PackedStringArray("res://addons/blender_bridge/plugin.cfg", "res://addons/concave_collision_tuner/plugin.cfg", "res://addons/glb_tools/plugin.cfg", "res://addons/godot_ai/plugin.cfg", "res://addons/simplegrasstextured/plugin.cfg", "res://addons/sky_3d/plugin.cfg", "res://addons/stuck_monitor/plugin.cfg", "res://addons/terrain_3d/plugin.cfg", "res://addons/world_brush/plugin.cfg")
 
 [input]
 
 ui_cancel={
 "deadzone": 0.5,
 "events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":4194305,"key_label":0,"unicode":27,"location":0,"echo":false,"script":null)
+]
+}
+stuck_monitor_toggle={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":76,"physical_keycode":0,"key_label":0,"unicode":0,"location":0,"echo":false,"script":null)
 ]
 }
 
