@@ -11,6 +11,7 @@ const LAUNCHER_SCRIPT := "res://addons/glb_tools/open_dialog.gd"
 const PREVIEW_SCRIPT := "res://addons/glb_tools/preview_window.gd"
 const FS_MENU_SCRIPT := "res://addons/glb_tools/filesystem_menu.gd"
 const SAMPLE_GLB := "res://assets/models/buildings/墓地场景3d模型.glb"
+const DECIMATE_SCRIPT := "res://addons/glb_tools/decimate.gd"
 const OUT_DIR := "user://glb_tools_test"
 
 
@@ -891,3 +892,292 @@ func _find_checkbox_containing(root: Node, text: String) -> CheckBox:
 		if r != null:
 			return r
 	return null
+
+# ------------------------------------------------------------------ 降模
+
+func test_decimate_lods() -> void:
+	var s := _script(DECIMATE_SCRIPT)
+	assert_true(s != null, "decimate.gd 加载失败（有解析错误？）")
+	if s == null:
+		return
+	var ps: PackedScene = load(SAMPLE_GLB)
+	var inst: Node = ps.instantiate()
+	track(inst)
+	var mesh: Mesh = null
+	var stack: Array = [inst]
+	while not stack.is_empty() and mesh == null:
+		var n: Node = stack.pop_back()
+		if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+			mesh = (n as MeshInstance3D).mesh
+		for c in n.get_children():
+			stack.append(c)
+	assert_true(mesh != null, "没找到网格")
+	if mesh == null:
+		return
+	var base_tris := int(s.call("tri_count", mesh))
+	var lods: Array = s.call("build_lods", mesh)
+	var ratios := PackedStringArray()
+	for item in lods:
+		ratios.append("%.1f%%" % (float(item["ratio"]) * 100.0))
+	print("[降模] 原始 %d 面；LOD 阶梯 %d 级：%s" % [base_tris, lods.size(), ", ".join(ratios)])
+	assert_true(lods.size() >= 2, "LOD 阶梯没生成（只有 %d 级）" % lods.size())
+	if lods.size() < 2:
+		return
+	# 比例必须递减，且最高一级确实比原始少面
+	assert_true(float(lods[0]["ratio"]) > float(lods[lods.size() - 1]["ratio"]), "LOD 比例没有递减")
+	assert_true(int(s.call("tri_count", lods[lods.size() - 1]["mesh"])) < base_tris,
+			"最后一级 LOD 没有减少三角面")
+	# pick 要挑到最接近目标的那一级
+	var picked: Dictionary = s.call("pick", lods, 0.3)
+	assert_true(not picked.is_empty(), "pick 没返回结果")
+	if not picked.is_empty():
+		var best := 1.0
+		for item in lods:
+			best = minf(best, absf(float(item["ratio"]) - 0.3))
+		assert_true(absf(float(picked["ratio"]) - 0.3) <= best + 0.0001, "pick 没挑到最接近的一级")
+
+
+func test_preview_window_decimate_realtime() -> void:
+	var s := _script(PREVIEW_SCRIPT)
+	if s == null:
+		return
+	var win: Window = s.new()
+	EditorInterface.get_base_control().add_child(win)
+	win.call("load_glb", SAMPLE_GLB)
+	var meshes: Array = win.call("_preview_meshes")
+	assert_true(meshes.size() > 0, "预览里没有网格")
+	if meshes.is_empty():
+		win.hide()
+		win.queue_free()
+		return
+
+	var before := 0
+	for mi in meshes:
+		before += int(_script(DECIMATE_SCRIPT).call("tri_count", (mi as MeshInstance3D).mesh))
+	# 拖动滑块到 30%
+	win.call("_on_ratio_changed", 30.0)
+	var after := 0
+	for mi in win.call("_preview_meshes"):
+		after += int(_script(DECIMATE_SCRIPT).call("tri_count", (mi as MeshInstance3D).mesh))
+	var label := String((win.get("_ratio_label") as Label).text)
+	print("[降模] 30%%：%d → %d 面 ｜ %s" % [before, after, label])
+	assert_true(after < before, "降模后三角面数没减少（%d → %d）" % [before, after])
+	assert_true(after > 0, "降模后网格变空了")
+	assert_true(label.contains("实际"), "没有如实显示实际达到的比例：%s" % label)
+
+	# 还原 100% 必须复原。注意滑块现在**有节流**：连着第二次改只会被记成"待应用"，
+	# 要等计时器到点（或手动催一下）才真正应用 —— 这里模拟计时器到点。
+	win.call("_on_ratio_changed", 100.0)
+	win.call("_apply_pending_ratio")
+	var restored := 0
+	for mi in win.call("_preview_meshes"):
+		restored += int(_script(DECIMATE_SCRIPT).call("tri_count", (mi as MeshInstance3D).mesh))
+	print("[降模] 还原 100%%：%d 面（原始 %d）" % [restored, before])
+	assert_eq(restored, before, "还原 100% 后没有复原")
+	win.hide()
+	win.queue_free()
+
+func test_preview_window_wireframe_toggle() -> void:
+	# 用户要求：加一个"切换显示三角网格"的按钮
+	var s := _script(PREVIEW_SCRIPT)
+	if s == null:
+		return
+	var win: Window = s.new()
+	EditorInterface.get_base_control().add_child(win)
+	win.call("load_glb", SAMPLE_GLB)
+	var vp: SubViewport = win.get("_viewport")
+	assert_true(vp != null, "没有预览视口")
+	if vp == null:
+		win.hide()
+		win.queue_free()
+		return
+	assert_eq(vp.debug_draw, Viewport.DEBUG_DRAW_DISABLED, "默认不该是线框模式")
+
+	# 找那个开关，模拟点击
+	var box := _find_checkbutton_containing(win, "三角网格")
+	assert_true(box != null, "没有「显示三角网格」这个开关")
+	if box == null:
+		win.hide()
+		win.queue_free()
+		return
+	box.button_pressed = true
+	box.toggled.emit(true)
+	print("[GLB 工具] 线框开：debug_draw=%d" % vp.debug_draw)
+	assert_eq(vp.debug_draw, Viewport.DEBUG_DRAW_WIREFRAME, "打开后没进线框模式")
+
+	# 关掉要还原
+	box.button_pressed = false
+	box.toggled.emit(false)
+	assert_eq(vp.debug_draw, Viewport.DEBUG_DRAW_DISABLED, "关闭后没还原")
+
+	# 重新载入模型不该把开关状态弄丢
+	box.button_pressed = true
+	box.toggled.emit(true)
+	win.call("load_glb", SAMPLE_GLB)
+	assert_eq(vp.debug_draw, Viewport.DEBUG_DRAW_WIREFRAME, "重新载入后线框状态丢了")
+
+	# 光断言属性不够：真渲染两帧，开/关线框的画面必须有差异（"存在但看不见"踩过）
+	if vp.get_parent() is SubViewportContainer:
+		(vp.get_parent() as SubViewportContainer).size = Vector2i(480, 360)
+	vp.debug_draw = Viewport.DEBUG_DRAW_WIREFRAME
+	RenderingServer.force_draw(false)
+	var img_on: Image = vp.get_texture().get_image()
+	vp.debug_draw = Viewport.DEBUG_DRAW_DISABLED
+	RenderingServer.force_draw(false)
+	var img_off: Image = vp.get_texture().get_image()
+	var diff := 0
+	for y in img_on.get_height():
+		for x in img_on.get_width():
+			if img_on.get_pixel(x, y) != img_off.get_pixel(x, y):
+				diff += 1
+				break
+		if diff > 0:
+			break
+	print("[GLB 工具] 线框开/关画面差异 = %s" % ("有（确实渲染出来了）" if diff > 0 else "无（没渲染！）"))
+	assert_true(diff > 0, "开关线框对画面没有影响 —— 线框没真正渲染")
+	win.hide()
+	win.queue_free()
+
+
+func _find_checkbutton_containing(root: Node, text: String) -> CheckButton:
+	if root is CheckButton and String((root as CheckButton).text).contains(text):
+		return root as CheckButton
+	for c in root.get_children():
+		var r := _find_checkbutton_containing(c, text)
+		if r != null:
+			return r
+	return null
+
+
+func test_preview_applies_glb_back() -> void:
+	# 用户反馈："选精确降模，滑块位置未更新" —— 根因是精确结果只写了文件、没套回预览，
+	# 于是滑块指着 30% 而画面还是原始的。这条测试守住"能把 glb 直接读进预览"这件事。
+	var s := _script(PREVIEW_SCRIPT)
+	var es := _script(EXPORT_SCRIPT)
+	if s == null or es == null:
+		return
+	var fx := _make_fixture()
+	var parts: Array = fx[1]
+	var win: Window = s.new()
+	EditorInterface.get_base_control().add_child(win)
+	win.call("load_glb", SAMPLE_GLB)
+
+	# 先导一个小 glb 出来（只有 2 个 Box），再用它替换预览
+	var dir := ProjectSettings.globalize_path(OUT_DIR)
+	DirAccess.make_dir_recursive_absolute(dir)
+	var path := dir.path_join("apply_back.glb")
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(path)
+	var res: Dictionary = es.call("export_nodes", [parts[0], parts[2]], path, true)
+	assert_true(bool(res.get("ok", false)), "预导出失败：" + str(res.get("message", "")))
+	if not bool(res.get("ok", false)):
+		win.hide()
+		win.queue_free()
+		return
+
+	var applied := int(win.call("_apply_glb_to_preview", path))
+	print("[GLB 工具] 套回预览：塞进 %d 个网格" % applied)
+	assert_eq(applied, 2, "应该正好塞进 2 个网格（导出的就是 2 个 Box）")
+	var meshes: Array = win.call("_preview_meshes")
+	assert_eq(meshes.size(), 2, "替换后预览里应该只剩这 2 个网格")
+	var ds := _script(DECIMATE_SCRIPT)
+	var tris := 0
+	for mi in meshes:
+		tris += int(ds.call("tri_count", (mi as MeshInstance3D).mesh))
+	print("[GLB 工具] 套回后预览三角面 = %d（2 个 Box 应为 24）" % tris)
+	assert_eq(tris, 24, "两个 Box 应该是 24 个三角面")
+	# 树也要跟着重建（否则左侧还列着旧模型的节点）
+	var tree: Tree = win.get("_tree")
+	assert_true(tree != null and tree.get_root() != null, "树没重建")
+	win.hide()
+	win.queue_free()
+
+func test_decimate_freezes_slider() -> void:
+	# 用户要求：点精确降模后冻结滑块（免得用户拖了滑块、画面却在算别的）
+	var s := _script(PREVIEW_SCRIPT)
+	if s == null:
+		return
+	var win: Window = s.new()
+	EditorInterface.get_base_control().add_child(win)
+	win.call("load_glb", SAMPLE_GLB)
+	var slider: HSlider = win.get("_ratio_slider")
+	var spin: SpinBox = win.get("_ratio_spin")
+	assert_true(slider != null and spin != null, "没找到降模滑块")
+	if slider == null or spin == null:
+		win.hide()
+		win.queue_free()
+		return
+	assert_true(slider.editable, "默认应该能拖")
+	win.call("_set_ratio_enabled", false)
+	var label := String((win.get("_ratio_label") as Label).text)
+	print("[降模] 冻结：slider.editable=%s spin.editable=%s label=%s" % [slider.editable, spin.editable, label])
+	assert_false(slider.editable, "冻结后滑块不该能拖")
+	assert_false(spin.editable, "冻结后数字框不该能编")
+	assert_true(label.contains("计算中"), "冻结时应该有提示：%s" % label)
+	win.call("_set_ratio_enabled", true)
+	assert_true(slider.editable, "解冻后应该能拖")
+	assert_true(spin.editable, "解冻后数字框应该能编")
+	win.hide()
+	win.queue_free()
+
+func test_exact_decimate_refuses_100_and_does_not_auto_export() -> void:
+	# 两条用户反馈：
+	# ① "精确降模一点没降" —— 滑块在 100% 时等于不降模，必须直接拒绝，别白跑一趟还生成个 100% 文件
+	# ② "你怎么直接导出了？" —— 精确降模不该自动往项目目录写文件
+	var s := _script(PREVIEW_SCRIPT)
+	if s == null:
+		return
+	var win: Window = s.new()
+	EditorInterface.get_base_control().add_child(win)
+	win.call("load_glb", SAMPLE_GLB)
+	var tree: Tree = win.get("_tree")
+	var item: TreeItem = tree.get_root().get_next_in_tree()
+	while item != null:
+		if item.get_cell_mode(0) == TreeItem.CELL_MODE_CHECK:
+			item.set_checked(0, true)
+			break
+		item = item.get_next_in_tree()
+
+	# 滑块默认 100% → 点精确降模必须被拒绝，且不能起线程
+	win.call("_on_exact_decimate")
+	var status := String((win.get("_status") as Label).text)
+	print("[降模] 100%% 时点精确降模 → %s" % status)
+	assert_true(status.contains("100%"), "100%% 时应该直接提示不降模：%s" % status)
+	assert_true(win.get("_decim_thread") == null, "100%% 时不该真的起后台任务")
+
+	# 源码里不该再出现"自动写进导出目录"的那段（改成只写临时文件 + 套预览）
+	var src := FileAccess.open(ProjectSettings.globalize_path(PREVIEW_SCRIPT), FileAccess.READ).get_as_text()
+	assert_false(src.contains("%s_%dpct.glb"),
+			"精确降模不该自动往项目目录写 <名字>_<比例>pct.glb")
+	assert_true(src.contains("要保存请用「导出勾选」按钮"), "应该提示用户用导出按钮保存")
+	win.hide()
+	win.queue_free()
+
+func test_decimate_slider_throttled() -> void:
+	# 用户要求"给滑块节流"：拖动时不要每动一格就重算（首次要建整模型 LOD 阶梯，可能几秒）
+	var s := _script(PREVIEW_SCRIPT)
+	if s == null:
+		return
+	var win: Window = s.new()
+	EditorInterface.get_base_control().add_child(win)
+	win.call("load_glb", SAMPLE_GLB)
+	var before := int(win.get("_apply_count"))
+	# 模拟拖动：连续 20 次变化
+	for i in range(20):
+		win.call("_on_ratio_changed", float(90 - i * 2))
+	var during := int(win.get("_apply_count")) - before
+	print("[降模] 连续改 20 次 → 实际应用 %d 次（节流前会是 20 次）" % during)
+	assert_true(during <= 2, "节流没生效：20 次变化触发了 %d 次重算" % during)
+	assert_true(win.get("_ratio_timer") != null, "没有节流计时器")
+	# 尾值保证：计时器到点后，最终值必须被应用
+	win.call("_apply_pending_ratio")
+	var after := int(win.get("_apply_count")) - before
+	print("[降模] 计时器到点后共应用 %d 次" % after)
+	assert_true(after > during, "到点后没有把最终值补上（尾值丢失）")
+	# 应用的是最后一次的值（90-19*2 = 52%）
+	assert_true(is_equal_approx(float(win.get("_ratio_slider").value), 52.0), "滑块值不对")
+	var label := String((win.get("_ratio_label") as Label).text)
+	print("[降模] 尾值应用后：%s" % label)
+	assert_true(label.contains("52") or label.contains("目标"), "标签没跟上最终比例：%s" % label)
+	win.hide()
+	win.queue_free()

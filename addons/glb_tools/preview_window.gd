@@ -8,6 +8,7 @@ extends Window
 ## 导出：合并成 1 个文件 / 每个节点单独一个文件
 
 const GlbExport := preload("res://addons/glb_tools/glb_export.gd")
+const Decimate := preload("res://addons/glb_tools/decimate.gd")
 
 const DEFAULT_DIR := "res://assets/models/exported"
 const SCREEN_RATIO := 0.8
@@ -29,6 +30,20 @@ var _path_label: Label
 var _search: LineEdit
 var _props: Tree                          # 右侧只读属性面板
 var _node_menu: PopupMenu                 # 节点树右键菜单
+var _wire_check: CheckButton              # 显示三角网格（线框）
+var _weld_check: CheckButton              # 导出后 weld 压顶点
+var _plain_export := false                # 本次导出是否跳过 weld（精确模式自己已经压过）
+var _last_reduction := 1.0                # 上一次精确降模的实际比例（用来如实校验）
+var _ratio_timer: Timer = null            # 滑块节流用
+var _pending_ratio := -1.0                # 待应用的（节流期间只记最新值）
+var _apply_count := 0                     # 实际应用了几次（下拉测试用）
+var _ratio_slider: HSlider                # 降模比例 1~100
+var _ratio_spin: SpinBox
+var _ratio_label: Label
+var _lod_cache := {}                      # 节点 -> LOD 阶梯（缓存，拖动时不用重算）
+var _originals := {}                      # 节点 -> 原始网格（还原用）
+var _decim_thread: Thread = null
+var _decim_result := {}
 var _pending_node: Node = null            # 右键点到的那个节点
 var _highlight_boxes: Array = []          # 被勾选节点的蓝色线框（可多个同时高亮）
 var _picker_in: EditorFileDialog
@@ -201,6 +216,48 @@ func _init() -> void:
 	prop_box.add_child(_props)
 
 	# ---- 底部 ----
+	# ---- 降模 ----
+	var drow := HBoxContainer.new()
+	drow.add_theme_constant_override("separation", 6)
+	var dlab := Label.new()
+	dlab.text = "降模比例"
+	drow.add_child(dlab)
+	_ratio_slider = HSlider.new()
+	_ratio_slider.min_value = 1
+	_ratio_slider.max_value = 100
+	_ratio_slider.step = 1
+	_ratio_slider.value = 100
+	_ratio_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ratio_slider.custom_minimum_size = Vector2(240, 0)
+	_ratio_slider.tooltip_text = "拖动即时预览（用 Godot 内置 LOD 阶梯，毫秒级）；要精确比例点右边按钮"
+	_ratio_slider.value_changed.connect(_on_ratio_changed)
+	drow.add_child(_ratio_slider)
+	_ratio_spin = SpinBox.new()
+	_ratio_spin.min_value = 1
+	_ratio_spin.max_value = 100
+	_ratio_spin.step = 1
+	_ratio_spin.value = 100
+	_ratio_spin.suffix = "%"
+	_ratio_spin.value_changed.connect(func(v: float) -> void:
+		if not is_equal_approx(_ratio_slider.value, v):
+			_ratio_slider.value = v)
+	drow.add_child(_ratio_spin)
+	var back_btn := Button.new()
+	back_btn.text = "还原 100%"
+	back_btn.pressed.connect(func() -> void: _ratio_slider.value = 100)
+	drow.add_child(back_btn)
+	var exact_btn := Button.new()
+	exact_btn.text = "精确降模（较慢）"
+	exact_btn.tooltip_text = "任意 1~100% 精确比例，保留 UV/法线/材质；走后台线程，几秒钟"
+	exact_btn.pressed.connect(_on_exact_decimate)
+	drow.add_child(exact_btn)
+	vb.add_child(drow)
+
+	_ratio_label = Label.new()
+	_ratio_label.clip_text = true
+	_ratio_label.add_theme_font_size_override("font_size", 11)
+	vb.add_child(_ratio_label)
+
 	var row := HBoxContainer.new()
 	var olab := Label.new()
 	olab.text = "输出到"
@@ -229,6 +286,11 @@ func _init() -> void:
 	export_btn.text = "导出勾选（合并成 1 个文件）"
 	export_btn.pressed.connect(_on_export.bind(false))
 	row2.add_child(export_btn)
+	_weld_check = CheckButton.new()
+	_weld_check.text = "导出后 weld 压顶点"
+	_weld_check.button_pressed = true
+	_weld_check.tooltip_text = "Godot 的 LOD 只换索引表、不动顶点表，导出的 glb 体积降不下来；勾上就再过一遍 weld 把重复/未引用顶点删掉（约 2~4 秒）"
+	row2.add_child(_weld_check)
 	var split_btn := Button.new()
 	split_btn.text = "每个节点单独一个文件"
 	split_btn.pressed.connect(_on_export.bind(true))
@@ -245,6 +307,12 @@ func _init() -> void:
 	reset_btn.text = "复位视角"
 	reset_btn.pressed.connect(func() -> void: _refit(_preview_root))
 	row2.add_child(reset_btn)
+	# 显示三角网格：用 Viewport 自带的线框调试绘制（一行开关，不用给每个网格换材质）
+	_wire_check = CheckButton.new()
+	_wire_check.text = "显示三角网格"
+	_wire_check.tooltip_text = "切换线框显示，方便看三角面密度（降模时对着看很直观）"
+	_wire_check.toggled.connect(_on_wireframe_toggled)
+	row2.add_child(_wire_check)
 	_status = Label.new()
 	_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_status.clip_text = true
@@ -252,8 +320,15 @@ func _init() -> void:
 	vb.add_child(row2)
 
 	# 文字颜色写死浅灰，主题再怎么变都看得清
-	_paint_text(panel)
+	# 滑块节流：拖动时不要每动一格就重算。首次要构建整模型的 LOD 阶梯（可能几秒），
+	# 重算太频繁会卡；但也不能纯延迟否则手感发木 —— 所以"立刻应用一次 + 之后限频"。
+	_ratio_timer = Timer.new()
+	_ratio_timer.one_shot = true
+	_ratio_timer.wait_time = 0.12
+	_ratio_timer.timeout.connect(_apply_pending_ratio)
+	add_child(_ratio_timer)
 
+	_paint_text(panel)
 
 # ------------------------------------------------------------------ 加载
 
@@ -819,6 +894,10 @@ func _on_export(split: bool) -> void:
 		_status.text = str(res.get("message", res))
 		if bool(res.get("ok", false)):
 			_refresh_fs(path)
+			# Godot 的 LOD 只换索引表、不动顶点表：导出后再 weld 一遍，体积才真的变小
+			if _weld_check != null and _weld_check.button_pressed and not _plain_export \
+					and _ratio_slider != null and _ratio_slider.value < 99.5:
+				_start_weld(path)
 		return
 
 	var stem := path.get_file().get_basename()
@@ -1016,3 +1095,283 @@ func _open_export_dialog(nodes: Array) -> void:
 	# 把预览窗口自己作为父节点传进去：确认框挂在预览窗口下，预览窗口不会被顶掉/关掉
 	s.call("open_for", nodes, self)
 	_status.text = "已弹出导出确认框（%d 个节点）" % nodes.size()
+
+# ------------------------------------------------------------------ 降模
+
+## 拖动滑块：即时预览（走 Godot 内置 LOD 阶梯，毫秒级），并把实际达到的比例如实显示
+func _on_ratio_changed(v: float) -> void:
+	if _ratio_spin != null and not is_equal_approx(_ratio_spin.value, v):
+		_ratio_spin.value = v
+	_plain_export = false          # 用户又动了滑块，导出时该重新 weld
+	_pending_ratio = v / 100.0
+	if _ratio_timer == null:
+		_apply_decimation(_pending_ratio)
+		_pending_ratio = -1.0
+		return
+	if not _ratio_timer.is_stopped():
+		return                     # 计时器还在跑：只记住最新值，到点统一应用（节流）
+	_apply_pending_ratio()          # 第一下立刻出效果，保证手感
+	_ratio_timer.start()
+
+
+## 应用"待处理"的比例（计时器到点 / 手动调用）。带尾值保证：松手后的最终值一定会被应用。
+func _apply_pending_ratio() -> void:
+	if _pending_ratio < 0.0:
+		return
+	var target := _pending_ratio
+	_pending_ratio = -1.0
+	_apply_decimation(target)
+
+
+## 后台任务（精确降模 / 导出后 weld）期间**冻结滑块**，免得用户拖了滑块、画面却在算别的
+func _set_ratio_enabled(on: bool) -> void:
+	if _ratio_slider != null:
+		_ratio_slider.editable = on
+	if _ratio_spin != null:
+		_ratio_spin.editable = on
+	if not on and _ratio_label != null and not _ratio_label.text.begins_with("（计算中"):
+		_ratio_label.text = "（计算中，滑块已冻结）" + _ratio_label.text
+
+
+func _preview_meshes() -> Array:
+	var out: Array = []
+	if _preview_root == null:
+		return out
+	var stack: Array = [_preview_root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+			out.append(n)
+		for c in n.get_children():
+			stack.append(c)
+	return out
+
+
+func _apply_decimation(target: float) -> void:
+	_apply_count += 1
+	var meshes := _preview_meshes()
+	if meshes.is_empty():
+		return
+
+	if target >= 0.999:
+		_restore_meshes()
+		if _ratio_label != null:
+			_ratio_label.text = "当前：原始 100%%（%d 个网格）" % meshes.size()
+		return
+
+	var total_before := 0
+	var total_after := 0
+	var levels_used := {}
+	for mi in meshes:
+		var node := mi as MeshInstance3D
+		if not _originals.has(node):
+			_originals[node] = node.mesh
+		var base: Mesh = _originals[node]
+		total_before += Decimate.tri_count(base)
+		if not _lod_cache.has(node):
+			_lod_cache[node] = Decimate.build_lods(base)       # 只算一次，拖动时不重算
+		var picked: Dictionary = Decimate.pick(_lod_cache[node], target)
+		if picked.is_empty():
+			continue
+		node.mesh = picked["mesh"]
+		total_after += Decimate.tri_count(picked["mesh"])
+		levels_used[snappedf(float(picked["ratio"]), 0.001)] = true
+
+	var actual := float(total_after) / float(total_before) if total_before > 0 else 1.0
+	if _ratio_label != null:
+		_ratio_label.text = ("目标 %d%% → 实际 %.1f%%（%d → %d 面，%d 级 LOD 覆盖 %d 个比例台阶）"
+				% [roundi(target * 100.0), actual * 100.0, total_before, total_after,
+					levels_used.size(), levels_used.size()])
+
+
+func _restore_meshes() -> void:
+	for node in _originals.keys():
+		if node != null and is_instance_valid(node):
+			node.mesh = _originals[node]
+
+
+## 精确降模：先把"原始网格"导成临时 glb，再交给 Python 工具按精确比例降，
+## 结果写到导出目录，并在状态里报告（工具实测 30% → 实际 29.965%，精度足够）
+func _on_exact_decimate() -> void:
+	if _decim_thread != null and _decim_thread.is_started():
+		_status.text = "上一次精确降模还在算…"
+		return
+	var picked := _checked_nodes()
+	if picked.is_empty():
+		_status.text = "先勾选要降模的节点"
+		return
+	var ratio := _ratio_slider.value / 100.0
+	if ratio >= 0.995:
+		_status.text = "当前比例是 100%，等于不降模 —— 先把滑块拖到你要的比例再点这个"
+		return
+	_restore_meshes()                       # 必须用原始网格，否则会叠加降模
+
+	var dir := ProjectSettings.globalize_path("user://glb_tools/decimate")
+	DirAccess.make_dir_recursive_absolute(dir)
+	var src := dir.path_join("decimate_in.glb")
+	var dst := dir.path_join("decimate_out.glb")
+	var report := dir.path_join("decimate_report.txt")
+	if FileAccess.file_exists(dst):
+		DirAccess.remove_absolute(dst)
+	var res: Dictionary = GlbExport.export_nodes(picked, src, true)
+	if not bool(res.get("ok", false)):
+		_status.text = "准备输入失败：" + str(res.get("message", ""))
+		return
+	var args := Decimate.exact_args(src, dst, ratio,
+			ProjectSettings.globalize_path("res://"), report)
+	_decim_result = {"kind": "exact", "dst": dst, "ratio": ratio, "report": report, "src": src}
+	_plain_export = true              # 精确模式的产物已经压过顶点，跳过导出后的 weld
+	_decim_thread = Thread.new()
+	_decim_thread.start(_decim_worker.bind(args))
+	_set_ratio_enabled(false)          # 冻结滑块
+	set_process(true)
+	_status.text = "精确降模中（目标 %.0f%%）…几秒钟" % (ratio * 100.0)
+
+
+func _decim_worker(args: Array) -> void:
+	var out: Array = []
+	var err := ""
+	for cmd in ["python", "python3", "py"]:
+		out.clear()
+		if OS.execute(cmd, args, out, true) == 0:
+			err = ""
+			break
+		err = " ".join(out)
+	if not err.is_empty():
+		_decim_result["error"] = err
+
+
+func _process(_delta: float) -> void:
+	if _decim_thread == null or not _decim_thread.is_started():
+		set_process(false)
+		return
+	if _decim_thread.is_alive():
+		return
+	_decim_thread.wait_to_finish()
+	_decim_thread = null
+	set_process(false)
+	_set_ratio_enabled(true)          # 解冻滑块
+	if String(_decim_result.get("kind", "")) == "weld":
+		_finish_weld()
+		return
+	var dst := String(_decim_result.get("dst", ""))
+	if _decim_result.has("error"):
+		_status.text = "精确降模失败：" + String(_decim_result["error"])
+		return
+	var text := Decimate.read_report(String(_decim_result.get("report", "")))
+	if text.is_empty():
+		text = "完成"
+	# **不自动往项目里写文件**（用户问过"你怎么直接导出了？"）：
+	# 精确结果只留在 user:// 的临时目录里并套用到预览；要保存就用下面的「导出勾选」按钮。
+	var before_tris := 0
+	for mi in _preview_meshes():
+		before_tris += Decimate.tri_count((mi as MeshInstance3D).mesh)
+	var applied := _apply_glb_to_preview(dst)
+	var after_tris := 0
+	for mi in _preview_meshes():
+		after_tris += Decimate.tri_count((mi as MeshInstance3D).mesh)
+	_last_reduction = (float(after_tris) / float(before_tris)) if before_tris > 0 else 1.0
+	print("[降模] 精确模式实际降幅：%d -> %d 面（%.1f%%）" % [before_tris, after_tris, _last_reduction * 100.0])
+	_ratio_label.text = ("精确结果已套用到预览：目标 %d%% ｜ %d 个网格 ｜ %s"
+			% [roundi(_ratio_slider.value), applied, text])
+
+	# 如实校验降幅：工具可能因为网格不可简化而几乎没降，这时候必须说出来
+	var ratio_got := _last_reduction
+	if ratio_got >= 0.95:
+		_status.text = "注意：实际几乎没降（%.1f%%）—— %s。网格可能不可简化，换个节点或比例再试" % [
+				ratio_got * 100.0, text]
+	else:
+		_status.text = "%s ｜ 结果已套用到预览（要保存请用「导出勾选」按钮）" % text
+
+
+## 把某个 glb 文件直接读进预览（用运行时 glTF 读取器：刚写出的文件还没被 Godot 导入，
+## load() 拿不到）。返回塞进预览的网格数。
+func _apply_glb_to_preview(path: String) -> int:
+	if _preview_root == null or not FileAccess.file_exists(path):
+		return 0
+	var doc := GLTFDocument.new()
+	var st := GLTFState.new()
+	if doc.append_from_file(path, st) != OK:
+		return 0
+	var scene: Node = doc.generate_scene(st)
+	if scene == null:
+		return 0
+
+	# 清掉旧的预览网格（连同高亮）
+	_restore_meshes()
+	_originals.clear()
+	_lod_cache.clear()
+	for h in _highlight_boxes:
+		if h != null and is_instance_valid(h):
+			h.queue_free()
+	_highlight_boxes.clear()
+	for c in _preview_root.get_children():
+		_preview_root.remove_child(c)
+		c.queue_free()
+
+	# ImporterMeshInstance3D 是导入中间态，渲染要用 MeshInstance3D + ArrayMesh
+	var count := 0
+	var stack: Array = [scene]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n.get_class() == "ImporterMeshInstance3D":
+			var imesh = n.get("mesh")
+			if imesh is ImporterMesh:
+				var mi := MeshInstance3D.new()
+				mi.name = String(n.name)
+				mi.mesh = (imesh as ImporterMesh).get_mesh()
+				var src_xf: Transform3D = (n as Node3D).global_transform
+				mi.transform = _preview_root.global_transform.affine_inverse() * src_xf
+				var mat = n.get("material_override")
+				if mat is Material:
+					mi.material_override = mat
+				_preview_root.add_child(mi)
+				count += 1
+		for c in n.get_children():
+			stack.append(c)
+	scene.free()
+	_rebuild_tree()
+	_refit(_preview_root)
+	return count
+
+# ------------------------------------------------------------------ 线框显示
+
+## 切换"显示三角网格"（线框）。用 Viewport.debug_draw —— Godot 的材质没有线框开关，
+## 这是最省事也最稳的路子；状态会被 load_glb 保留（它不碰 viewport 的这个属性）。
+func _on_wireframe_toggled(on: bool) -> void:
+	if _viewport == null:
+		return
+	_viewport.debug_draw = Viewport.DEBUG_DRAW_WIREFRAME if on else Viewport.DEBUG_DRAW_DISABLED
+	_status.text = "线框显示：%s" % ("开（显示三角网格）" if on else "关（正常着色）")
+
+# ------------------------------------------------------------------ 导出后 weld
+
+## 导出后压顶点（后台线程）。滑块在算期间冻结，见 _set_ratio_enabled。
+func _start_weld(path: String) -> void:
+	if _decim_thread != null and _decim_thread.is_started():
+		return
+	var report := ProjectSettings.globalize_path("user://glb_tools/decimate/weld_report.txt")
+	DirAccess.make_dir_recursive_absolute(report.get_base_dir())
+	var args := Decimate.weld_args(path, ProjectSettings.globalize_path("res://"), report)
+	_decim_result = {"kind": "weld", "path": path, "report": report}
+	_decim_thread = Thread.new()
+	_decim_thread.start(_decim_worker.bind(args))
+	_set_ratio_enabled(false)
+	set_process(true)
+	_status.text = "正在 weld 压顶点（约 2~4 秒）…"
+
+
+func _finish_weld() -> void:
+	var path := String(_decim_result.get("path", ""))
+	if _decim_result.has("error"):
+		_status.text = "weld 失败：" + String(_decim_result["error"])
+		return
+	var text := Decimate.read_report(String(_decim_result.get("report", "")))
+	var size := 0
+	if FileAccess.file_exists(path):
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f != null:
+			size = f.get_length()
+			f.close()
+	_refresh_fs(path)
+	_status.text = "%s ｜ %s（%d 字节）" % [text, path.get_file(), size]
