@@ -65,12 +65,16 @@ static func build(main: Node3D, terrain: TerrainSystem, vegetation: VegetationSy
 	return report
 
 
-## 出生点：读 Main/SpawnPoint（缺失则退回原点上方）
+## 出生点：读 Main/SpawnPoint（缺失则退回场景里 Player 节点摆放的坐标）
 ## SpawnPoint 给出的是角色朝向；相机 yaw 由 aim_from_player() 反推，保持镜头在角色身后。
 static func place_spawn(main: Node3D, terrain: TerrainSystem, player: Player,
 		camera_rig: CameraRig) -> bool:
 	var sp := main.get_node_or_null("SpawnPoint") as SpawnPoint
-	var pos := Vector3(6.0, terrain.get_height_at(6.0, 11.0) + 2.0, 11.0)
+	# 兜底别再写死坐标：用场景里 Player 节点被摆放的位置
+	# （原来写死 (6.0, 11.0)，改出生点还得回来改代码）
+	var anchor: Vector3 = player.global_position
+	var hover := 2.0
+	var pos := Vector3(anchor.x, terrain.get_height_at(anchor.x, anchor.z) + hover, anchor.z)
 	var yaw := 0.0
 	var pitch := -0.16
 	if sp != null:

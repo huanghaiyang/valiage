@@ -1,0 +1,5 @@
+[gd_scene format=3 uid="uid://cln0glg5no26n"]
+
+[ext_resource type="PackedScene" uid="uid://c0mjvxywby6va" path="res://assets/models/flower/奇幻花朵3d模型_mid.glb" id="1_hqkjl"]
+
+[node name="奇幻花朵3d模型_mid" unique_id=483678295 instance=ExtResource("1_hqkjl")]
