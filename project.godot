@@ -54,6 +54,7 @@ StaffSystem="*res://scripts/staff_system.gd"
 Elders="*res://scripts/world/elders.gd"
 SimpleGrass="*uid://bfq0snth8sj3h"
 Quality="*res://scripts/quality/quality_manager.gd"
+GameSettings="*res://scripts/settings/game_settings.gd"
 
 [display]
 
