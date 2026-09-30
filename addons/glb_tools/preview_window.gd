@@ -15,9 +15,18 @@ const SCREEN_RATIO := 0.8
 ## 导出确认框的启动器。**运行时 load**，不用 preload：open_dialog.gd 已经 preload 了本脚本，
 ## 反向再 preload 会形成循环引用
 const LAUNCHER := "res://addons/glb_tools/open_dialog.gd"
+const PreviewExtensions := preload("res://addons/glb_tools/preview_extensions.gd")
 
 var _path := ""
 var _preview_root: Node3D = null
+var _extensions: Array = []               ## 已加载的扩展 [{file, instance}]
+var _ext_panels: Array = []               ## 扩展面板
+var _ext_row: HBoxContainer = null
+var _body: VBoxContainer = null          ## 窗口内容容器（_init 里那个 vb）
+var _eye_open: ImageTexture = null        ## 眼睛图标：睁开
+var _eye_closed: ImageTexture = null      ## 眼睛图标：闭合
+var _ext_include_hidden := false          ## 是否也加载 _ 开头的示例扩展
+var _ext_last_selected := ""
 var _tree: Tree
 var _viewport: SubViewport
 var _camera: Camera3D
@@ -95,6 +104,7 @@ func _init() -> void:
 	panel.add_child(margin)
 
 	var vb := VBoxContainer.new()
+	_body = vb
 	vb.add_theme_constant_override("separation", 6)
 	margin.add_child(vb)
 
@@ -146,16 +156,20 @@ func _init() -> void:
 	_tree = Tree.new()
 	# 三列：第 0 列只放勾选框（窄、无文字），第 1 列才是节点名 —— 这样"点名字"只选中/高亮，
 	# 不会像以前那样连带把勾选也切了（Godot 的 CHECK 单元格整格可点，只能靠拆列分开）
-	_tree.columns = 3
+	_tree.columns = 4
 	_tree.set_column_title(0, "")
 	_tree.set_column_title(1, "节点")
 	_tree.set_column_title(2, "信息")
+	_tree.set_column_title(3, "显示")
 	_tree.column_titles_visible = true
 	_tree.set_column_expand(0, false)
 	_tree.set_column_custom_minimum_width(0, 36)
 	_tree.set_column_expand(1, true)
 	_tree.set_column_expand(2, false)
 	_tree.set_column_custom_minimum_width(2, 150)
+	# 第 3 列：显示/隐藏勾选框（放在列表末尾，直接点，不用翻右键菜单）
+	_tree.set_column_expand(3, false)
+	_tree.set_column_custom_minimum_width(3, 34)
 	_tree.select_mode = Tree.SELECT_ROW
 	_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_tree.item_selected.connect(_on_item_selected)
@@ -168,6 +182,9 @@ func _init() -> void:
 	_node_menu.add_item("导出勾选的节点…", 1)
 	_node_menu.add_separator()
 	_node_menu.add_item("聚焦此节点", 2)
+	_node_menu.add_separator()
+	_node_menu.add_item("隐藏此节点", 3)
+	_node_menu.add_item("全部显示", 4)
 	_node_menu.id_pressed.connect(_on_node_menu)
 	add_child(_node_menu)
 
@@ -329,6 +346,7 @@ func _init() -> void:
 	add_child(_ratio_timer)
 
 	_paint_text(panel)
+	_setup_extensions()
 
 # ------------------------------------------------------------------ 加载
 
@@ -444,6 +462,12 @@ func _fill(parent_item: TreeItem, n: Node) -> void:
 	item.set_metadata(0, n)
 	if checkable:
 		item.set_cell_mode(0, TreeItem.CELL_MODE_CHECK)   # 勾选框独占第 0 列
+		# 第 3 列：显示/隐藏 —— 用**眼睛图标**：睁开=可见，闭合=已隐藏（用户要求）。
+		# 图标是本文件程序化画的，不依赖编辑器主题图标名。
+		item.set_cell_mode(3, TreeItem.CELL_MODE_ICON)
+		item.set_icon_max_width(3, 20)
+		item.set_icon(3, _eye_icon((n as Node3D).visible if n is Node3D else true))
+		item.set_tooltip_text(3, "点一下：睁开=在预览里显示；闭合=隐藏（隐藏的不会被导出）")
 		item.set_editable(0, true)
 		item.set_checked(0, false)
 	# 名字放第 1 列：点它不会触发勾选（第 0 列那种整格可点的副作用）
@@ -566,6 +590,7 @@ func _select_node_in_tree(n: Node) -> void:
 # ------------------------------------------------------------------ 高亮
 
 func _on_item_edited() -> void:
+	# 第 3 列是图标单元（CELL_MODE_ICON），不会触发 item_edited，点击由 _on_tree_input 处理
 	# 勾选框被点：立刻重画高亮
 	_rebuild_highlights()
 
@@ -876,6 +901,7 @@ func _refresh_fs(path: String) -> void:
 
 
 func _on_export(split: bool) -> void:
+	_forward_before_export()
 	var picked := _checked_nodes()
 	if picked.is_empty():
 		_status.text = "先在左边勾选要导出的节点"
@@ -1045,6 +1071,17 @@ func _v3(v: Vector3) -> String:
 # ------------------------------------------------------------------ 节点右键菜单
 
 func _on_tree_input(ev: InputEvent) -> void:
+	# 第 3 列的眼睛图标：左键点一下切换显示/隐藏。
+	# CELL_MODE_ICON 不触发 item_edited，所以必须自己处理点击。
+	if ev is InputEventMouseButton:
+		var mb := ev as InputEventMouseButton
+		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+			var hit := _tree.get_item_at_position(mb.position)
+			if hit != null and _tree.get_column_at_position(mb.position) == 3:
+				var nd = hit.get_metadata(0)
+				if nd is Node3D:
+					_set_node_visible(hit, nd, not (nd as Node3D).visible)
+					return
 	if not (ev is InputEventMouseButton):
 		return
 	var mb := ev as InputEventMouseButton
@@ -1067,6 +1104,18 @@ func _show_node_menu(item: TreeItem, at: Vector2) -> void:
 	var checked := _checked_nodes()
 	_node_menu.set_item_text(1, "导出勾选的 %d 个节点…" % checked.size())
 	_node_menu.set_item_disabled(1, checked.is_empty())
+	# 隐藏/显示：按该节点当前状态改文字（在预览里隐藏只是"看不见"，不改资源）
+	var vis := true
+	if n is Node3D:
+		vis = (n as Node3D).visible
+	_node_menu.set_item_text(3, "隐藏此节点" if vis else "显示此节点")
+	_node_menu.set_item_disabled(3, not (n is Node3D))
+	var hidden_any := false
+	for c in _preview_meshes():                     # 粗略判断有没有隐藏的（够用）
+		if not c.visible:
+			hidden_any = true
+			break
+	_node_menu.set_item_disabled(4, not hidden_any)
 	# PopupMenu 是 Window：坐标要用**屏幕坐标**，给控件局部坐标会飘到别处（用户反馈过）
 	_node_menu.popup(Rect2i(Vector2i(_tree.get_screen_position() + at), Vector2i.ZERO))
 
@@ -1081,6 +1130,10 @@ func _on_node_menu(id: int) -> void:
 		2:
 			if _pending_node is Node3D:
 				_refit(_pending_node)
+		3:
+			_toggle_node_visible(_pending_node)
+		4:
+			_show_all_nodes()
 
 
 ## 打开"导出确认框"（和场景里选中节点导出用的是同一个窗口）
@@ -1375,3 +1428,190 @@ func _finish_weld() -> void:
 			f.close()
 	_refresh_fs(path)
 	_status.text = "%s ｜ %s（%d 字节）" % [text, path.get_file(), size]
+
+# ------------------------------------------------------------------ 扩展点
+
+## 扫描 extensions/ 并挂上界面。可重复调用（会先清掉上一次的）。
+func _setup_extensions() -> void:
+	if _ext_row != null and is_instance_valid(_ext_row):
+		_ext_row.queue_free()
+	_ext_row = null
+	for p in _ext_panels:
+		if p != null and is_instance_valid(p):
+			p.queue_free()
+	_ext_panels.clear()
+	_extensions.clear()
+
+	_extensions = PreviewExtensions.scan(_ext_include_hidden)
+	if _extensions.is_empty():
+		return
+	_ext_row = HBoxContainer.new()
+	_ext_row.add_theme_constant_override("separation", 6)
+	var lab := Label.new()
+	lab.text = "扩展"
+	_ext_row.add_child(lab)
+	for item in _extensions:
+		var ext = item["instance"]
+		var panel: Control = null
+		if ext.has_method("build_panel"):
+			panel = ext.build_panel(self)
+		if panel != null:
+			panel.visible = false
+			_body.add_child(panel)
+			_ext_panels.append(panel)
+		var btn := Button.new()
+		btn.toggle_mode = true
+		btn.text = String(ext.ext_name()) if ext.has_method("ext_name") else String(item["file"])
+		btn.tooltip_text = String(ext.ext_description()) if ext.has_method("ext_description") else ""
+		if panel == null:
+			btn.disabled = true                     # 纯钩子型扩展（没有界面）
+		else:
+			var target: Control = panel
+			btn.toggled.connect(func(on: bool) -> void: target.visible = on)
+		_ext_row.add_child(btn)
+	_body.add_child(_ext_row)
+
+	# 选中转发用独立计时器：不依赖 _process（它可能提前 return）
+	var t := Timer.new()
+	t.wait_time = 0.2
+	t.autostart = true
+	t.timeout.connect(_forward_selection)
+	add_child(t)
+
+
+func _forward_selection() -> void:
+	var n := _selected_node()
+	var key := "" if n == null else String(n.get_path())
+	if key == _ext_last_selected:
+		return
+	_ext_last_selected = key
+	for item in _extensions:
+		var ext = item["instance"]
+		if ext.has_method("on_node_selected"):
+			ext.on_node_selected(n)
+
+
+func _forward_before_export() -> void:
+	var nodes := _checked_nodes()
+	for item in _extensions:
+		var ext = item["instance"]
+		if ext.has_method("on_before_export"):
+			ext.on_before_export(nodes)
+
+# ------------------------------------------------------------------ 节点显示/隐藏
+
+## 切换一个节点在预览里的可见性。
+## 注意：隐藏时**顺带取消勾选** —— 勾选就是"要导出的"，取消掉才能保证所见即所得
+## （否则会出现"看不见却被导出"的诡异结果）。显示回来时不会自动重新勾选，由用户决定。
+func _toggle_node_visible(node: Node) -> void:
+	if not (node is Node3D):
+		_status.text = "这个节点不能隐藏（不是 Node3D）"
+		return
+	_set_node_visible(null, node, not (node as Node3D).visible)
+
+
+## 设置某个节点的可见性（列表第 3 列与右键菜单都走这里，行为一致）。
+## 隐藏时**顺带取消第 0 列（导出）勾选** —— 保证"看不见的不会被导出"。
+## item 为 null 表示调用方没有树行（右键菜单），会自行去树里找。
+func _set_node_visible(item: TreeItem, node: Node, on: bool) -> void:
+	if not (node is Node3D):
+		_status.text = "这个节点不能隐藏（不是 Node3D）"
+		return
+	(node as Node3D).visible = on
+	if item != null:
+		item.set_icon(3, _eye_icon(on))
+		if not on and item.is_checked(0):
+			item.set_checked(0, false)
+	else:
+		_set_tree_eye(node, on)
+		if not on:
+			_set_tree_checked(node, false)
+	if on:
+		_status.text = "已显示：%s" % node.name
+	else:
+		_status.text = "已隐藏：%s（第 3 列取消勾选；导出勾选也已取消，不会导出）" % node.name
+
+
+## 把预览里所有节点恢复显示
+func _show_all_nodes() -> void:
+	var count := 0
+	if _preview_root != null:
+		var stack: Array = [_preview_root]
+		while not stack.is_empty():
+			var n: Node = stack.pop_back()
+			if n is Node3D and not (n as Node3D).visible:
+				(n as Node3D).visible = true
+				count += 1
+			for c in n.get_children():
+				stack.append(c)
+	if _tree != null and _tree.get_root() != null:
+		var it: TreeItem = _tree.get_root().get_next_in_tree()
+		while it != null:
+			if it.get_cell_mode(3) == TreeItem.CELL_MODE_ICON:
+				it.set_icon(3, _eye_icon(true))
+			it = it.get_next_in_tree()
+	_rebuild_highlights()
+	_status.text = "已恢复显示 %d 个节点" % count
+
+
+## 在左侧树里找到某个节点对应的行，并设置它的勾选状态
+func _set_tree_checked(node: Node, on: bool, column := 0) -> void:
+	if _tree == null or _tree.get_root() == null:
+		return
+	var item: TreeItem = _tree.get_root().get_next_in_tree()
+	while item != null:
+		if item.get_cell_mode(0) == TreeItem.CELL_MODE_CHECK and item.get_metadata(0) == node:
+			if item.is_checked(column) != on:
+				item.set_checked(column, on)
+			return
+		item = item.get_next_in_tree()
+
+## 眼睛图标：睁开（绿）= 可见；闭合（红）= 已隐藏。
+## 自己画，不去猜编辑器主题里的图标名（那种名字换版本就没了）。
+func _eye_icon(open: bool) -> Texture2D:
+	if _eye_open == null:
+		_eye_open = _make_eye(true)
+		_eye_closed = _make_eye(false)
+	return _eye_open if open else _eye_closed
+
+
+func _make_eye(open: bool) -> ImageTexture:
+	var s := 18
+	var img := Image.create(s, s, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var col := Color(0.45, 0.9, 0.5) if open else Color(0.9, 0.4, 0.4)
+	var cx := float(s - 1) * 0.5
+	var cy := float(s - 1) * 0.5
+	if open:
+		for y in s:
+			for x in s:
+				var dx := (float(x) - cx) / 7.5
+				var dy := (float(y) - cy) / 4.5
+				var d := dx * dx + dy * dy
+				if d <= 1.0:
+					if d > 0.45:
+						img.set_pixel(x, y, col)                       # 眼眶
+					elif d <= 0.14:
+						img.set_pixel(x, y, Color(0.08, 0.08, 0.08))   # 瞳孔
+	else:
+		for x in s:
+			var tt := (float(x) - cx) / 7.5
+			if absf(tt) <= 1.0:
+				var yy := int(round(cy + 3.0 - 3.2 * (1.0 - tt * tt)))
+				for k in range(0, 2):
+					var y2 := yy + k
+					if y2 >= 0 and y2 < s:
+						img.set_pixel(x, y2, col)
+	return ImageTexture.create_from_image(img)
+
+
+## 在树里按节点找行，刷新第 3 列的眼睛图标
+func _set_tree_eye(node: Node, open: bool) -> void:
+	if _tree == null or _tree.get_root() == null:
+		return
+	var item: TreeItem = _tree.get_root().get_next_in_tree()
+	while item != null:
+		if item.get_cell_mode(0) == TreeItem.CELL_MODE_CHECK and item.get_metadata(0) == node:
+			item.set_icon(3, _eye_icon(open))
+			return
+		item = item.get_next_in_tree()

@@ -7,7 +7,7 @@ extends McpTestSuite
 const BLENDER_SCRIPT := "res://addons/blender_bridge/blender.gd"
 const DIALOG_SCRIPT := "res://addons/blender_bridge/settings_dialog.gd"
 const MENU_SCRIPT := "res://addons/blender_bridge/filesystem_menu.gd"
-const SAMPLE_GLB := "res://assets/models/buildings/墓地场景3d模型.glb"
+const SAMPLE_GLB := "res://assets/models/buildings/墓地遗迹.glb"
 
 
 func suite_name() -> String:

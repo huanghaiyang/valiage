@@ -10,7 +10,7 @@ const DIALOG_SCRIPT := "res://addons/glb_tools/export_dialog.gd"
 const LAUNCHER_SCRIPT := "res://addons/glb_tools/open_dialog.gd"
 const PREVIEW_SCRIPT := "res://addons/glb_tools/preview_window.gd"
 const FS_MENU_SCRIPT := "res://addons/glb_tools/filesystem_menu.gd"
-const SAMPLE_GLB := "res://assets/models/buildings/墓地场景3d模型.glb"
+const SAMPLE_GLB := "res://assets/models/buildings/墓地遗迹.glb"   # 用户指定用它做测试样本
 const DECIMATE_SCRIPT := "res://addons/glb_tools/decimate.gd"
 const OUT_DIR := "user://glb_tools_test"
 
@@ -675,7 +675,7 @@ func test_preview_window_check_column_separate() -> void:
 		win.hide()
 		win.queue_free()
 		return
-	assert_eq(tree.columns, 3, "树应该是 3 列（勾选框 / 名称 / 信息）")
+	assert_eq(tree.columns, 4, "树应该是 4 列（导出勾选 / 名称 / 信息 / 显示）")
 
 	var item: TreeItem = tree.get_root().get_next_in_tree()
 	var found: TreeItem = null
@@ -1179,5 +1179,214 @@ func test_decimate_slider_throttled() -> void:
 	var label := String((win.get("_ratio_label") as Label).text)
 	print("[降模] 尾值应用后：%s" % label)
 	assert_true(label.contains("52") or label.contains("目标"), "标签没跟上最终比例：%s" % label)
+	win.hide()
+	win.queue_free()
+
+# ------------------------------------------------------------------ 预览窗口扩展点
+
+const EXT_BASE := "res://addons/glb_tools/preview_extension.gd"
+const EXT_LOADER := "res://addons/glb_tools/preview_extensions.gd"
+
+
+func _all_kids(root: Node) -> Array:
+	var out: Array = []
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		out.append(n)
+		for c in n.get_children():
+			stack.append(c)
+	return out
+
+
+func test_extension_api_and_scan() -> void:
+	# 用户问"真的无法给 glb 预览页面添加插件？" —— 答案是能：extensions/ 里放一个继承基类的 .gd 即生效
+	var base := _script(EXT_BASE)
+	assert_true(base != null, "扩展基类加载失败")
+	if base != null:
+		var ext = base.new()
+		assert_true(ext.has_method("ext_name"), "基类缺少 ext_name 接口")
+		assert_true(ext.build_panel(null) == null, "基类默认不该有界面")
+		ext.on_node_selected(null)
+		ext.on_before_export([])
+	var loader := _script(EXT_LOADER)
+	assert_true(loader != null, "扩展加载器加载失败")
+	if loader == null:
+		return
+	var hidden: Array = loader.call("scan", false)
+	var all: Array = loader.call("scan", true)
+	print("[GLB 扩展] 默认扫到 %d 个 ｜ 含 _ 开头共 %d 个" % [hidden.size(), all.size()])
+	assert_true(all.size() >= 1, "连示例扩展都没扫到（extensions/ 目录或接口不对）")
+	assert_true(all.size() >= hidden.size(), "含隐藏的数量不该更少")
+	# 每个扫到的都必须实现接口
+	for item in all:
+		var inst = item["instance"]
+		assert_true(inst.has_method("ext_name"), "扫到的扩展缺 ext_name：%s" % str(item["file"]))
+
+
+func test_preview_window_shows_extension() -> void:
+	var s := _script(PREVIEW_SCRIPT)
+	if s == null:
+		return
+	var win: Window = s.new()
+	EditorInterface.get_base_control().add_child(win)
+	win.set("_ext_include_hidden", true)          # 让示例扩展也挂上（默认它是隐藏的）
+	win.call("_setup_extensions")
+	var found := false
+	var panel_ok := false
+	for n in _all_kids(win):
+		if n is Button and String((n as Button).text).contains("示例"):
+			found = true
+		if n is VBoxContainer and n.get_child_count() == 1 and n.get_child(0) is Label:
+			if String((n.get_child(0) as Label).text).contains("选中"):
+				panel_ok = true
+	print("[GLB 扩展] 窗口里挂了示例扩展按钮 = %s ｜ 面板建出来 = %s" % [str(found), str(panel_ok)])
+	assert_true(found, "窗口没把扩展建成按钮")
+	assert_true(panel_ok, "窗口没建出扩展面板")
+	# 回调转发不能崩（选中 + 导出前）
+	win.call("load_glb", SAMPLE_GLB)
+	win.call("_forward_selection")
+	win.call("_forward_before_export")
+	var exts: Array = win.get("_extensions")
+	assert_true(exts.size() >= 1, "窗口里的扩展列表是空的")
+	win.hide()
+	win.queue_free()
+
+# ------------------------------------------------------------------ 节点隐藏切换
+
+const LEGACY_GLB := SAMPLE_GLB
+
+
+func test_node_visibility_toggle() -> void:
+	# 需求：预览窗口里能隐藏/显示单个节点；用 墓地遗迹.glb 实测。
+	# 规则：隐藏时顺带取消勾选（勾选=要导出），保证所见即所得。
+	var s := _script(PREVIEW_SCRIPT)
+	assert_true(s != null, "预览窗口脚本加载失败")
+	if s == null:
+		return
+	assert_true(ResourceLoader.exists(LEGACY_GLB), "找不到测试用的 墓地遗迹.glb")
+	if not ResourceLoader.exists(LEGACY_GLB):
+		return
+	var win: Window = s.new()
+	EditorInterface.get_base_control().add_child(win)
+	win.set("_ext_include_hidden", false)
+	win.call("load_glb", LEGACY_GLB)
+	var meshes: Array = win.call("_preview_meshes")
+	print("[节点隐藏] 墓地遗迹.glb 载入网格数 = %d" % meshes.size())
+	assert_true(meshes.size() > 0, "墓地遗迹.glb 没载入任何网格")
+	if meshes.is_empty():
+		win.hide()
+		win.queue_free()
+		return
+	var target: MeshInstance3D = meshes[0]
+	var tree: Tree = win.get("_tree")
+	# 先在树里找到它并勾上（勾选=待导出）
+	win.call("_set_tree_checked", target, true)
+	assert_true((win.call("_checked_nodes") as Array).has(target), "勾选没生效")
+
+	# 隐藏：节点不可见 + 勾选被取消（不会导出）
+	win.call("_toggle_node_visible", target)
+	print("[节点隐藏] 隐藏后 visible=%s ｜ 仍在导出列表里=%s" % [
+			str(target.visible), str((win.call("_checked_nodes") as Array).has(target))])
+	assert_true(not target.visible, "隐藏没生效")
+	assert_true(not (win.call("_checked_nodes") as Array).has(target),
+			"隐藏的节点不该还在导出列表里（所见即所得）")
+	# 隐藏状态要能从预览里查出来（父级隐藏也算）
+	assert_true(not target.is_visible_in_tree(), "隐藏状态在预览树里没生效")
+
+	# 恢复：可见（但不会自动重新勾选）
+	win.call("_toggle_node_visible", target)
+	assert_true(target.visible, "恢复显示没生效")
+
+	# 全部显示：先把几个都藏了，再一键恢复
+	for m in meshes:
+		win.call("_toggle_node_visible", m)
+	assert_true(not (meshes[0] as MeshInstance3D).visible, "批量隐藏失败")
+	win.call("_show_all_nodes")
+	var still_hidden := 0
+	for m in win.call("_preview_meshes"):
+		if not (m as MeshInstance3D).visible:
+			still_hidden += 1
+	print("[节点隐藏] 全部显示后仍隐藏的数量 = %d" % still_hidden)
+	assert_true(still_hidden == 0, "全部显示没生效，仍有 %d 个隐藏" % still_hidden)
+	win.hide()
+	win.queue_free()
+
+
+func test_node_menu_has_visibility_items() -> void:
+	var s := _script(PREVIEW_SCRIPT)
+	if s == null:
+		return
+	var win: Window = s.new()
+	EditorInterface.get_base_control().add_child(win)
+	win.call("load_glb", LEGACY_GLB)
+	var menu: PopupMenu = win.get("_node_menu")
+	assert_true(menu != null, "没有右键菜单")
+	if menu != null:
+		var texts := PackedStringArray()
+		for i in menu.item_count:
+			texts.append(menu.get_item_text(i))
+		print("[节点隐藏] 右键菜单 = %s" % ", ".join(texts))
+		assert_true(menu.item_count >= 7, "右键菜单项太少（应含 隐藏/全部显示）")
+		var joined := ", ".join(texts)
+		assert_true(joined.contains("隐藏此节点") and joined.contains("全部显示"),
+				"右键菜单缺少隐藏/全部显示：%s" % joined)
+	win.hide()
+	win.queue_free()
+
+func test_visibility_column_in_tree() -> void:
+	# 需求：隐藏/显示不要藏在右键菜单里（不直观），要在**节点列表末尾单开一列**勾选框。
+	# 样本：墓地遗迹.glb
+	var s := _script(PREVIEW_SCRIPT)
+	assert_true(s != null, "预览窗口脚本加载失败")
+	if s == null:
+		return
+	var win: Window = s.new()
+	EditorInterface.get_base_control().add_child(win)
+	win.call("load_glb", SAMPLE_GLB)
+	var tree: Tree = win.get("_tree")
+	assert_true(tree != null, "没有节点树")
+	if tree == null:
+		win.hide()
+		win.queue_free()
+		return
+	print("[显示列] 列数 = %d ｜ 列标题 = %s,%s,%s,%s" % [tree.columns,
+			tree.get_column_title(0), tree.get_column_title(1),
+			tree.get_column_title(2), tree.get_column_title(3)])
+	assert_true(tree.columns >= 4, "节点树没有第 4 列")
+	assert_true(String(tree.get_column_title(3)).contains("显示"), "第 4 列标题不是显示相关")
+	assert_true(tree.get_column_title(3) != "", "第 4 列没有标题（眼睛图标列需要标题说明）")
+
+	# 每个节点行都要有第 3 列勾选框，且默认勾上（可见）
+	var item: TreeItem = tree.get_root().get_next_in_tree()
+	var rows := 0
+	var ok := 0
+	var first: TreeItem = null
+	while item != null:
+		if item.get_cell_mode(0) == TreeItem.CELL_MODE_CHECK:
+			rows += 1
+			if first == null:
+				first = item
+			if item.get_cell_mode(3) == TreeItem.CELL_MODE_ICON and item.get_icon(3) != null:
+				ok += 1
+		item = item.get_next_in_tree()
+	print("[显示列] 可勾选行 %d ｜ 第 4 列默认勾上 %d" % [rows, ok])
+	assert_true(rows > 0, "没有可勾选的节点行")
+	assert_true(ok == rows, "第 4 列勾选框不对：%d/%d" % [ok, rows])
+
+	# 取消第 4 列 → 节点隐藏，并且第 0 列（导出）也被取消
+	var node = first.get_metadata(0)
+	assert_true(node is Node3D, "拿到的不是 Node3D")
+	if node is Node3D:
+		first.set_checked(0, true)
+		var eye_before: Texture2D = first.get_icon(3)
+		win.call("_set_node_visible", first, node, false)
+		assert_true(not (node as Node3D).visible, "点眼睛没隐藏节点")
+		assert_true(first.get_icon(3) != eye_before, "眼睛图标没换成闭合")
+		assert_true(not first.is_checked(0), "隐藏时必须同时取消导出勾选")
+		# 再点一次 → 睁开并显示
+		win.call("_set_node_visible", first, node, true)
+		assert_true((node as Node3D).visible, "再点一次没恢复显示")
+		assert_true(first.get_icon(3) == eye_before, "眼睛图标没换回睁开")
 	win.hide()
 	win.queue_free()
