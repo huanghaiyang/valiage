@@ -39,9 +39,8 @@ static func is_image(path: String, allow: Array = []) -> bool:
 ## 扫描 root 下的图片。返回数组，每项见 describe()。
 ## 先一次性收集 .godot/imported 的前缀集合，避免对每张图都遍历一遍（那是 O(n²)）。
 static func scan(root := "res://assets", recursive := true, allow: Array = []) -> Array:
-	var imported := _imported_prefixes()
 	var out: Array = []
-	_walk(root, recursive, out, imported, allow)
+	_walk(root, recursive, out, {}, allow)     # 不再预扫目录：判定改为逐文件查 deps ✓
 	out.sort_custom(func(a, b): return String(a["path"]) < String(b["path"]))
 	return out
 
@@ -89,8 +88,7 @@ static func describe(res_path: String, imported: Dictionary = {}) -> Dictionary:
 	info["mode"] = _int_of(t, "compress/mode", -1)
 	info["mode_name"] = MODE_NAMES.get(int(info["mode"]), "未知(%d)" % int(info["mode"]))
 	info["mipmaps"] = _bool_of(t, "mipmaps/generate", false)
-	var key := res_path.get_file()
-	info["imported"] = imported.has(key) if not imported.is_empty() else _has_artifact(key)
+	info["imported"] = _imported_ok(res_path, t)
 	return info
 
 
@@ -110,6 +108,31 @@ static func _imported_prefixes() -> Dictionary:
 		n = d.get_next()
 	d.list_dir_end()
 	return set
+
+
+## 「是否已导入」的**权威判据**：
+## 读 .import 的 [deps] dest_files，检查那些产物是否真的存在于磁盘上。
+##
+## 为什么不再扫 res://.godot/imported 目录 ✗：
+## 点开头的目录在 Godot 的资源层**不可见**，DirAccess.open 拿到空 → 曾经导致
+## **所有图片都被误报成「未导入」**（用户截图里 48/48 全错 ✗）。
+static func _imported_ok(res_path: String, import_text: String) -> bool:
+	var re := RegEx.new()
+	re.compile("dest_files=\\[(.*?)\\]")
+	var m := re.search(import_text)
+	if m != null:
+		var any := false
+		for part in m.get_string(1).split(","):
+			var f := String(part).strip_edges().trim_prefix("\"").trim_suffix("\"")
+			if not f.begins_with("res://"):
+				continue
+			any = true
+			if not FileAccess.file_exists(ProjectSettings.globalize_path(f)):
+				return false
+		if any:
+			return true
+	# 兜底：资源系统认它就算已导入
+	return ResourceLoader.exists(res_path)
 
 
 static func _has_artifact(file_name: String) -> bool:

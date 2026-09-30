@@ -97,7 +97,15 @@ func write_report(prev: Dictionary, logger, note := "上次会话未正常退出
 	# 关键：**不能只取内存里的环形缓冲** —— 进程崩溃时它随进程一起消失，
 	# 下次启动时环是空的，报告就只剩状态没有日志（实测踩到）。
 	# 所以优先读磁盘上的 session.log 尾巴（那是持续 flush 过的）。
-	var tail_lines := read_log_tail(200)
+	# 顺序很重要：先看 logger 在打开文件时读好的 previous_tail（最可靠 ✓），
+	# 再退回"另开句柄读文件"（对独占打开的文件会失败 ✗），最后才用内存环形缓冲。
+	var tail_lines: Array = []
+	if logger != null:
+		var prev_tail: Array = logger.previous_tail     # 注意：不能叫 prev —— 那是本函数的参数名 ✗
+		if not prev_tail.is_empty():
+			tail_lines = prev_tail
+	if tail_lines.is_empty():
+		tail_lines = read_log_tail(200)
 	if tail_lines.is_empty() and logger != null:
 		tail_lines = Array(logger.tail(200))
 	var rep := {
@@ -129,10 +137,14 @@ func write_report(prev: Dictionary, logger, note := "上次会话未正常退出
 			tf.store_line(str(line))
 		tf.flush()
 		tf.close()
-	# 复制日志文件
-	var lf := dir_abs.path_join("session.log")
-	if FileAccess.file_exists(lf):
-		DirAccess.copy_absolute(lf, base + ".log")
+	# 把尾巴另存为 .log 兄弟文件。
+	# 注意：不能 copy session.log ✗ —— 记录器正独占着它，复制必然失败（实测确认 ✓）。
+	var lf := FileAccess.open(base + ".log", FileAccess.WRITE)
+	if lf != null:
+		for line in tail_lines:
+			lf.store_line(str(line))
+		lf.flush()
+		lf.close()
 	_trim()
 	return {"json": base + ".json", "txt": base + ".txt", "state": prev}
 

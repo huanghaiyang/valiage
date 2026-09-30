@@ -153,7 +153,14 @@ func test_format_filter_excludes_exr() -> void:
 	print("[图片清单] 默认过滤扫到 %d 个（其中 exr %d 个）｜ 只筛 exr 得到 %d 个" % [
 			rows.size(), exr, only_exr.size()])
 	assert_eq(exr, 0, "默认过滤不该扫出 exr")
-	assert_true(only_exr.size() > 0, "显式筛 exr 时应当能扫到（证明文件在，是过滤器在起作用）")
+	# 不依赖"目录里恰好有 exr"（用户把 EXR 收进回收站后就会失效 ✗）——
+	# 只断言**过滤语义**：筛 exr 时结果里绝不能混进非 exr ✓（0 个也算正确 ✓）
+	var all_exr := true
+	for rv in only_exr:
+		if not String((rv as Dictionary)["path"]).to_lower().ends_with(".exr"):
+			all_exr = false
+	print("[图片清单] 只筛 exr → %d 个（为 0 也正常：EXR 已被收进 .runtime 回收站 ✓）" % only_exr.size())
+	assert_true(all_exr, "筛 exr 的结果里混进了非 exr ✗")
 
 	# 过滤器解析
 	var p: Array = s.call("parse_filter", " PNG , jpg ,, JpEg ,.webp")
@@ -198,3 +205,24 @@ func test_path_uses_picker_not_typing() -> void:
 				"选完目录应当立刻扫描：" + (String(status.text) if status != null else "?"))
 		print("[图片清单] 选择目录后状态：" + (String(status.text) if status != null else "?"))
 	p.queue_free()
+
+func test_imported_status_detects_real_imports() -> void:
+	# 回归：曾经扫 res://.godot/imported（点目录在资源层不可见 ✗）→ 前缀集合为空
+	# → **所有图片都被误报成「未导入」**（用户截图里 48/48 全错 ✗）。
+	# 之前我只断言了"有导入设置的图片数 > 0" ✗，**没断言 imported 为真** ✗ —— 所以漏了。
+	var s := _load(SCAN)
+	if s == null:
+		return
+	var rows: Array = s.call("scan", "res://assets/textures", true, [])
+	var imported := 0
+	var with_import := 0
+	for rv in rows:
+		var r: Dictionary = rv
+		if bool(r["has_import"]):
+			with_import += 1
+			if bool(r["imported"]):
+				imported += 1
+	print("[图片清单] 有 .import 的 %d 个 ｜ 其中判定为已导入的 %d 个" % [with_import, imported])
+	assert_true(with_import > 0, "样本目录里没有带 .import 的图片？")
+	assert_true(imported > 0, "真实贴图居然全被判成未导入 —— 判定逻辑坏了 ✗")
+	assert_true(imported == with_import, "有 .import 且产物齐备的，全部都应判为已导入（现在 %d/%d）" % [imported, with_import])

@@ -9,6 +9,8 @@ const MAX_LOG_BYTES := 2 * 1024 * 1024   ## session.log 超过就轮转
 var ring: Array = []           ## [{t, err, msg}]
 var log_path := "user://crash_monitor/session.log"
 var _f: FileAccess = null
+## 上次会话日志的尾部（在打开文件的那一刻就用**同一个句柄**读好 ✓）
+var previous_tail: Array = []
 
 
 func _init() -> void:
@@ -21,10 +23,21 @@ func _init() -> void:
 ## 于是日志一个字都写不进去，崩溃报告里也就没有日志尾巴（实测踩到）。
 ## 所以不存在时用 WRITE 新建，存在时才用 READ_WRITE 追加。
 func _open_log() -> void:
+	previous_tail = []
 	var abs := ProjectSettings.globalize_path(log_path)
 	if FileAccess.file_exists(abs):
 		_f = FileAccess.open(log_path, FileAccess.READ_WRITE)
 		if _f != null:
+			# ★ 关键：必须在**这一刻**、用**这个句柄**把旧日志的尾巴读出来。
+			# 原因：Godot 的 FileAccess 在 Windows 上是**独占打开**的 ✗ ——
+			# 事后另开句柄读同一个文件会失败，且 get_file_as_string 失败时**静默返回空串**，
+			# 于是崩溃报告的"日志尾部"永远为空（实测确认：连 PowerShell 都读不了 ✓）。
+			var whole := _f.get_as_text()
+			var all := whole.split("\n")
+			var from := maxi(0, all.size() - MAX_RING)
+			for i in range(from, all.size()):
+				if String(all[i]).strip_edges() != "":
+					previous_tail.append(all[i])
 			_f.seek_end()
 	else:
 		_f = FileAccess.open(log_path, FileAccess.WRITE)

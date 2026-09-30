@@ -54,7 +54,14 @@ func test_report_generation() -> void:
 	var ls := _load(LOGGER)
 	if ss == null or ls == null:
 		return
+	var tlog_dir := "user://crash_monitor/_test"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(tlog_dir))
+	var tlog := tlog_dir + "/session.log"
+	if FileAccess.file_exists(ProjectSettings.globalize_path(tlog)):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(tlog))
 	var logger: Logger = ls.new()
+	logger.log_path = tlog              # 隔离文件 ✓
+	logger.call("_open_log")
 	logger.call("_log_message", "模拟日志 1", false)
 	logger.call("_log_message", "模拟错误 2", true)
 	assert_true(int(logger.call("error_count")) >= 1, "错误计数不对")
@@ -130,9 +137,14 @@ func test_logger_actually_writes_to_disk() -> void:
 	if ls == null or ss == null:
 		return
 	var probe_dir := "user://crash_monitor/_test"
+	var test_log := probe_dir + "/session.log"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(probe_dir))
 	var lg: Logger = ls.new()
+	lg.log_path = test_log              # 用隔离文件：真实的 session.log 被插件独占着 ✗
+	lg.call("_open_log")
 	lg.call("_log_message", "落盘回归探针", false)
-	var abs := ProjectSettings.globalize_path("user://crash_monitor/session.log")
+	lg = null                           # ★ 必须先放手：独占打开时，自己也能把自己挡住 ✗
+	var abs := ProjectSettings.globalize_path(test_log)
 	assert_true(FileAccess.file_exists(abs), "session.log 没被创建（说明文件打开方式不对）")
 	var txt := FileAccess.get_file_as_string(abs) if FileAccess.file_exists(abs) else ""
 	assert_true(txt.contains("落盘回归探针"), "日志没写进文件")
@@ -144,3 +156,35 @@ func test_logger_actually_writes_to_disk() -> void:
 	print("[崩溃记录器] read_log_tail 从磁盘读到 %d 条" % tail.size())
 	var joined := "\n".join(PackedStringArray(tail.map(func(x): return str(x))))
 	assert_true(joined.contains("落盘回归探针"), "报告没能从磁盘读到日志尾巴")
+
+func test_previous_tail_survives_exclusive_open() -> void:
+	# 回归：崩溃报告的日志尾巴曾经永远为空 ✗。
+	# 根因：Godot 的 FileAccess 在 Windows 上**独占打开** ✗，记录器握着日志文件时，
+	# 另开句柄读它必然失败（get_file_as_string 还静默返回空串 ✗）。
+	# 修法：记录器在**打开文件的那一刻**就用同一个句柄把旧日志尾巴读好 ✓。
+	var ls := _load(LOGGER)
+	if ls == null:
+		return
+	# 必须用**独立的日志文件**：插件此刻正独占着真实的 session.log ✗，
+	# 测试里的 logger 根本打不开它（这正是"独占打开"那条坑 ✓）。
+	var test_log := "user://crash_monitor/_test/session.log"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("user://crash_monitor/_test"))
+	if FileAccess.file_exists(ProjectSettings.globalize_path(test_log)):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(test_log))
+	for i in range(3):
+		var a: Logger = ls.new()
+		a.log_path = test_log
+		a.call("_open_log")           # 换了路径要重新开
+		a.call("_log_message", "上一任写下的第 %d 行" % i, false)
+		a = null                      # 释放 → 句柄关闭 → 下一任才能打开
+	# 下一任（模拟"下次启动"）应当能读回上一任的尾巴
+	var b: Logger = ls.new()
+	b.log_path = test_log
+	b.call("_open_log")
+	var tail: Array = b.previous_tail
+	print("[崩溃记录器] 下一任读到上一任尾巴 %d 条" % tail.size())
+	var joined := "\n".join(PackedStringArray(tail.map(func(x): return str(x))))
+	assert_true(tail.size() > 0, "读不回上一任的日志（说明仍在用另开句柄的错误做法 ✗）")
+	assert_true(joined.contains("上一任写下的第"), "尾巴内容不对")
+	print("[崩溃记录器] 尾巴末尾：%s" % joined.right(80))
+	b = null
