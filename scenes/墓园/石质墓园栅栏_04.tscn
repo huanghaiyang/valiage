@@ -1,0 +1,18 @@
+[gd_scene format=3 uid="uid://b27kcq047lbcm"]
+
+[ext_resource type="ArrayMesh" uid="uid://d3v70d5omf3vo" path="res://scenes/墓园/石质墓园栅栏_04.res" id="1_gj8kr"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_gj8kr"]
+size = Vector3(0.028450012, 0.12524414, 0.3063202)
+
+[node name="石质墓园栅栏_04" type="Node3D" unique_id=1992128963]
+
+[node name="石质墓园栅栏_04" type="MeshInstance3D" parent="." unique_id=592500542]
+mesh = ExtResource("1_gj8kr")
+
+[node name="StaticBody3D" type="StaticBody3D" parent="石质墓园栅栏_04" unique_id=674034276]
+collision_layer = 4
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="石质墓园栅栏_04/StaticBody3D" unique_id=1963713414]
+shape = SubResource("BoxShape3D_gj8kr")

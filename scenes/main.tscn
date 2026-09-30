@@ -13,12 +13,15 @@
 [ext_resource type="Script" uid="uid://bat1f5j1msndx" path="res://scripts/world/features/terrain_platform.gd" id="11_platform"]
 [ext_resource type="Texture2D" uid="uid://b5dahi1hmg3t0" path="res://assets/textures/杂草泥土/brown_mud_leaves_01_diff_4k.jpg" id="12_gqmmt"]
 [ext_resource type="Texture2D" uid="uid://cp6kncaf3umf6" path="res://assets/textures/杂草泥土/brown_mud_leaves_01_nor_gl_4k.png" id="13_yc10j"]
+[ext_resource type="Texture2D" uid="uid://c2q1uo0y3tijq" path="res://assets/textures/湿泥土/brown_mud_03_diff_4k.jpg" id="14_yc10j"]
+[ext_resource type="Texture2D" uid="uid://5d6gjl4aciqp" path="res://assets/textures/湿泥土/brown_mud_03_nor_gl_4k.png" id="15_jscy8"]
 [ext_resource type="Shader" uid="uid://bi3o8elbtqoni" path="res://addons/simplegrasstextured/shaders/grass.gdshader" id="16_0ld40"]
 [ext_resource type="Texture2D" uid="uid://c4ggdp0kg5wjk" path="res://addons/simplegrasstextured/textures/grassbushcc008.png" id="17_gqmmt"]
 [ext_resource type="ArrayMesh" uid="uid://sptcpdx6wtm8" path="res://addons/simplegrasstextured/default_mesh.tres" id="18_yc10j"]
 [ext_resource type="Script" uid="uid://d3wqowrjurdbv" path="res://scripts/quality/terrain_quality.gd" id="19_0ld40"]
 [ext_resource type="Script" uid="uid://2juaclm8gc1n" path="res://addons/simplegrasstextured/grass.gd" id="19_jscy8"]
 [ext_resource type="Script" uid="uid://cjl5g2p8tdivf" path="res://addons/stuck_monitor/stuck_monitor.gd" id="23_pm3ni"]
+[ext_resource type="PackedScene" uid="uid://c17ener7hr6nw" path="res://scenes/墓地遗迹.tscn" id="23_y6deb"]
 
 [sub_resource type="ProceduralSkyMaterial" id="sky_mat"]
 sky_top_color = Color(0.7, 0.72, 0.56, 1)
@@ -103,9 +106,15 @@ name = "brown_mud_leaves_01_diff_4k"
 albedo_texture = ExtResource("12_gqmmt")
 normal_texture = ExtResource("13_yc10j")
 
+[sub_resource type="Terrain3DTextureAsset" id="Terrain3DTextureAsset_pm3ni"]
+name = "brown_mud_03_diff_4k"
+id = 1
+albedo_texture = ExtResource("14_yc10j")
+normal_texture = ExtResource("15_jscy8")
+
 [sub_resource type="Terrain3DAssets" id="Terrain3DAssets_dp3eg"]
 mesh_list = Array[Terrain3DMeshAsset]([SubResource("Terrain3DMeshAsset_jbj1t")])
-texture_list = Array[Terrain3DTextureAsset]([SubResource("Terrain3DTextureAsset_dp3eg")])
+texture_list = Array[Terrain3DTextureAsset]([SubResource("Terrain3DTextureAsset_dp3eg"), SubResource("Terrain3DTextureAsset_pm3ni")])
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_jscy8"]
 render_priority = 0
@@ -309,3 +318,6 @@ player_path = NodePath("../Player")
 [node name="QualityTerrain" type="Node" parent="." unique_id=139714686]
 script = ExtResource("19_0ld40")
 terrain_path = NodePath("../Terrain3D")
+
+[node name="墓地遗迹" parent="." unique_id=1432058954 instance=ExtResource("23_y6deb")]
+transform = Transform3D(12.183767, 0, -13.249748, 0, 18, 0, 13.249748, 0, 12.183767, -2.2824078, -0.53052163, -16.252651)

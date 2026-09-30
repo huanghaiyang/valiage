@@ -44,6 +44,10 @@ run/main_scene="res://scenes/main.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
 
+[audio]
+
+buses/default_bus_layout="uid://dhnh2a14hacql"
+
 [autoload]
 
 Game="*res://scripts/game.gd"
@@ -67,7 +71,7 @@ window/stretch/aspect="expand"
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/blender_bridge/plugin.cfg", "res://addons/concave_collision_tuner/plugin.cfg", "res://addons/crash_monitor/plugin.cfg", "res://addons/exr_tools/plugin.cfg", "res://addons/glb_tools/plugin.cfg", "res://addons/godot_ai/plugin.cfg", "res://addons/image_convert/plugin.cfg", "res://addons/image_tools/plugin.cfg", "res://addons/simplegrasstextured/plugin.cfg", "res://addons/sky_3d/plugin.cfg", "res://addons/stuck_monitor/plugin.cfg", "res://addons/terrain_3d/plugin.cfg", "res://addons/world_brush/plugin.cfg")
+enabled=PackedStringArray("res://addons/blender_bridge/plugin.cfg", "res://addons/concave_collision_tuner/plugin.cfg", "res://addons/crash_monitor/plugin.cfg", "res://addons/exr_tools/plugin.cfg", "res://addons/glb_split/plugin.cfg", "res://addons/glb_tools/plugin.cfg", "res://addons/godot_ai/plugin.cfg", "res://addons/image_convert/plugin.cfg", "res://addons/image_tools/plugin.cfg", "res://addons/simplegrasstextured/plugin.cfg", "res://addons/sky_3d/plugin.cfg", "res://addons/stuck_monitor/plugin.cfg", "res://addons/terrain_3d/plugin.cfg", "res://addons/world_brush/plugin.cfg")
 
 [importer_defaults]
 
