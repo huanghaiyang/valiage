@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://vx42agifloon"
-path="res://.godot/imported/cottage_T_Plaster_BaseColor.png-ab80abaaf1b68fa6ff1e302b6177de0b.ctex"
+path.s3tc="res://.godot/imported/cottage_T_Plaster_BaseColor.png-ab80abaaf1b68fa6ff1e302b6177de0b.s3tc.ctex"
+path.etc2="res://.godot/imported/cottage_T_Plaster_BaseColor.png-ab80abaaf1b68fa6ff1e302b6177de0b.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "6de1220f11d0871a1190edf910d80e72"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/buildings/cottage/cottage_T_Plaster_BaseColor.png"
-dest_files=["res://.godot/imported/cottage_T_Plaster_BaseColor.png-ab80abaaf1b68fa6ff1e302b6177de0b.ctex"]
+dest_files=["res://.godot/imported/cottage_T_Plaster_BaseColor.png-ab80abaaf1b68fa6ff1e302b6177de0b.s3tc.ctex", "res://.godot/imported/cottage_T_Plaster_BaseColor.png-ab80abaaf1b68fa6ff1e302b6177de0b.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0
@@ -40,4 +42,4 @@ process/normal_map_invert_y=false
 process/hdr_as_srgb=false
 process/hdr_clamp_exposure=false
 process/size_limit=0
-detect_3d/compress_to=1
+detect_3d/compress_to=0

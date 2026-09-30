@@ -23,3 +23,6 @@ Desktop.ini
 
 # Python 工具缓存
 __pycache__/
+
+# exr_tools 测试用的探针目录（每次跑测试都会重建，不该进版本库）
+addons/exr_tools/__probe__/

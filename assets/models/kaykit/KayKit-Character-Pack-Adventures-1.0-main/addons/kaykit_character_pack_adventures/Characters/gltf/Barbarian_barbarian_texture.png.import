@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://cb0elkv4db8w1"
-path="res://.godot/imported/Barbarian_barbarian_texture.png-79e9ab5682953ea2e862ea514ed423bf.ctex"
+path.s3tc="res://.godot/imported/Barbarian_barbarian_texture.png-79e9ab5682953ea2e862ea514ed423bf.s3tc.ctex"
+path.etc2="res://.godot/imported/Barbarian_barbarian_texture.png-79e9ab5682953ea2e862ea514ed423bf.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "267533c91145eeae53d251a78b53814c"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/kaykit/KayKit-Character-Pack-Adventures-1.0-main/addons/kaykit_character_pack_adventures/Characters/gltf/Barbarian_barbarian_texture.png"
-dest_files=["res://.godot/imported/Barbarian_barbarian_texture.png-79e9ab5682953ea2e862ea514ed423bf.ctex"]
+dest_files=["res://.godot/imported/Barbarian_barbarian_texture.png-79e9ab5682953ea2e862ea514ed423bf.s3tc.ctex", "res://.godot/imported/Barbarian_barbarian_texture.png-79e9ab5682953ea2e862ea514ed423bf.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0
@@ -40,4 +42,4 @@ process/normal_map_invert_y=false
 process/hdr_as_srgb=false
 process/hdr_clamp_exposure=false
 process/size_limit=0
-detect_3d/compress_to=1
+detect_3d/compress_to=0

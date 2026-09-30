@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://cy0dpugoxi4nh"
-path="res://.godot/imported/Rogue_Hooded_rogue_texture.png-e13295d25c5ceab22bb1052c0f63df18.ctex"
+path.s3tc="res://.godot/imported/Rogue_Hooded_rogue_texture.png-e13295d25c5ceab22bb1052c0f63df18.s3tc.ctex"
+path.etc2="res://.godot/imported/Rogue_Hooded_rogue_texture.png-e13295d25c5ceab22bb1052c0f63df18.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "5b6fbb4d6c67e8c66dd2dffbb40f8812"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/kaykit/KayKit-Character-Pack-Adventures-1.0-main/addons/kaykit_character_pack_adventures/Characters/gltf/Rogue_Hooded_rogue_texture.png"
-dest_files=["res://.godot/imported/Rogue_Hooded_rogue_texture.png-e13295d25c5ceab22bb1052c0f63df18.ctex"]
+dest_files=["res://.godot/imported/Rogue_Hooded_rogue_texture.png-e13295d25c5ceab22bb1052c0f63df18.s3tc.ctex", "res://.godot/imported/Rogue_Hooded_rogue_texture.png-e13295d25c5ceab22bb1052c0f63df18.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0
@@ -40,4 +42,4 @@ process/normal_map_invert_y=false
 process/hdr_as_srgb=false
 process/hdr_clamp_exposure=false
 process/size_limit=0
-detect_3d/compress_to=1
+detect_3d/compress_to=0
