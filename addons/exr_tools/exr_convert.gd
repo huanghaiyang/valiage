@@ -274,6 +274,24 @@ const RECYCLE_DIR := "res://.runtime/exr_recycle"
 const RECYCLE_INDEX := RECYCLE_DIR + "/index.json"
 
 
+## 通知编辑器文件系统：这些路径变了（对**已被移走/删除**的路径，编辑器会把旧条目摘掉）。
+## 为什么必须做：文件被移走后如果不通知，Godot 的目录树会一直挂着旧条目，
+## 文件系统面板就报 "Condition \"!FileAccess::exists(p_path)\" is true"（用户实测报过）。
+static func forget_in_editor(paths: PackedStringArray) -> int:
+	if not Engine.is_editor_hint():
+		return 0
+	var fs := EditorInterface.get_resource_filesystem()
+	if fs == null or not fs.has_method("update_file"):
+		return 0
+	var n := 0
+	for p in paths:
+		var rel := ProjectSettings.localize_path(String(p))
+		if rel.begins_with("res://"):
+			fs.call("update_file", rel)
+			n += 1
+	return n
+
+
 static func recycle_dir_abs(custom := "") -> String:
 	var rel := custom if custom != "" else RECYCLE_DIR
 	return ProjectSettings.globalize_path(rel)
@@ -319,6 +337,8 @@ static func recycle(src_abs: String, dir_rel := RECYCLE_DIR) -> Dictionary:
 		if f != null:
 			fsz = f.get_length()
 			f.close()
+	# 关键：告诉编辑器这些路径已经不在原位（否则目录树留旧条目并报 !FileAccess::exists）
+	forget_in_editor(PackedStringArray([src_abs, src_abs + ".import", src_abs + ".uid"]))
 	var entry := {
 		"name": dst.get_file(),
 		"from": src_abs,
@@ -358,6 +378,7 @@ static func restore(entry: Dictionary, dir_rel := RECYCLE_DIR) -> Dictionary:
 	if err != OK:
 		return {"ok": false, "message": "还原失败（错误码 %d）" % err}
 	_drop_entry(dir_rel, src)
+	forget_in_editor(PackedStringArray([dst, dst + ".import"]))   # 还原后通知编辑器重新导入
 	return {"ok": true, "message": "已还原到 %s" % dst, "to": dst}
 
 

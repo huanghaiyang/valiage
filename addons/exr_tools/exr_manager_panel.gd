@@ -45,6 +45,10 @@ func _init() -> void:
 	var b_open := Button.new(); b_open.text = "打开目录"
 	b_open.pressed.connect(func(): OS.shell_open(ExrConvert.recycle_dir_abs()))
 	r1.add_child(b_open)
+	var b_fs := Button.new(); b_fs.text = "刷新文件系统"
+	b_fs.tooltip_text = "整树扫描（较慢）。仅在移走文件后目录树还挂着旧条目时用。"
+	b_fs.pressed.connect(_force_scan)
+	r1.add_child(b_fs)
 	var b_conv := Button.new(); b_conv.text = "转换单个 EXR…"
 	b_conv.tooltip_text = "挑一个 EXR（单选），再挑输出目录 → 只转这一个"
 	b_conv.pressed.connect(_pick_exr)
@@ -315,3 +319,15 @@ func _convert_batch(out_dir: String) -> void:
 			(r.get("failed", []) as Array).size(), notified, out_dir]
 	for line in (r.get("lines", []) as Array):
 		print("[EXR 工具] %s" % str(line))
+
+## 整树扫描（重活）：scan() 不会让 is_scanning() 变真 —— 必须单飞，叠加扫描会互相打架
+func _force_scan() -> void:
+	var fs := EditorInterface.get_resource_filesystem()
+	if fs == null:
+		return
+	if fs.is_scanning():
+		_status.text = "已有扫描在进行中，等它结束"
+		return
+	fs.scan()
+	_status.text = "已触发整树扫描（会重建导入缓存，可能较慢）"
+	refresh()

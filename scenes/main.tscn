@@ -11,8 +11,8 @@
 [ext_resource type="Script" uid="uid://cxpmrb7he55xh" path="res://scripts/ui/minimap.gd" id="9_minimap"]
 [ext_resource type="Script" uid="uid://scie1w7vnhq0" path="res://scripts/world/features/spawn_point.gd" id="10_spawn"]
 [ext_resource type="Script" uid="uid://bat1f5j1msndx" path="res://scripts/world/features/terrain_platform.gd" id="11_platform"]
-[ext_resource type="Texture2D" uid="uid://ddprscrpsofah" path="res://demo/assets/textures/ground037_alb_ht.png" id="12_trceg"]
-[ext_resource type="Texture2D" uid="uid://c1ots7w6i0i1q" path="res://demo/assets/textures/ground037_nrm_rgh.png" id="13_a8y0u"]
+[ext_resource type="Texture2D" uid="uid://b5dahi1hmg3t0" path="res://assets/textures/杂草泥土/brown_mud_leaves_01_diff_4k.jpg" id="12_gqmmt"]
+[ext_resource type="Texture2D" uid="uid://cp6kncaf3umf6" path="res://assets/textures/杂草泥土/brown_mud_leaves_01_nor_gl_4k.png" id="13_yc10j"]
 [ext_resource type="Texture2D" uid="uid://c88j3oj0lf6om" path="res://demo/assets/textures/rock023_alb_ht.png" id="14_jkv2x"]
 [ext_resource type="Texture2D" uid="uid://c307hdmos4gtm" path="res://demo/assets/textures/rock023_nrm_rgh.png" id="15_jbj1t"]
 [ext_resource type="Shader" uid="uid://bi3o8elbtqoni" path="res://addons/simplegrasstextured/shaders/grass.gdshader" id="16_0ld40"]
@@ -100,9 +100,9 @@ last_shadow_lod = 0
 lod0_range = 128.0
 
 [sub_resource type="Terrain3DTextureAsset" id="Terrain3DTextureAsset_jkv2x"]
-name = "ground037_alb_ht"
-albedo_texture = ExtResource("12_trceg")
-normal_texture = ExtResource("13_a8y0u")
+name = "brown_mud_leaves_01_diff_4k"
+albedo_texture = ExtResource("12_gqmmt")
+normal_texture = ExtResource("13_yc10j")
 
 [sub_resource type="Terrain3DTextureAsset" id="Terrain3DTextureAsset_muem4"]
 name = "rock023_alb_ht"
@@ -129,7 +129,7 @@ uv_scale = 0.016
 mesh_list = Array[Terrain3DMeshAsset]([SubResource("Terrain3DMeshAsset_jbj1t")])
 texture_list = Array[Terrain3DTextureAsset]([SubResource("Terrain3DTextureAsset_jkv2x"), SubResource("Terrain3DTextureAsset_muem4"), SubResource("Terrain3DTextureAsset_jbj1t")])
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_gqmmt"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_jscy8"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -301,7 +301,7 @@ top_level = true
 metadata/_edit_lock_ = true
 
 [node name="SimpleGrassTextured" type="MultiMeshInstance3D" parent="." unique_id=494743626]
-material_override = SubResource("ShaderMaterial_gqmmt")
+material_override = SubResource("ShaderMaterial_jscy8")
 cast_shadow = 0
 multimesh = SubResource("MultiMesh_yc10j")
 script = ExtResource("19_jscy8")

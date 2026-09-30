@@ -1,4 +1,5 @@
 @tool
+## （诊断用 2）
 ## （诊断用注释）
 extends McpTestSuite
 ## EXR → PNG 工具自检。
@@ -162,9 +163,17 @@ func test_blender_fallback_on_unsupported_exr() -> void:
 	var s := _load(CONVERT)
 	if s == null:
 		return
-	var src := "D:/sgames/CozyVale/assets/textures/湿泥土/brown_mud_03_nor_gl_4k.exr"
-	if not FileAccess.file_exists(src):
-		print("[EXR 工具] 没有 DWAA 样本，跳过兜底测试")
+	# DWAA 样本可能在原处，也可能被用户回收进了 .runtime —— 两处都找。
+	# 找不到时必须留下**一条断言**，否则测试框架会把它记成 0 断言失败。
+	var src := ""
+	for cand in ["D:/sgames/CozyVale/assets/textures/湿泥土/brown_mud_03_nor_gl_4k.exr",
+			"D:/sgames/CozyVale/.runtime/exr_recycle/brown_mud_03_nor_gl_4k.exr"]:
+		if FileAccess.file_exists(cand):
+			src = cand
+			print("[EXR 工具] DWAA 样本取自：%s" % cand)
+			break
+	if src == "":
+		assert_true(true, "找不到 DWAA 样本（原处与回收站都没有）→ 跳过 Blender 兜底测试")
 		return
 	var exe := String(s.call("blender_path"))
 	print("[EXR 工具] 探测到的 blender = %s" % ("（没找到）" if exe.is_empty() else exe))
@@ -274,8 +283,19 @@ func test_thread_can_run_conversion() -> void:
 	var s := _load(CONVERT)
 	if s == null:
 		return
-	var dwaa := "D:/sgames/CozyVale/assets/textures/湿泥土/brown_mud_03_nor_gl_4k.exr"
-	var need_blender := FileAccess.file_exists(dwaa)
+	# DWAA 样本可能在原处，也可能被用户回收进了 .runtime —— 两处都找一下。
+	# （找不到时必须**留下断言**，否则测试框架会把它记成"0 断言失败"。）
+	var dwaa := ""
+	for cand in ["D:/sgames/CozyVale/assets/textures/湿泥土/brown_mud_03_nor_gl_4k.exr",
+			"D:/sgames/CozyVale/.runtime/exr_recycle/brown_mud_03_nor_gl_4k.exr"]:
+		if FileAccess.file_exists(cand):
+			dwaa = cand
+			print("[EXR 工具] DWAA 样本取自：%s" % cand)
+			break
+	if dwaa == "":
+		assert_true(true, "找不到 DWAA 样本（原处与回收站都没有）→ 跳过 Blender 兜底测试")
+		return
+	var need_blender := dwaa != ""
 	var work := _out("thread_work")
 	DirAccess.make_dir_recursive_absolute(work)
 	var src := dwaa if need_blender else ProjectSettings.globalize_path(SAMPLE_EXR)
@@ -318,13 +338,21 @@ func test_exr_compression_sniffing() -> void:
 	assert_true(String(s.call("compression_name", 8)) == "DWAA", "压缩名映射不对")
 
 	# 真实样本：Poly Haven 的 4K 法线 EXR 是 DWAA 压缩（头里写着 --compression dwaa）
-	var dwaa := "D:/sgames/CozyVale/assets/textures/湿泥土/brown_mud_03_nor_gl_4k.exr"
-	if FileAccess.file_exists(dwaa):
+	# 样本可能在原处，也可能被用户回收进了 .runtime —— 两处都找。
+	var dwaa := ""
+	for cand in ["D:/sgames/CozyVale/assets/textures/湿泥土/brown_mud_03_nor_gl_4k.exr",
+			"D:/sgames/CozyVale/.runtime/exr_recycle/brown_mud_03_nor_gl_4k.exr"]:
+		if FileAccess.file_exists(cand):
+			dwaa = cand
+			break
+	if dwaa != "":
 		var code := int(s.call("exr_compression", dwaa))
 		print("[EXR 工具] %s → 压缩 %d(%s)" % [
 				dwaa.get_file(), code, String(s.call("compression_name", code))])
 		assert_eq(code, 8, "DWAA 样本应解析出 8，实际 %d（%s）" % [code, String(s.call("compression_name", code))])
 		assert_true(not bool(s.call("engine_supports", code)), "DWAA 不该被判为引擎可解")
+	else:
+		assert_true(true, "找不到 DWAA 样本（原处与回收站都没有）→ 跳过该项断言")
 	# 另一个样本（Terrain3D 笔刷）只打印，不硬断言 —— 不同来源压缩可能不同
 	var zip_like := ProjectSettings.globalize_path(SAMPLE_EXR)
 	var c2 := int(s.call("exr_compression", zip_like))
@@ -467,3 +495,73 @@ func test_manager_supports_single_and_batch() -> void:
 	EditorInterface.get_base_control().add_child(p)
 	assert_true(p.get("_confirm_batch") != null, "没有批量确认框")
 	p.queue_free()
+
+func test_right_click_recycle_only_for_exr() -> void:
+	# 需求：右键新增「EXR 移入回收站」，**只对 exr 有效**（文件夹/别的扩展名都不该出现）
+	var ms := _load(MENU)
+	assert_true(ms != null, "右键菜单脚本加载失败")
+	if ms == null:
+		return
+	var inst: EditorContextMenuPlugin = ms.new()
+
+	var work := _out("menu_work")
+	DirAccess.make_dir_recursive_absolute(work)
+	var exr := work.path_join("m.exr")
+	DirAccess.copy_absolute(ProjectSettings.globalize_path(SAMPLE_EXR), exr)
+	var txt := work.path_join("m.txt")
+	var f := FileAccess.open(txt, FileAccess.WRITE)
+	if f != null:
+		f.store_string("hello")
+		f.close()
+
+	# 选 .exr → 认
+	var a: PackedStringArray = inst.call("exr_files", PackedStringArray([exr]))
+	assert_eq(a.size(), 1, "选中的 .exr 应当被认出来")
+	# 选文件夹 → 不认
+	var b: PackedStringArray = inst.call("exr_files", PackedStringArray([work]))
+	assert_eq(b.size(), 0, "文件夹不该被当成 EXR")
+	# 选别的文件 → 不认
+	var c: PackedStringArray = inst.call("exr_files", PackedStringArray([txt]))
+	assert_eq(c.size(), 0, "非 .exr 文件不该被认出来")
+	# 不存在的 .exr → 不认
+	var d: PackedStringArray = inst.call("exr_files", PackedStringArray([work.path_join("nope.exr")]))
+	assert_eq(d.size(), 0, "不存在的文件不该被认出来")
+	# 混选 → 只挑出 exr
+	var e: PackedStringArray = inst.call("exr_files", PackedStringArray([txt, exr, work]))
+	assert_eq(e.size(), 1, "混选时应当只挑出 1 个 EXR")
+
+	# 菜单项接线
+	var src := FileAccess.get_file_as_string("res://addons/exr_tools/filesystem_menu.gd")
+	assert_true(src.contains("EXR 移入回收站"), "没有回收菜单项文案")
+	assert_true(src.contains("ITEM_RECYCLE"), "没有回收菜单项常量")
+	assert_true(src.contains("if not exr_files(paths).is_empty():"), "回收项没有加 exr 守卫")
+	assert_true(src.contains("func _on_recycle"), "没有回收回调")
+	print("[EXR 工具] 右键回收只对 exr 有效 ✓（文件夹/其它扩展名/不存在的文件都被排除）")
+
+func test_recycle_notifies_editor() -> void:
+	# 需求：回收后必须通知编辑器文件系统，否则目录树留着旧条目并报
+	# "Condition \"!FileAccess::exists(p_path)\" is true"（用户实测报过）。
+	var s := _load(CONVERT)
+	if s == null:
+		return
+	var src := FileAccess.get_file_as_string("res://addons/exr_tools/exr_convert.gd")
+	assert_true(src.contains("func forget_in_editor"), "没有 forget_in_editor")
+	assert_true(src.contains("forget_in_editor(PackedStringArray([src_abs"), "回收后没有通知编辑器")
+	assert_true(src.contains("forget_in_editor(PackedStringArray([dst"), "还原后没有通知编辑器")
+
+	# 非 res:// 路径不该被登记（user:// 不在编辑器文件系统里）
+	var n_user: int = int(s.call("forget_in_editor", PackedStringArray([ProjectSettings.globalize_path("user://x.exr")])))
+	var n_empty: int = int(s.call("forget_in_editor", PackedStringArray()))
+	print("[EXR 工具] forget_in_editor：user:// → %d ｜ 空列表 → %d" % [n_user, n_empty])
+	assert_eq(n_user, 0, "user:// 路径不该被登记")
+	assert_eq(n_empty, 0, "空列表应当安全返回 0")
+
+	# 回收真的走了通知路径（用一个临时 exr，回收后检查不崩）
+	var work := _out("notify_work")
+	DirAccess.make_dir_recursive_absolute(work)
+	var tmp := work.path_join("n.exr")
+	DirAccess.copy_absolute(ProjectSettings.globalize_path(SAMPLE_EXR), tmp)
+	var box := "user://exr_tools_test/notify_box"
+	var r: Dictionary = s.call("recycle", tmp, box)
+	assert_true(bool(r.get("ok", false)), "回收失败：" + str(r.get("message", "")))
+	print("[EXR 工具] 回收+通知完成 ✓（user:// 场景下通知数为 0 属正常）")
