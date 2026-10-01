@@ -552,6 +552,15 @@ func _physics_process(delta: float) -> void:
 	# ★ 采样并平滑地面法线（要在 move_and_slide 之后，is_on_floor 才是本帧结果）
 	update_ground_up(delta)
 
+	# ★ 脚底灰尘：用 move_and_slide **之后**的真实水平速度驱动
+	#   （撞墙/上坡/被挡时真实速度会掉下来 -> 灰尘自然变小，不用额外判断）
+	var hv := Vector2(player.velocity.x, player.velocity.z).length()
+	var dust_ratio := 0.0
+	if player.is_on_floor() and hv > player.DUST_SPEED_MIN:
+		dust_ratio = clampf((hv - player.DUST_SPEED_MIN) / maxf(0.001, run_speed - player.DUST_SPEED_MIN), 0.0, 1.0)
+		dust_ratio = pow(dust_ratio, 1.3)     # 起步轻、跑起来明显
+	player.update_dust(dust_ratio)
+
 	# 自动抬步：被低台阶/小突起挡住时跨上去（楼梯无需按 E；E 只留给梯子）
 	# ★ 门槛放宽：原来只在 is_on_floor 时尝试，而顶在小突起上时 is_on_floor 往往已为假
 	#   -> 抬步根本不触发 -> 卡死。现在"被挡住且不在上升"也允许尝试。

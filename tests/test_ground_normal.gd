@@ -93,9 +93,18 @@ func test_player_antijitter_params() -> void:
 			body.floor_snap_length, rad_to_deg(body.floor_max_angle), body.safe_margin,
 			rad_to_deg(body.wall_min_slide_angle), body.max_slides])
 	assert_true(body.floor_snap_length <= 0.2, "floor_snap_length 应收紧（实测 %.2f）" % body.floor_snap_length)
-	assert_true(rad_to_deg(body.floor_max_angle) <= 46.0, "floor_max_angle 应收到 46 度以内（实测 %.1f）" % rad_to_deg(body.floor_max_angle))
-	assert_true(body.safe_margin >= 0.02, "safe_margin 应放大（实测 %.3f）" % body.safe_margin)
-	assert_true(rad_to_deg(body.wall_min_slide_angle) >= 20.0, "wall_min_slide_angle 应提高（实测 %.1f）" % rad_to_deg(body.wall_min_slide_angle))
+	# 抗抖动与通过性的平衡点：够大（>=48 度，小突起的斜面才算地面、走得上去），
+	# 也不能太陡（<=55 度，否则三角网到处被当"地面"）。50 度是实测后的取值。
+	assert_true(rad_to_deg(body.floor_max_angle) >= 48.0 and rad_to_deg(body.floor_max_angle) <= 55.0,
+			"floor_max_angle 应在 48~55 度之间（实测 %.1f）" % rad_to_deg(body.floor_max_angle))
+	# ★ 与通过性的平衡：太小会三角网穿插（"去穿插弹开"），太大则**提前撞上小突起**（卡住）。
+	#   0.01 是实测取值（引擎默认 0.001 太小 / 0.03 偏大）。
+	assert_true(body.safe_margin >= 0.005 and body.safe_margin <= 0.02,
+			"safe_margin 应在 0.005~0.02 之间（实测 %.3f）" % body.safe_margin)
+	# ★ 与通过性的平衡：太小则贴面片墙一直微滑（抖动来源），太大则**小突起的侧面被判成"不许滑的墙"-> 顶死卡住**。
+	#   10 度是实测取值（引擎默认 15 / 抗抖动那轮曾用 25，25 会卡住突起）。
+	assert_true(rad_to_deg(body.wall_min_slide_angle) >= 5.0 and rad_to_deg(body.wall_min_slide_angle) <= 15.0,
+			"wall_min_slide_angle 应在 5~15 度之间（实测 %.1f）" % rad_to_deg(body.wall_min_slide_angle))
 	body.free()
 
 func test_no_stuck_on_small_bumps() -> void:

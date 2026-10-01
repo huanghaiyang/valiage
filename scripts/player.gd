@@ -23,6 +23,10 @@ var _interact_top_y := 0.0        # 爬梯目标顶 y
 const CHARACTER_SCENE := "res://assets/models/characters/Mage.glb"
 # Mage 模型身体（头顶）原始约 2.94m，缩到 0.368 → 角色约 1.08m（门 1.7m 的约 64%）
 const CHARACTER_SCALE := 0.368
+
+# ---- 跑动脚底灰尘：实现已抽到独立文件 scripts/run_dust.gd（尺寸/颜色等参数都在那边）----
+const DUST_SPEED_MIN := 0.8      # 低于这个水平速度不扬尘（camera_rig 用它换算强度）
+var _dust: Node3D = null            # 灰尘容器（内部左右脚各一个 GPUParticles3D）
 # KayKit Character Animations 重定向动作库（KayKit 6 骨 → Mage 41 骨烘焙，路径前缀与 Mage.glb 一致）
 const KAYKIT_LIB_PATH := "res://assets/animations/kaykit_library.tres"
 
@@ -184,7 +188,31 @@ func _init() -> void:
 	motion_mode = CharacterBody3D.MOTION_MODE_GROUNDED
 
 
+## ------------------------------------------------------------------ 跑动脚底灰尘
+## 实现已抽到独立文件 scripts/run_dust.gd（它本身就是那个粒子节点）。
+## 这里只负责：按需创建 + 把强度转发过去。
+const RunDustScript := preload("res://scripts/run_dust.gd")
+
+
+func _setup_dust() -> void:
+	# ★ 放在 _ready 最前：与角色模型加载解耦（模型没加载出来也有灰尘）
+	# ★ headless 下创建粒子进树会把进程卡住（见 run_dust.gd 的说明）-> 直接跳过
+	if not RunDustScript.is_supported():
+		return
+	_dust = RunDustScript.new()
+	_dust.name = "RunDust"
+	add_child(_dust)
+
+
+## 由 camera_rig 每物理帧调用。ratio = 0~1 的扬尘强度（按**实际水平速度**算好传进来）
+func update_dust(ratio: float) -> void:
+	if _dust == null:
+		return
+	if _dust.has_method("set_intensity"):
+		_dust.call("set_intensity", ratio)
+
 func _ready() -> void:
+	_setup_dust()                 # ★ 放在最前：与角色模型加载**解耦**（加载失败也照样有灰尘，方便自检）
 	body = _instantiate_character()
 	if body == null:
 		body = Node3D.new()

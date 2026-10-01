@@ -1,0 +1,43 @@
+[gd_scene format=4 uid="uid://cq458t603bvr"]
+
+[ext_resource type="Material" uid="uid://csav2quc57h7m" path="res://scenes/草/_blend_mat_grass_bermuda_01.tres" id="1_qn8dc"]
+
+[sub_resource type="ArrayMesh" id="ArrayMesh_qn8dc"]
+_surfaces = [{
+"aabb": AABB(-0.04660063, -0.0065190056, -0.025573492, 0.06773801, 0.024741128, 0.084310144),
+"format": 34896613377,
+"index_count": 36,
+"index_data": PackedByteArray("CgABAAIACgAFAAEAAAAKAAIAAAACAAMAAAADAAQACgAAAAYABQAKAAsACgAGAAsABQALAAcACwAGAAgABwALAAgABwAIAAkA"),
+"lods": [0.0073683364, PackedByteArray("AAABAAIAAAACAAMAAAADAAQAAAAFAAEABQAAAAYABQAGAAcABwAGAAgABwAIAAkA")],
+"name": "grass_bermuda_01",
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 12,
+"vertex_data": PackedByteArray("ZbOMxtA3AACBQ9Vu4kUAAAAA5KLeJAAAO1Tx8PIXAAC/sZT8AAAAAOiueSrMUQAA/////7dvAABnowAASp0AAN27CNYU3QAAZLGXIP//AABrr85xIUYAAG/FNY3CdQAA")
+}]
+blend_shape_mode = 0
+
+[sub_resource type="ArrayMesh" id="ArrayMesh_2wo1g"]
+resource_name = "grass_bermuda_01_4k_Plane_007"
+_surfaces = [{
+"aabb": AABB(-0.04660063, -0.0065190056, -0.025573492, 0.06773801, 0.024741128, 0.084310144),
+"attribute_data": PackedByteArray("PChJOtYUJkSfCN820BfvMKwoZSc8KFpJqi49Lrc63krvR7xAjVDGRYgnvEDoMIVA"),
+"format": 34896613399,
+"index_count": 36,
+"index_data": PackedByteArray("CgABAAIACgAFAAEAAAAKAAIAAAACAAMAAAADAAQACgAAAAYABQAKAAsACgAGAAsABQALAAcACwAGAAgABwALAAgABwAIAAkA"),
+"lods": [0.0073683364, PackedByteArray("AAABAAIAAAACAAMAAAADAAQAAAAFAAEABQAAAAYABQAGAAcABwAGAAgABwAIAAkA")],
+"material": ExtResource("1_qn8dc"),
+"name": "grass_bermuda_01",
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 12,
+"vertex_data": PackedByteArray("ZbOMxtA3r6mBQ9Vu4kUIpAAA5KLeJKufO1Tx8PIXnqK/sZT8AADptOiueSrMUf6y/////7dv38JnowAASp2swd27CNYU3Y3FZLGXIP//NsVrr85xIUZoqm/FNY3CdWPAhdAkpCDwB4aI8uKRtvMikyD3yYBTsku/s6U4wDKRJ91hkDXZ34Hs4FfBRrGOnojK")
+}]
+blend_shape_mode = 0
+shadow_mesh = SubResource("ArrayMesh_qn8dc")
+
+[node name="grass_bermuda_01_dead_a" type="Node3D" unique_id=681808589]
+
+[node name="grass_bermuda_01_dead_a" type="MeshInstance3D" parent="." unique_id=2032934925]
+transform = Transform3D(12, 0, 0, 0, 12, 0, 0, 0, 12, 0.012731623, 0.0065190056, -0.01658158)
+mesh = SubResource("ArrayMesh_2wo1g")

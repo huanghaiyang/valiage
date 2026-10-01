@@ -1,0 +1,43 @@
+[gd_scene format=4 uid="uid://d0smbv4alcki8"]
+
+[ext_resource type="Material" uid="uid://csav2quc57h7m" path="res://scenes/草/_blend_mat_grass_bermuda_01.tres" id="1_3gcbs"]
+
+[sub_resource type="ArrayMesh" id="ArrayMesh_3gcbs"]
+_surfaces = [{
+"aabb": AABB(-0.016214548, 5.208976e-11, -0.020826347, 0.038512245, 0.09775002, 0.028567333),
+"format": 34896613377,
+"index_count": 51,
+"index_data": PackedByteArray("AAANAAIAAAABAA0AAQADAA0ADQADAAQADgACAA0ADQAEAA4ADgAFAAIADgAEAAYADwAFAA4ADgAGAA8ADwAHAAUADwAGAAsADwAIAAcADwALAAkADwAJAAgADAAJAAsACQAKAAgA"),
+"lods": [0.0054165567, PackedByteArray("AAABAAIAAQADAAIAAgADAAQABAAFAAIABgAFAAQABgAHAAUABgAIAAcABgAJAAgACQAKAAgABgALAAkADAAJAAsA")],
+"name": "grass_bermuda_01",
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 16,
+"vertex_data": PackedByteArray("nPFoGmwuAADHawAAoLoAAP//pEwGawAALQKcTP//AAAWDIVkyb4AACbbnnXWAAAAAAAHgvS0AACUWQ2LAAAAAMpIQKToGQAAoCJUlXJqAAApgf//rDEAAFgBlousqgAAnh3jzsG7AAAGfyJO984AABdV0GfroAAAKCt+gd5yAAA=")
+}]
+blend_shape_mode = 0
+
+[sub_resource type="ArrayMesh" id="ArrayMesh_8v4b1"]
+resource_name = "grass_bermuda_01_4k_Plane_014"
+_surfaces = [{
+"aabb": AABB(-0.016214548, 5.208976e-11, -0.020826347, 0.038512245, 0.09775002, 0.028567333),
+"attribute_data": PackedByteArray("zt2l7evGjf40227eB7DA5iC0ydrX2SrJobLIzXDHB8QvxC2+0rqMxCPGmaUFs9fIzLMAsPnBuOLKvjbXmruzyw=="),
+"format": 34896613399,
+"index_count": 51,
+"index_data": PackedByteArray("AAANAAIAAAABAA0AAQADAA0ADQADAAQADgACAA0ADQAEAA4ADgAFAAIADgAEAAYADwAFAA4ADgAGAA8ADwAHAAUADwAGAAsADwAIAAcADwALAAkADwAJAAgADAAJAAsACQAKAAgA"),
+"lods": [0.0054165567, PackedByteArray("AAABAAIAAQADAAIAAgADAAQABAAFAAIABgAFAAQABgAHAAUABgAIAAcABgAJAAgACQAKAAgABgALAAkADAAJAAsA")],
+"material": ExtResource("1_3gcbs"),
+"name": "grass_bermuda_01",
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 16,
+"vertex_data": PackedByteArray("nPFoGmwutJ7HawAAoLrJmf//pEwGa+KaLQKcTP//k5AWDIVkyb58mibbnnXWAP2kAAAHgvS0r56UWQ2LAABPpspIQKToGWeuoCJUlXJqgqkpgf//rDF1slgBlousqt6lnh3jzsG7RasGfyJO9860lRdV0GfroLafKCt+gd5yNqLdcwY0XHPzN4yk9zj8uetRRsk7V9XNDlZKq40zOriiQFiHGyT0iVMcd310JOWN9ReddK4bgKvKQRDOMlRos/cy")
+}]
+blend_shape_mode = 0
+shadow_mesh = SubResource("ArrayMesh_3gcbs")
+
+[node name="grass_bermuda_01_medium_a" type="Node3D" unique_id=2053676250]
+
+[node name="grass_bermuda_01_medium_a" type="MeshInstance3D" parent="." unique_id=2072126837]
+transform = Transform3D(12, 0, 0, 0, 12, 0, 0, 0, 12, -0.0030415747, -5.208976e-11, 0.006542681)
+mesh = SubResource("ArrayMesh_8v4b1")

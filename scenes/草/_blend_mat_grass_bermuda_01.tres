@@ -1,0 +1,24 @@
+[gd_resource type="ShaderMaterial" format=3 uid="uid://csav2quc57h7m"]
+
+[ext_resource type="Shader" uid="uid://d3jfx2ct1odyu" path="res://addons/blend_tools/blend_alpha.gdshader" id="1_wppe3"]
+[ext_resource type="Texture2D" uid="uid://ny67xmd2aslx" path="res://assets/textures/绿草/textures/grass_bermuda_01_diff_4k.jpg" id="2_bo1hb"]
+[ext_resource type="Texture2D" uid="uid://vn7441yyyiy1" path="res://assets/textures/绿草/textures/grass_bermuda_01_alpha_4k.png" id="3_ulnhd"]
+[ext_resource type="Texture2D" uid="uid://cplryusc71n8d" path="res://assets/textures/绿草/textures/grass_bermuda_01_nor_gl_4k.png" id="4_u7qj5"]
+[ext_resource type="Texture2D" uid="uid://cb1t0oiqrf83k" path="res://assets/textures/绿草/textures/grass_bermuda_01_rough_4k.png" id="5_xrtbj"]
+
+[resource]
+resource_name = "grass_bermuda_01"
+render_priority = 0
+shader = ExtResource("1_wppe3")
+shader_parameter/albedo_tex = ExtResource("2_bo1hb")
+shader_parameter/alpha_tex = ExtResource("3_ulnhd")
+shader_parameter/normal_tex = ExtResource("4_u7qj5")
+shader_parameter/rough_tex = ExtResource("5_xrtbj")
+shader_parameter/has_normal = true
+shader_parameter/alpha_scissor = 0.5
+shader_parameter/wind_enabled = true
+shader_parameter/wind_direction = Vector2(1, 0)
+shader_parameter/wind_strength = 0.18
+shader_parameter/wind_gust = 0.15
+shader_parameter/wind_speed = 1.4
+shader_parameter/wind_turbulence = 0.3

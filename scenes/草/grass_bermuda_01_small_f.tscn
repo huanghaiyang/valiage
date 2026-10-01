@@ -1,0 +1,41 @@
+[gd_scene format=4 uid="uid://b18wfxg0cr481"]
+
+[ext_resource type="Material" uid="uid://csav2quc57h7m" path="res://scenes/草/_blend_mat_grass_bermuda_01.tres" id="1_vt1us"]
+
+[sub_resource type="ArrayMesh" id="ArrayMesh_vt1us"]
+_surfaces = [{
+"aabb": AABB(-0.025840126, -0.0025013718, -0.012442783, 0.03553771, 0.06905272, 0.024612863),
+"format": 34359742465,
+"index_count": 30,
+"index_data": PackedByteArray("AAABAAIAAAADAAEABAACAAUABgACAAQABgAAAAIAAAAGAAcAAwAAAAgAAAAHAAgAAwAIAAkACAAHAAoA"),
+"name": "grass_bermuda_01",
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 11,
+"vertex_data": PackedByteArray("lh9xu354dzxZEqs64h+9vNfelTw0uQw86udXvE+s5jwJyy88vGh9OQ7uI7ugMJm5r6xOvEnISj2yx0I8rK7TvIdYTj0EZUc85mvuu1pVHD29FV87xZhJu4GsbD0YliU6ABLSO1lFzTxUGjM6AZn/OkqKADpzvCS8nOIePBNMiD3R3Eu8")
+}]
+blend_shape_mode = 0
+
+[sub_resource type="ArrayMesh" id="ArrayMesh_8ys15"]
+resource_name = "grass_bermuda_01_4k_Plane_046"
+_surfaces = [{
+"aabb": AABB(-0.025840126, -0.0025013718, -0.012442783, 0.03553771, 0.06905272, 0.024612863),
+"attribute_data": PackedByteArray("p2kaP3TrNz4ZxAk/jKQrPgN9Dz/Asws+sYgdP4BPcD7FRBA/GByPPR6OBz8wY4k9M40XP9AZ3D1Yfhw/ID9CPSiHIj/Qfxg+M18iP9CmaT5kgCs/YDnEPA=="),
+"format": 34359742487,
+"index_count": 30,
+"index_data": PackedByteArray("AAABAAIAAAADAAEABAACAAUABgACAAQABgAAAAIAAAAGAAcAAwAAAAgAAAAHAAgAAwAIAAkACAAHAAoA"),
+"material": ExtResource("1_vt1us"),
+"name": "grass_bermuda_01",
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 11,
+"vertex_data": PackedByteArray("lh9xu354dzxZEqs64h+9vNfelTw0uQw86udXvE+s5jwJyy88vGh9OQ7uI7ugMJm5r6xOvEnISj2yx0I8rK7TvIdYTj0EZUc85mvuu1pVHD29FV87xZhJu4GsbD0YliU6ABLSO1lFzTxUGjM6AZn/OkqKADpzvCS8nOIePBNMiD3R3Eu8A6xbc0L7n9kdnKNu2/ww0aSx3Xlm+1Db17Pfb6n/uN3Ymgh8Xf3Wzh2CdXm+/zrBcK/xgHH7V9mqrreMC/um28CnDn8f/f7Uub1kcMD8puPvsyaPu/o63w==")
+}]
+blend_shape_mode = 0
+shadow_mesh = SubResource("ArrayMesh_vt1us")
+
+[node name="grass_bermuda_01_small_f" type="Node3D" unique_id=291524685]
+
+[node name="grass_bermuda_01_small_f" type="MeshInstance3D" parent="." unique_id=1563610205]
+transform = Transform3D(12, 0, 0, 0, 12, 0, 0, 0, 12, 0.008071272, 0.0025013718, 0.00013635214)
+mesh = SubResource("ArrayMesh_8ys15")

@@ -1,0 +1,41 @@
+[gd_scene format=4 uid="uid://b7s560j2lyx1v"]
+
+[ext_resource type="Material" uid="uid://csav2quc57h7m" path="res://scenes/草/_blend_mat_grass_bermuda_01.tres" id="1_na7p8"]
+
+[sub_resource type="ArrayMesh" id="ArrayMesh_na7p8"]
+_surfaces = [{
+"aabb": AABB(-0.025306128, -0.0020423129, -0.0202432, 0.0582117, 0.054644562, 0.03346909),
+"format": 34896613377,
+"index_count": 30,
+"index_data": PackedByteArray("AAABAAIAAAADAAEAAgAEAAUAAgAGAAQAAgABAAYABwABAAMAAQAHAAYABgAHAAgABwADAAkACgAHAAkA"),
+"name": "grass_bermuda_01",
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 11,
+"vertex_data": PackedByteArray("dR9ID+wOAADpYcwqup8AAGBvAABrmQAAIhnxNZYJAACn7r5fqKgAAP//bRuPngAAcbozmP//AABAU2dZmKYAAK1Iz/VKWgAAAACwatFVAADJUv//AAAAAA==")
+}]
+blend_shape_mode = 0
+
+[sub_resource type="ArrayMesh" id="ArrayMesh_bj2k8"]
+resource_name = "grass_bermuda_01_4k_Plane_042"
+_surfaces = [{
+"aabb": AABB(-0.025306128, -0.0020423129, -0.0202432, 0.0582117, 0.054644562, 0.03346909),
+"attribute_data": PackedByteArray("ekgGiZ5a/YIPXU2K2kaGgiR08HlId52FtmqJb/dXBnsDVgVlr0jbeElLKGQ="),
+"format": 34896613399,
+"index_count": 30,
+"index_data": PackedByteArray("AAABAAIAAAADAAEAAgAEAAUAAgAGAAQAAgABAAYABwABAAMAAQAHAAYABgAHAAgABwADAAkACgAHAAkA"),
+"material": ExtResource("1_na7p8"),
+"name": "grass_bermuda_01",
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 11,
+"vertex_data": PackedByteArray("dR9ID+wOSKPpYcwqup9Sl2BvAABrmUmSIhnxNZYJjqSn7r5fqKj8i///bRuPnrqDcbozmP//PYtAU2dZmKbrl61Iz/VKWsqWAACwatFVe5jJUv//AADDmhpkr+Z2RXnLEzxxwq5O/NdtGkVofQW9hWVK6r5SdRrsfYyH1yJ2kfECvsWy")
+}]
+blend_shape_mode = 0
+shadow_mesh = SubResource("ArrayMesh_na7p8")
+
+[node name="grass_bermuda_01_small_d" type="Node3D" unique_id=461518325]
+
+[node name="grass_bermuda_01_small_d" type="MeshInstance3D" parent="." unique_id=382250479]
+transform = Transform3D(12, 0, 0, 0, 12, 0, 0, 0, 12, -0.0037997216, 0.0020423129, 0.0035086554)
+mesh = SubResource("ArrayMesh_bj2k8")

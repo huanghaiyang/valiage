@@ -56,11 +56,11 @@ global uniform vec3 sgt_player_position = vec3(100000.0);
 global uniform vec3 sgt_player_mov = vec3(0.0);
 global uniform sampler2D sgt_normal_displacement : repeat_disable, filter_nearest, hint_normal;
 global uniform sampler2D sgt_motion_texture : repeat_disable, filter_nearest, hint_default_black;
-global uniform vec3 sgt_wind_direction = vec3(1.0, 0.0, 0.0);
-global uniform float sgt_wind_strength = 0.15;
-global uniform float sgt_wind_turbulence = 1.0;
-global uniform vec3 sgt_wind_movement = vec3(0.0, 0.0, 0.0);
-global uniform sampler2D sgt_wind_pattern : source_color, repeat_enable, filter_linear, hint_default_white;
+uniform vec3 sgt_wind_direction = vec3(1.0, 0.0, 0.0);   // 改逐材质：Godot 4.7 运行时 global uniform 顶点阶段失效
+uniform float sgt_wind_strength = 0.15;
+uniform float sgt_wind_turbulence = 1.0;
+uniform vec3 sgt_wind_movement = vec3(0.0, 0.0, 0.0);
+uniform sampler2D sgt_wind_pattern : source_color, repeat_enable, filter_linear, hint_default_white;
 
 varying vec2 uv_align;
 varying vec2 uv_scale;

@@ -1,0 +1,43 @@
+[gd_scene format=4 uid="uid://dt2owfvebyuqp"]
+
+[ext_resource type="Material" uid="uid://csav2quc57h7m" path="res://scenes/草/_blend_mat_grass_bermuda_01.tres" id="1_ooqp7"]
+
+[sub_resource type="ArrayMesh" id="ArrayMesh_ooqp7"]
+_surfaces = [{
+"aabb": AABB(-0.016442435, -0.0010610375, -0.008381368, 0.040700853, 0.113004245, 0.026102602),
+"format": 34359742465,
+"index_count": 90,
+"index_data": PackedByteArray("AAACAAsAAAABAAIABAAAAAsACwACAAMABAALAAwACwADAAwABAAMAAUAAwANAAwABQAMAA0AAwAGAA0ABQANAAcADQAGAAkACAAHAA0ADQAJAAgACAAJAAoADgAPABAADgARAA8AEgAOABAAEAAPABMAEgAQABQAEAATABQAEgAUABUAEwAWABQAFQAUABYAEwAXABYAFQAWABgAFgAXABkAGgAYABYAFgAZABoAGgAZABsA"),
+"lods": [0.053872135, PackedByteArray("AAABAAIAAAACAAMABAAAAAMABAADAAUABQADAAYABQAGAAcACAAHAAYABgAJAAgACAAJAAoA")],
+"name": "grass_bermuda_01",
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 28,
+"vertex_data": PackedByteArray("Z2xsOYMSi7oybMW40os8vLSFBjo4NIs8eXEIvLvFkjxbJWU8w9oMvCxMIz29RW07mLnGPCGbyjzAOZ27EEw3PMyOEj2P+UE8r3GGu/iHcT15mrA7cddIPI2Xhj0UwHw8vYGyO5VSpj3CUyw7YaC6ufQ+oT0mhSU77Km7PHtC5T2yns27sRHuOoFQnjwXauk6PEyCOvK5FT0c91s7n6CaOgGMgT22Mb47XrnjOV/sZbrbtzS53nk1vLnnQTzmoLi7lGgbuzlvXDy838w6V1dEvK0cNLoBUgm8BFIOOyGkjDwgLJE82ZatuyFB5zyvP627ePybu7ft0TxJ4sE62TQuvE8FxjzfiBA8znQKvFYQNj0l5Bw72nQBvBRIKj2sJ8a6ca17vDYbOT1YkSs8kXEwvMobZj2sFvi6kcQ2vK19bj1w4Qo7SbKGvPSOrj3aZbM7")
+}]
+blend_shape_mode = 0
+
+[sub_resource type="ArrayMesh" id="ArrayMesh_jsywc"]
+resource_name = "grass_bermuda_01_4k_Plane_025"
+_surfaces = [{
+"aabb": AABB(-0.016442435, -0.0010610375, -0.008381368, 0.040700853, 0.113004245, 0.026102602),
+"attribute_data": PackedByteArray("IYjIPRK1fD/q4Ao91zV6P9AWUj1NnGw/a1mQPSbvWz+AKzQ+QZNoP3KWED5Wll4/kxCtPdqjTD8Z9RQ+uo1GP4dIxz21mTk/UlOkPfIYPD9iQts9RA0uP7y60j0NYmw/lYbNPVaWXj86xs496DRJPyGIyD0StXw/0BZSPU2cbD+8utI9DWJsP+rgCj3XNXo/gCs0PkGTaD9rWZA9Ju9bP5WGzT1Wll4/cpYQPlaWXj86xs496DRJP5MQrT3ao0w/GfUUPrqNRj9SU6Q98hg8P4dIxz21mTk/YkLbPUQNLj8="),
+"format": 34359742487,
+"index_count": 90,
+"index_data": PackedByteArray("AAACAAsAAAABAAIABAAAAAsACwACAAMABAALAAwACwADAAwABAAMAAUAAwANAAwABQAMAA0AAwAGAA0ABQANAAcADQAGAAkACAAHAA0ADQAJAAgACAAJAAoADgAPABAADgARAA8AEgAOABAAEAAPABMAEgAQABQAEAATABQAEgAUABUAEwAWABQAFQAUABYAEwAXABYAFQAWABgAFgAXABkAGgAYABYAFgAZABoAGgAZABsA"),
+"lods": [0.053872135, PackedByteArray("AAABAAIAAAACAAMABAAAAAMABAADAAUABQADAAYABQAGAAcACAAHAAYABgAJAAgACAAJAAoA")],
+"material": ExtResource("1_ooqp7"),
+"name": "grass_bermuda_01",
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 28,
+"vertex_data": PackedByteArray("Z2xsOYMSi7oybMW40os8vLSFBjo4NIs8eXEIvLvFkjxbJWU8w9oMvCxMIz29RW07mLnGPCGbyjzAOZ27EEw3PMyOEj2P+UE8r3GGu/iHcT15mrA7cddIPI2Xhj0UwHw8vYGyO5VSpj3CUyw7YaC6ufQ+oT0mhSU77Km7PHtC5T2yns27sRHuOoFQnjwXauk6PEyCOvK5FT0c91s7n6CaOgGMgT22Mb47XrnjOV/sZbrbtzS53nk1vLnnQTzmoLi7lGgbuzlvXDy838w6V1dEvK0cNLoBUgm8BFIOOyGkjDwgLJE82ZatuyFB5zyvP627ePybu7ft0TxJ4sE62TQuvE8FxjzfiBA8znQKvFYQNj0l5Bw72nQBvBRIKj2sJ8a6ca17vDYbOT1YkSs8kXEwvMobZj2sFvi6kcQ2vK19bj1w4Qo7SbKGvPSOrj3aZbM7p7jSd6/6et8jxdF4ufnG5cC/KYKM+RHi1Jirg47+YM1djP9dLvoAtKJjJ2WE2kC+MnumfO75ksA4R5WHA8HGvT5pHpsTtHKpf3CPla3Vy7TgcAWgkZ+Tn5CnaHQW/NfWnIFTcjn+qcGxW3qJddcivwNGFHB7uDzE70SMeQi8E8WCOTxsAKp5wqhQl3HewnnF4TSxVriTJbxxIMN4rpoQwIYZq2g+g5i+HSAfRDVh+rqPDwlSVGEvu1gVEGtmgaC9iwtsP75Mp7lYFRBrloW3slUTUWGpf+2oWBUQa12MBaE=")
+}]
+blend_shape_mode = 0
+shadow_mesh = SubResource("ArrayMesh_ooqp7")
+
+[node name="grass_bermuda_01_medium_f" type="Node3D" unique_id=81627879]
+
+[node name="grass_bermuda_01_medium_f" type="MeshInstance3D" parent="." unique_id=2070156994]
+transform = Transform3D(12, 0, 0, 0, 12, 0, 0, 0, 12, -0.0039079916, 0.0010610375, -0.0046699336)
+mesh = SubResource("ArrayMesh_jsywc")
