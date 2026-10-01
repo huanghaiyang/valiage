@@ -27,6 +27,7 @@ const CHARACTER_SCALE := 0.368
 const KAYKIT_LIB_PATH := "res://assets/animations/kaykit_library.tres"
 
 # 碰撞体尺寸（主体胶囊：凸形状才能与场景 trimesh 地形正常碰撞；凹形 ConcavePolygonShape3D 在 Godot 物理中不支持 CharacterBody 会穿模）
+const STEP_MAX_ANGLE := 0.907571    # 抬步上限 52 度（与抗抖动的 floor_max_angle 解耦）
 const COLLIDER_RADIUS := 0.28
 const COLLIDER_HEIGHT := 1.08
 const COLLIDER_OFFSET_Y := 0.54
@@ -165,6 +166,24 @@ const ACTION_LIB: Array = [
 	["躺卧", "kaykit/LayingDownIdle", "loop"],
 ]
 
+## 物理参数在 _init 里设：与模型/动画是否加载成功**无关**（放 _ready 里会因为前半段
+## 加载失败而整段跳过 -> 角色退化成引擎默认参数，行走抖动/被弹开就会复现）。
+func _init() -> void:
+	# ★ 抗抖动参数组（三角网地形 + 逐面法线场景下调优）
+	# floor_snap_length：0.5 太大 —— 边缘/台阶附近会被猛拽，还会和坡面法线互相拉扯
+	floor_snap_length = 0.15
+	# floor_max_angle：52° 太陡 —— 三角网上那些斜面会被当成"地面"，角色被斜法线推开（被弹开）
+	floor_max_angle = deg_to_rad(50.0)
+	# safe_margin：默认 0.001 太紧，三角网容易互相穿插 -> move_and_slide 去穿插时"瞬间弹走"
+	safe_margin = 0.01
+	# wall_min_slide_angle：这是"小突起卡住"的**主因** —— 25 度太大时，突起侧面（通常 >25 度）
+	# 会被判成"墙且不许滑"，角色直接顶死。抗抖动已由平滑法线负责，这里回到 10 度保通过性。
+	wall_min_slide_angle = deg_to_rad(10.0)
+	max_slides = 6
+	slide_on_ceiling = false
+	motion_mode = CharacterBody3D.MOTION_MODE_GROUNDED
+
+
 func _ready() -> void:
 	body = _instantiate_character()
 	if body == null:
@@ -178,6 +197,34 @@ func _ready() -> void:
 	if kk_lib != null and anim_player != null:
 		anim_player.add_animation_library("kaykit", kk_lib)
 	_ensure_loop_anims()
+
+	# ★ 碰撞体与物理参数**不依赖动画节点**，必须无条件建立（原来放在 _ensure_loop_anims 的
+	#   早退之后：anim_player 为空时角色连碰撞体都没有、参数全落回默认 —— 结构性隐患）
+	# 角色碰撞体：主体胶囊 + 底部平底圆柱（凸形状组合，底部对齐脚底）
+	var col := CollisionShape3D.new()
+	var capsule := CapsuleShape3D.new()
+	capsule.radius = COLLIDER_RADIUS
+	capsule.height = COLLIDER_HEIGHT
+	col.shape = capsule
+	col.position = Vector3(0.0, COLLIDER_OFFSET_Y, 0.0)
+	add_child(col)
+
+	# ★ 脚底：**圆底短胶囊**（原来是平底 CylinderShape3D）
+	#   平底撞到地面小突起时没有任何滑移余地 -> 直接卡住（用户报的"遇小突起无法前进"）。
+	#   圆底能自然滑过几厘米的突起；因为角色不旋转，圆底也不会"滚动"，站石头上照样稳。
+	#   底端与原来的圆柱对齐（底端 = 0），高度 = 圆柱高度 + 两个半球。
+	var col2 := CollisionShape3D.new()
+	var foot := CapsuleShape3D.new()
+	foot.radius = COLLIDER_RADIUS
+	foot.height = COLLIDER_RADIUS * 2.0 + COLLIDER_FOOT_HEIGHT
+	col2.shape = foot
+	col2.position = Vector3(0.0, foot.height * 0.5, 0.0)
+	add_child(col2)
+
+	# 碰撞：层1=玩家；mask 与地形(2)/建筑(4)/植被(8)碰撞
+	collision_layer = 1
+	collision_mask = 2 | 4 | 8
+
 
 
 ## 把"本来就该循环"的剪辑设成循环播放。
@@ -217,30 +264,7 @@ func _ensure_loop_anims() -> void:
 			fixed += 1
 	print("[player] 循环动画已修正 %d 个（原本全是 LOOP_NONE）" % fixed)
 
-	# 角色碰撞体：主体胶囊 + 底部平底圆柱（凸形状组合，底部对齐脚底）
-	var col := CollisionShape3D.new()
-	var capsule := CapsuleShape3D.new()
-	capsule.radius = COLLIDER_RADIUS
-	capsule.height = COLLIDER_HEIGHT
-	col.shape = capsule
-	col.position = Vector3(0.0, COLLIDER_OFFSET_Y, 0.0)
-	add_child(col)
 
-	# 脚底平底薄圆柱：垫平球面最低点，站突起/石头/树干上脚部贴合
-	var col2 := CollisionShape3D.new()
-	var cyl := CylinderShape3D.new()
-	cyl.radius = COLLIDER_RADIUS
-	cyl.height = COLLIDER_FOOT_HEIGHT
-	col2.shape = cyl
-	col2.position = Vector3(0.0, COLLIDER_FOOT_HEIGHT * 0.5, 0.0)
-	add_child(col2)
-
-	# 碰撞：层1=玩家；mask 与地形(2)/建筑(4)/植被(8)碰撞
-	collision_layer = 1
-	collision_mask = 2 | 4 | 8
-	# 贴地长度给足：走缓坡与刚跨上台阶时都保持贴地，不被小幅落差抛起
-	floor_snap_length = 0.5
-	floor_max_angle = deg_to_rad(52.0)
 
 func _physics_process(delta: float) -> void:
 	if _step_cooldown > 0.0:
@@ -299,7 +323,9 @@ func try_step_up(move_dir: Vector3, force: bool = false) -> bool:
 	# 节流：连级台阶一次只上一级，否则探针每帧都能探到下一级、一路瞬移上去
 	if _step_cooldown > 0.0:
 		return false
-	if not force and not is_on_floor():
+	# ★ 被小突起顶住时 is_on_floor 往往已经为假 -> 老写法会让抬步彻底不触发（卡死）。
+	#   改成"在地面上 **或** 正贴着什么东西"都允许尝试抬步。
+	if not force and not is_on_floor() and get_slide_collision_count() == 0:
 		return false
 	var dir := Vector3(move_dir.x, 0.0, move_dir.z).normalized()
 	var space := get_world_3d().direct_space_state
@@ -317,7 +343,9 @@ func try_step_up(move_dir: Vector3, force: bool = false) -> bool:
 	var rise := step_top.y - origin.y
 	if rise <= 0.02 or rise > MAX_STEP_HEIGHT:
 		return false
-	if step_normal.angle_to(Vector3.UP) > floor_max_angle:
+	# 抬步用**自己的**上限（STEP_MAX_ANGLE）：抗抖动把 floor_max_angle 收到 45 度后，
+	# 若继续借用它，原本能跨的陡台阶就跨不上去了（副作用隔离）
+	if step_normal.angle_to(Vector3.UP) > STEP_MAX_ANGLE:
 		return false
 	# 净空：踏面之上要有角色身高的空间，否则是头顶被挡的缝隙
 	var up := _cast(space, step_top + Vector3.UP * 0.12, Vector3.UP, STEP_HEADROOM)

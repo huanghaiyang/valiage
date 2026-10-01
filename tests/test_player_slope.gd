@@ -99,8 +99,13 @@ func test_slope_factor_is_wired_into_movement() -> void:
 		return
 	var src := f.get_as_text()
 	f.close()
-	assert_true(src.contains("slope_speed_factor(player.get_floor_normal()"),
+	# 抗抖动改造后：速度系数改用**平滑后的**地面法线（_ground_up），
+	# 所以这里放宽为"必须把 slope_speed_factor 接进移动、且用的是平滑法线"，
+	# 并顺手把新增的两处接线也守住（按平滑地面投影 + 每帧更新法线）。
+	assert_true(src.contains("slope_speed_factor(_ground_up") or src.contains("slope_speed_factor(player.get_floor_normal()"),
 			"移动里没接入坡度速度规则")
+	assert_true(src.contains("move_xz.slide(_ground_up)"), "移动没有按平滑地面投影")
+	assert_true(src.contains("update_ground_up(delta)"), "没有每帧更新平滑地面法线")
 	assert_true(src.contains("move_xz = face * base_speed * factor"), "速度计算没乘上坡度系数")
 	assert_true(src.contains("slope_speed_min_ratio") and src.contains("slope_speed_max_ratio"),
 			"缺少最大/最小速度比例参数")

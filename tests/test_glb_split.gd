@@ -257,7 +257,9 @@ func test_record_row_selection_restores_box() -> void:
 	row.select(0)
 	print("[行选择] is_selected(0) = %s" % str(row.is_selected(0)))
 	panel.call("_on_left_selection_changed")
-	panel.call("_on_left_multi_selected", 0, 0, true)
+	# Tree.multi_selected 的第一个参数是 TreeItem（面板的处理器已按正确签名接收），
+	# 处理器本身不用这个参数，所以传 null 即可。
+	panel.call("_on_left_multi_selected", null, 0, true)
 	var bd: Dictionary = panel.get("_box_data")
 	var mi = panel.get("_box_mi")
 	print("[行选择] select 后 origin=%s ｜ _box_mi=%s ｜ visible=%s" % [
@@ -320,8 +322,11 @@ func test_default_box_uses_cached_model_aabb() -> void:
 	assert_true(bd.has("origin"), "默认框没建出来")
 	var h1: Vector3 = bd["half"]
 	print("[缓存AABB] 建档 half = %s" % str(h1))
-	assert_true(absf(h1.x - 1.0) < 0.001 and absf(h1.y - 1.0) < 0.001 and absf(h1.z - 1.0) < 0.001,
-			"默认框不是模型等大")
+	# 用户要求：默认框要比模型 AABB **大一圈**（留白 = 对角线 3%，最少 2 毫米）
+	assert_true(h1.x > 1.0 and h1.y > 1.0 and h1.z > 1.0,
+			"默认框必须比模型大一圈（实测 %s）" % str(h1))
+	assert_true(h1.x < 1.2 and h1.y < 1.2 and h1.z < 1.2,
+			"默认框留白过大（实测 %s）" % str(h1))
 	# 再往 holder 里扔几个很远的假分块（模拟"自动分离之后散开"）
 	var holder: Node3D = panel.get("_holder")
 	if holder != null:
@@ -488,6 +493,14 @@ func test_exported_glb_is_not_empty() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(out_dir))
 	var slot := load("res://tests/test_glb_split.gd")    # 占位，避免未使用告警
 	panel.call("_do_export_to", parts, [0], "测试", out_dir)
+	# ★ 导出现在跑在**子线程**里：必须等它结束再往下走
+	#   （否则文件还没写出来；而且直接 free 面板会撞 "Attempted to free a locked object"）
+	panel.set_process(false)
+	var th: Thread = panel.get("_thread")
+	if th != null:
+		th.wait_to_finish()
+		panel.set("_thread", null)
+	panel.set("_export_result", {})
 	var out := out_dir.path_join("石质墓园栅栏_01.glb")
 	var fa := FileAccess.open(out, FileAccess.READ)
 	var sz := fa.get_length() if fa != null else 0

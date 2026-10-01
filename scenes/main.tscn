@@ -20,6 +20,7 @@
 [ext_resource type="ArrayMesh" uid="uid://sptcpdx6wtm8" path="res://addons/simplegrasstextured/default_mesh.tres" id="18_yc10j"]
 [ext_resource type="Script" uid="uid://d3wqowrjurdbv" path="res://scripts/quality/terrain_quality.gd" id="19_0ld40"]
 [ext_resource type="Script" uid="uid://2juaclm8gc1n" path="res://addons/simplegrasstextured/grass.gd" id="19_jscy8"]
+[ext_resource type="PackedScene" uid="uid://dm05sx51tmh42" path="res://scenes/cross_1.tscn" id="23_og1vs"]
 [ext_resource type="Script" uid="uid://cjl5g2p8tdivf" path="res://addons/stuck_monitor/stuck_monitor.gd" id="23_pm3ni"]
 [ext_resource type="PackedScene" uid="uid://c17ener7hr6nw" path="res://scenes/墓地遗迹.tscn" id="23_y6deb"]
 
@@ -116,7 +117,7 @@ normal_texture = ExtResource("15_jscy8")
 mesh_list = Array[Terrain3DMeshAsset]([SubResource("Terrain3DMeshAsset_jbj1t")])
 texture_list = Array[Terrain3DTextureAsset]([SubResource("Terrain3DTextureAsset_dp3eg"), SubResource("Terrain3DTextureAsset_pm3ni")])
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_jscy8"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_2wyq8"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -274,7 +275,7 @@ script = ExtResource("8_ui")
 script = ExtResource("9_minimap")
 
 [node name="SpawnPoint" type="Marker3D" parent="." unique_id=1612475891]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 7.4421234, 0.098872244, 0.7977996)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -17.364235, 0.098872244, -27.026634)
 script = ExtResource("10_spawn")
 yaw_degrees = -135.0
 pitch_degrees = -9.3689
@@ -288,7 +289,7 @@ top_level = true
 metadata/_edit_lock_ = true
 
 [node name="SimpleGrassTextured" type="MultiMeshInstance3D" parent="." unique_id=494743626]
-material_override = SubResource("ShaderMaterial_jscy8")
+material_override = SubResource("ShaderMaterial_2wyq8")
 cast_shadow = 0
 multimesh = SubResource("MultiMesh_yc10j")
 script = ExtResource("19_jscy8")
@@ -319,5 +320,8 @@ player_path = NodePath("../Player")
 script = ExtResource("19_0ld40")
 terrain_path = NodePath("../Terrain3D")
 
-[node name="墓地遗迹" parent="." unique_id=1432058954 instance=ExtResource("23_y6deb")]
-transform = Transform3D(12.183767, 0, -13.249748, 0, 18, 0, 13.249748, 0, 12.183767, -2.2824078, -0.53052163, -16.252651)
+[node name="墓地遗迹" parent="." unique_id=1213595115 instance=ExtResource("23_y6deb")]
+transform = Transform3D(-14.638751, 0, -3.2721486, 0, 15, 0, 3.2721486, 0, -14.638751, -10.508314, -0.6440625, -22.29702)
+
+[node name="cross_1" parent="." unique_id=2122225381 instance=ExtResource("23_og1vs")]
+transform = Transform3D(2.9588568, 0, -0.49514282, 0, 3, 0, 0.49514282, 0, 2.9588568, -9.690185, 1.3714155, -22.40274)

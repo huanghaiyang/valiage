@@ -97,6 +97,10 @@ var _current_yaw := 0.0
 var _current_pitch := 0.0
 var _mouse_captured := true
 var _velocity_y := 0.0       # 垂直速度（跳跃/重力）
+# ★ 平滑后的地面法线（"法线中值"）：修掉三角网逐面法线跳变导致的抖动/被弹开
+var _ground_up := Vector3.UP
+var _ground_ready := false
+const GROUND_SMOOTH_RATE := 14.0    # 时域平滑速率（越大跟得越快）
 var _space_prev := false     # 上一帧空格状态（防按住连跳）
 var interact_freeze := false    # 家具互动期间冻结角色物理驱动（位置由 player 管理）
 
@@ -505,7 +509,8 @@ func _physics_process(delta: float) -> void:
 		var base_speed := run_speed if running else move_speed
 		# 上坡减速、下坡加速、限制在 min/max 比例内。地形和物体模型的坡面走的是同一套
 		# floor_normal，所以"在物体上移动"自动同样生效。
-		var factor := slope_speed_factor(player.get_floor_normal(), face.normalized(), player.is_on_floor())
+		# ★ 用**平滑后**的地面法线（逐面法线会跳变 -> 速度因子每帧抖）
+		var factor := slope_speed_factor(_ground_up if _ground_ready else player.get_floor_normal(), face.normalized(), player.is_on_floor())
 		move_xz = face * base_speed * factor
 		# 裂缝守卫：前方是窄缝时本帧停下（否则会扎进地形、被去穿插弹飞）
 		if player.is_on_floor() and face.length_squared() > 0.001:
@@ -532,13 +537,26 @@ func _physics_process(delta: float) -> void:
 		player.on_jump()
 	_space_prev = space_now
 
+	# ★ 先把水平移动按**平滑地面**投影一次，并把投影得到的 y 分量带上：
+	#   旧写法 velocity.y 只放 _velocity_y，等于"水平向量是平的"，
+	#   引擎只能每帧拿逐三角法线去重新投影 -> 三角网地形上必然抖动/被弹开。
+	if player.is_on_floor() and _ground_ready:
+		var before_proj := move_xz
+		move_xz = move_xz.slide(_ground_up)
+		if move_xz.length_squared() < 0.0001:
+			move_xz = before_proj            # 兜底：别把移动整帧吃掉
 	# 用 move_and_slide 走物理碰撞（地面/建筑/树的碰撞体生效，禁止穿入）
 	var was_air := not player.is_on_floor()
-	player.velocity = Vector3(move_xz.x, _velocity_y, move_xz.z)
+	player.velocity = Vector3(move_xz.x, move_xz.y + _velocity_y, move_xz.z)
 	player.move_and_slide()
+	# ★ 采样并平滑地面法线（要在 move_and_slide 之后，is_on_floor 才是本帧结果）
+	update_ground_up(delta)
 
-	# 自动抬步：被低台阶挡住时跨上去（楼梯无需按 E；E 只留给梯子）
-	if moved and move_xz.length_squared() > 0.001 and player.is_on_floor():
+	# 自动抬步：被低台阶/小突起挡住时跨上去（楼梯无需按 E；E 只留给梯子）
+	# ★ 门槛放宽：原来只在 is_on_floor 时尝试，而顶在小突起上时 is_on_floor 往往已为假
+	#   -> 抬步根本不触发 -> 卡死。现在"被挡住且不在上升"也允许尝试。
+	var blocked_now := player.get_slide_collision_count() > 0
+	if moved and move_xz.length_squared() > 0.001 and (player.is_on_floor() or (blocked_now and _velocity_y <= 0.0)):
 		if player.try_step_up(move_xz):
 			_velocity_y = 0.0
 
@@ -714,6 +732,70 @@ func _ray_down(space: PhysicsDirectSpaceState3D, from: Vector3, dist: float) -> 
 	if player != null:
 		q.exclude = [player.get_rid()]
 	return space.intersect_ray(q)
+
+
+## 逐轴取**中值**（抗异常值）：三角网上某条射线可能正好打到一块陡面，
+## 用平均会被它拽偏，中值不会 —— 这就是"法线中值"的核心。
+func median_normal(normals: Array) -> Vector3:
+	if normals.is_empty():
+		return Vector3.UP
+	var xs: Array = []
+	var ys: Array = []
+	var zs: Array = []
+	for v in normals:
+		var n: Vector3 = v
+		xs.append(n.x)
+		ys.append(n.y)
+		zs.append(n.z)
+	xs.sort()
+	ys.sort()
+	zs.sort()
+	var mid: int = xs.size() / 2
+	var med := Vector3(xs[mid], ys[mid], zs[mid])
+	if med.length_squared() < 0.000001:
+		return Vector3.UP
+	med = med.normalized()
+	# 中值偏得太离谱（几乎不是地面）-> 不采信
+	if med.y < 0.2:
+		return Vector3.UP
+	return med
+
+
+## 在脚下采 5 个点（中心 + 四周）的地面法线，滤掉陡面，再取中值
+func sample_ground_up(space: PhysicsDirectSpaceState3D) -> Vector3:
+	var feet := player.global_position
+	var r := 0.28                      # 采样半径（和胶囊半径同量级）
+	var probe := 1.4                   # 向下探的距离
+	var offs := [
+		Vector3.ZERO,
+		Vector3(r, 0.0, 0.0), Vector3(-r, 0.0, 0.0),
+		Vector3(0.0, 0.0, r), Vector3(0.0, 0.0, -r),
+	]
+	var got: Array = []
+	for off in offs:
+		var hit := _ray_down(space, feet + Vector3(0.0, 0.5, 0.0) + off, probe)
+		if hit.is_empty():
+			continue
+		var n: Vector3 = hit["normal"]
+		# 法线太斜 -> 那是墙/侧面，不是地面，丢掉（避免被它推走）
+		if n.angle_to(Vector3.UP) > player.floor_max_angle:
+			continue
+		got.append(n.normalized())
+	return median_normal(got)
+
+
+## 每帧更新平滑地面法线（接地时快速跟随，离地时缓慢回正）
+func update_ground_up(delta: float) -> void:
+	if player.is_on_floor():
+		var med := sample_ground_up(get_world_3d().direct_space_state)
+		var k := 1.0 - exp(-GROUND_SMOOTH_RATE * delta)
+		_ground_up = _ground_up.lerp(med, k)
+		if _ground_up.length_squared() > 0.000001:
+			_ground_up = _ground_up.normalized()
+		_ground_ready = true
+	elif _ground_ready:
+		var k2 := 1.0 - exp(-4.0 * delta)
+		_ground_up = _ground_up.lerp(Vector3.UP, k2).normalized()
 
 
 func slope_speed_factor(normal: Vector3, move_dir: Vector3, on_floor: bool) -> float:
