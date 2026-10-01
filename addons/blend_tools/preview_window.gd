@@ -51,6 +51,9 @@ var _split_status: Label = null     # ★ 右侧自己的状态栏（和左侧�
 var _split_busy := false            # ★ 右侧自己的忙碌标记
 var _tex_check: CheckBox = null     # ★ 左侧：白膜 / 贴图 切换
 var _wind_check: CheckBox = null    # ★ 共用导出选项（顶部栏）：是否把风参数写进材质
+var _shader_path := BlendExport.SHADER_PATH          # ★ 导出材质用哪个 shader（默认项目里的 grass_wind）
+var _shader_btn: Button = null
+var _shader_label: Label = null
 var _relinked := {}                 # 网格实例 -> 带贴图的**网格副本**
 var _orig_mesh := {}                # 网格实例 -> 原始网格（切回白膜时还原）
 var _picker_file: EditorFileDialog = null
@@ -132,6 +135,24 @@ func _build_ui() -> void:
 	_wind_check.button_pressed = true
 	_wind_check.tooltip_text = "勾上：导出的材质写入风向/风力/阵风/频率/湍流（受天气系统驱动）；不勾：不写，这些草无风"
 	top.add_child(_wind_check)
+	# 导出材质用哪个 shader（默认 = 项目里的 assets/shaders/grass_wind.gdshader）
+	# 用「按钮 + 标签」而不是 EditorResourcePicker：后者是编辑器专用控件，
+	# 创建不出来时会让整个界面构建中断，不稳。
+	var sh_lab := Label.new()
+	sh_lab.text = "材质 shader"
+	top.add_child(sh_lab)
+	_shader_btn = Button.new()
+	_shader_btn.text = "选择…"
+	_shader_btn.tooltip_text = "点这里挑导出材质用的 shader（默认 assets/shaders/grass_wind.gdshader）"
+	_shader_btn.pressed.connect(_on_pick_shader)
+	top.add_child(_shader_btn)
+	_shader_label = Label.new()
+	_shader_label.clip_text = true                                  # 别让长路径撑爆顶部栏
+	_shader_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_shader_label.custom_minimum_size = Vector2(200, 0)
+	_shader_label.tooltip_text = _shader_path
+	_shader_label.text = _shader_path                              # ★ 显示**完整路径**
+	top.add_child(_shader_label)
 	vb.add_child(top)
 
 	# 主体
@@ -171,7 +192,6 @@ func _build_ui() -> void:
 	var lhint := Label.new()
 	lhint.text = "左键转 / 右键平移 / 滚轮缩放 / WASD 移动"
 	lhint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	lhint.add_theme_font_size_override("font_size", 11)
 	ltop.add_child(lhint)
 	# 白膜 / 贴图 切换。blend 里的贴图链接是断的 -> 导入材质本来就是白膜，
 	# 勾上则用"按名字回链项目贴图"的材质。
@@ -207,7 +227,6 @@ func _build_ui() -> void:
 	left.add_child(lexp)
 	_status = Label.new()
 	_status.clip_text = true
-	_status.add_theme_font_size_override("font_size", 11)
 	left.add_child(_status)
 
 	_vp_box = SubViewportContainer.new()
@@ -330,7 +349,6 @@ func _build_ui() -> void:
 	right.add_child(rexp)
 	_split_status = Label.new()
 	_split_status.clip_text = true
-	_split_status.add_theme_font_size_override("font_size", 11)
 	right.add_child(_split_status)
 
 	# （导出按钮与状态栏已各自放进左右面板，不再共用底栏）
@@ -887,6 +905,31 @@ func _left_nodes() -> Array:
 	return _checked_nodes()
 
 
+## 挑导出材质用的 shader（只筛 *.gdshader）
+func _on_pick_shader() -> void:
+	var dlg := EditorFileDialog.new()
+	dlg.access = EditorFileDialog.ACCESS_RESOURCES
+	dlg.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	dlg.title = "选择导出材质用的 shader"
+	dlg.add_filter("*.gdshader", "Shader")
+	var cur_dir := _shader_path.get_base_dir()
+	if not cur_dir.is_empty():
+		dlg.current_dir = cur_dir
+	dlg.file_selected.connect(_on_shader_chosen)
+	add_child(dlg)
+	dlg.popup_centered_ratio(0.6)
+
+
+func _on_shader_chosen(path: String) -> void:
+	if path.is_empty():
+		return
+	_shader_path = path
+	if _shader_label != null:
+		_shader_label.text = path          # ★ 完整路径
+		_shader_label.tooltip_text = path
+	_status.text = "导出材质将使用：" + path.replace("res://", "")
+
+
 func _on_export_single() -> void:
 	_ask_export(FILE_MODE_SAVE_FILE, 0)
 
@@ -978,7 +1021,7 @@ func _run_export(nodes: Array, target: String, single: bool, view: int) -> void:
 	# 共用选项：两个面板都用顶部栏那一个勾选框
 	var chk := _wind_check
 	var init_wind := chk == null or chk.button_pressed
-	var r: Dictionary = BlendExport.export_nodes(nodes, target, single, init_wind)
+	var r: Dictionary = BlendExport.export_nodes(nodes, target, single, init_wind, _shader_path)
 	if view == 0:
 		_busy = false
 	else:

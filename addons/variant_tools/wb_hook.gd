@@ -71,10 +71,11 @@ func _do_swap(node: Node) -> void:
 	# 把场景状态搞乱，导致之后场景树里连"删除"都失灵。
 	# 原地换 mesh 则节点/owner/元数据/变换/World Brush 的记账全都不动，
 	# 对 World Brush 完全透明（它的 INSTANCE_META、擦除、存档全都照常）。
-	if _swap_in_place(node, pick):
-		return
-	# 兜底：两边结构对不上（例如实例里不是 MeshInstance3D）时才换节点，
-	# 而且要在编辑器撤销系统里做，不能裸删。
+	# ★★ 必须整节点替换，**不能只换 mesh** ★★
+	#   草网格是各自 .tscn 里的 sub_resource，跨场景引用它 Godot 存盘时无法描述：
+	#   编辑器里内存中看着变了，但保存后场景里还是原来的 -> 游戏加载就是原样
+	#   （实测症状：变体工具刷出来的草在编辑器生效，游戏里没生效）。
+	#   整节点替换后，新节点自己是 scene_file_path = 目标变体的**场景实例** -> 能存盘 ✓
 	_replace_node(node, pick)
 
 
@@ -129,7 +130,9 @@ func _replace_node(node: Node3D, pick: String) -> void:
 		return
 	var idx := node.get_index()
 	var ur: Variant = null
-	if EditorInterface.has_method("get_editor_undo_redo"):
+	# ★ 必须先判断是不是编辑器：非编辑器（headless / 游戏）下 EditorInterface 是空壳，
+	# 连 has_method 都可能不存在 —— 直接调它会让**整个函数中断**，结果连替换都不做。
+	if Engine.is_editor_hint() and EditorInterface.has_method("get_editor_undo_redo"):
 		ur = EditorInterface.get_editor_undo_redo()
 	if ur != null:
 		ur.create_action("随机变体（放置）")

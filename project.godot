@@ -193,6 +193,6 @@ sgt_wind_pattern={
 sets={
 "res://scenes/草/grass_bermuda_01_dead_a.tscn": {
 "on": true,
-"variants": ["res://scenes/草/grass_bermuda_01_dead_a.tscn", "res://scenes/草/grass_bermuda_01_medium_b.tscn", "res://scenes/草/grass_bermuda_01_medium_f.tscn"]
+"variants": ["res://scenes/草/grass_bermuda_01_dead_a.tscn", "res://scenes/草/grass_bermuda_01_dead_b.tscn", "res://scenes/草/grass_bermuda_01_flattened_a.tscn", "res://scenes/草/grass_bermuda_01_medium_a.tscn", "res://scenes/草/grass_bermuda_01_medium_b.tscn", "res://scenes/草/grass_bermuda_01_medium_c.tscn", "res://scenes/草/grass_bermuda_01_medium_d.tscn", "res://scenes/草/grass_bermuda_01_medium_e.tscn", "res://scenes/草/grass_bermuda_01_medium_f.tscn", "res://scenes/草/grass_bermuda_01_seedling_a.tscn", "res://scenes/草/grass_bermuda_01_seedling_b.tscn", "res://scenes/草/grass_bermuda_01_seedling_c.tscn", "res://scenes/草/grass_bermuda_01_seedling_d.tscn", "res://scenes/草/grass_bermuda_01_single_a.tscn", "res://scenes/草/grass_bermuda_01_single_b.tscn", "res://scenes/草/grass_bermuda_01_small_a.tscn", "res://scenes/草/grass_bermuda_01_small_b.tscn", "res://scenes/草/grass_bermuda_01_small_c.tscn", "res://scenes/草/grass_bermuda_01_small_d.tscn", "res://scenes/草/grass_bermuda_01_small_e.tscn", "res://scenes/草/grass_bermuda_01_small_f.tscn"]
 }
 }

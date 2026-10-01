@@ -8,7 +8,7 @@ extends RefCounted
 ##  2. 如果找到了 alpha 遮罩图 -> 用自带的 shader（图集常见黑底，标准材质没有单独
 ##     alpha 槽位，不接遮罩就会露出黑色多边形）。
 
-const SHADER_PATH := "res://addons/blend_tools/blend_alpha.gdshader"
+const SHADER_PATH := "res://assets/shaders/grass_wind.gdshader"   # 运行时资产放 assets，不放插件内
 
 ## 「初始化风参数」勾上时要写进材质的初始风值（对齐游戏晴朗天气预设）
 const WIND_INIT := {
@@ -21,7 +21,7 @@ const WIND_INIT := {
 
 ## nodes: Array[MeshInstance3D] ｜ out_path: .tscn 路径（单个）或目录（每个一个文件）
 ## 返回 { ok, message, files }
-static func export_nodes(nodes: Array, out_path: String, single_file: bool, init_wind: bool = true) -> Dictionary:
+static func export_nodes(nodes: Array, out_path: String, single_file: bool, init_wind: bool = true, shader_path: String = SHADER_PATH) -> Dictionary:
 	var valid: Array = []
 	for n in nodes:
 		if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
@@ -40,7 +40,7 @@ static func export_nodes(nodes: Array, out_path: String, single_file: bool, init
 	var files: Array = []
 
 	if single_file:
-		var built := _build_scene(valid, src_dir, out_dir, mat_cache, true, init_wind)
+		var built := _build_scene(valid, src_dir, out_dir, mat_cache, true, init_wind, shader_path)
 		var err := ResourceSaver.save(built["packed"], out_path)
 		built["root"].free()
 		if err != OK:
@@ -49,7 +49,7 @@ static func export_nodes(nodes: Array, out_path: String, single_file: bool, init
 	else:
 		for n in valid:
 			var one: Array = [n]
-			var built := _build_scene(one, src_dir, out_dir, mat_cache, false, init_wind)
+			var built := _build_scene(one, src_dir, out_dir, mat_cache, false, init_wind, shader_path)
 			var p := out_dir.path_join(_safe(String(n.name)) + ".tscn")
 			var err := ResourceSaver.save(built["packed"], p)
 			built["root"].free()
@@ -61,7 +61,7 @@ static func export_nodes(nodes: Array, out_path: String, single_file: bool, init
 	return {"ok": true, "message": "已导出 %d 个文件（共享材质 %d 个）" % [files.size(), mat_cache.size()], "files": files}
 
 
-static func _build_scene(nodes: Array, src_dir: String, out_dir: String, mat_cache: Dictionary, single: bool, init_wind: bool = true) -> Dictionary:
+static func _build_scene(nodes: Array, src_dir: String, out_dir: String, mat_cache: Dictionary, single: bool, init_wind: bool = true, shader_path: String = SHADER_PATH) -> Dictionary:
 	var root := Node3D.new()
 	# 根节点名要有意义：单个对象就用对象名，多个对象就用第一个对象名 + _group。
 	# 之前固定叫 BlendExport -> World Brush 会把它当实例名，场景树里就变成
@@ -86,7 +86,7 @@ static func _build_scene(nodes: Array, src_dir: String, out_dir: String, mat_cac
 			var src := mesh.surface_get_material(s)
 			var key := _mat_key(src)
 			if not mat_cache.has(key):
-				var built := _build_material(src, src_dir, out_dir, key, init_wind)
+				var built := _build_material(src, src_dir, out_dir, key, init_wind, shader_path)
 				mat_cache[key] = built
 			mesh.surface_set_material(s, mat_cache[key])
 		var copy := MeshInstance3D.new()
@@ -144,7 +144,7 @@ static func _mat_key(m: Material) -> String:
 
 
 ## 造导出用材质：优先用源材质里已经接好的图；没接就按名字在磁盘上找
-static func _build_material(src: Material, src_dir: String, out_dir: String, key: String, init_wind: bool = true) -> Material:
+static func _build_material(src: Material, src_dir: String, out_dir: String, key: String, init_wind: bool = true, shader_path: String = SHADER_PATH) -> Material:
 	var base := ""
 	var albedo: Texture2D = null
 	var normal: Texture2D = null
@@ -174,7 +174,10 @@ static func _build_material(src: Material, src_dir: String, out_dir: String, key
 	var tr := _transparency_of(src)
 	if alpha != null:
 		# 有遮罩 -> 用自带 shader（解决图集黑底）
-		var sh: Shader = load(SHADER_PATH)
+		# 用调用方选的 shader（面板上可换）；没选/载入失败就退回默认
+		var sh: Shader = load(shader_path)
+		if sh == null:
+			sh = load(SHADER_PATH)
 		if sh != null:
 			var shm := ShaderMaterial.new()
 			shm.shader = sh

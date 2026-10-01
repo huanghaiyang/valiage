@@ -55,7 +55,14 @@ var light_scale := 1.0
 ## 风向（水平单位向量）
 var wind_dir := Vector2(1.0, 0.0)
 ## 风向缓慢漂移的相位
+## --- 风向：每隔一段时间随机挑一个新方向，再平滑转过去 ---
+@export var wind_dir_interval_min := 18.0   ## 换风向最短间隔（秒）
+@export var wind_dir_interval_max := 45.0   ## 最长间隔
+@export var wind_dir_turn_time := 6.0       ## 转向耗时（秒，越大越平缓）
 var _dir_phase := 0.0
+var _dir_current := PI * 0.35               ## 当前风向角
+var _dir_target := PI * 0.35                ## 目标风向角
+var _dir_timer := 12.0                      ## 距离下次换向
 var _rng := RandomNumberGenerator.new()
 var _auto_timer := 0.0
 
@@ -161,6 +168,9 @@ func _update_params(delta: float) -> void:
 	var a: Dictionary = PRESETS.get(current, PRESETS[Kind.CLEAR])
 	var b: Dictionary = PRESETS.get(target, a)
 	var t: float = blend if current != target else 1.0
+	# ★ 缓动：线性插值是「匀速直线变过去」，很生硬；
+	# 用 smoothstep 做成「缓慢起步 -> 中段快 -> 缓慢收尾」，风/云/雨才有过渡感。
+	t = t * t * (3.0 - 2.0 * t)
 	var wdir := _wind_direction_now(delta)
 	for key in ["wind", "gust", "turb", "cloud", "rain", "fog", "light"]:
 		var va := float(a.get(key, 0.0))
@@ -178,12 +188,19 @@ func _update_params(delta: float) -> void:
 	wind_speed = lerpf(0.8, 3.6, clampf(wind, 0.0, 1.5))
 	wind_dir = wdir
 
-## 风向随时间缓慢漂移（基础方向 + 低频旋转）
+## 风向：每隔 wind_dir_interval_* 秒随机挑一个新方向（和当前至少差 60 度，
+## 免得「换了像没换」），再用 wind_dir_turn_time 平滑转过去 —— 不会突然跳变。
+## 另外叠一点很慢的低频摆动，让风有呼吸感（幅度很小，不抢主导方向）。
 func _wind_direction_now(delta: float) -> Vector2:
-	_dir_phase += delta * 0.02
-	var base := PI * 0.35                     # 主导风向（西南）
-	var sway := sin(_dir_phase) * 0.35 + sin(_dir_phase * 0.37 + 1.7) * 0.2
-	var ang := base + sway
+	_dir_timer -= delta
+	if _dir_timer <= 0.0:
+		_dir_timer = _rng.randf_range(wind_dir_interval_min, wind_dir_interval_max)
+		_dir_target = wrapf(_dir_current + _rng.randf_range(1.05, TAU - 1.05), 0.0, TAU)
+	var ft := clampf(delta / maxf(0.01, wind_dir_turn_time), 0.0, 1.0)
+	ft = ft * ft * (3.0 - 2.0 * ft)                 # 转向也缓入缓出
+	_dir_current = lerp_angle(_dir_current, _dir_target, ft)
+	_dir_phase += delta * 0.35
+	var ang := _dir_current + sin(_dir_phase) * 0.12
 	return Vector2(cos(ang), sin(ang))
 
 ## 把当前风参数写进植被共享材质：所有植被按同一风向摆动。
