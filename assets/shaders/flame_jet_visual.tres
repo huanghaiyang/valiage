@@ -1,0 +1,58 @@
+[gd_resource type="VisualShader" format=3 uid="uid://56wrqh4r5ry7"]
+
+[sub_resource type="VisualShaderNodeExpression" id="VisualShaderNodeExpression_acr4f"]
+size = Vector2(439, 280)
+expression = "
+float t = clamp(1.0 - UV.y, 0.0, 1.0);
+float radius = mix(0.04, 0.52, pow(t, 0.55));
+float d = abs(UV.x - 0.5);
+float mask = 1.0 - smoothstep(radius * 0.12, radius, d);
+float n1 = sin(UV.x * 17.0 + TIME * 2.7) * 0.5 + 0.5;
+float n2 = sin(t * 21.0 - TIME * 7.1 + UV.x * 9.3) * 0.5 + 0.5;
+float n3 = sin((UV.x + t) * 31.0 + TIME * 11.0) * 0.5 + 0.5;
+float n = clamp(n1 * 0.5 + n2 * 0.35 + n3 * 0.25, 0.0, 1.0);
+mask *= mix(0.35, 1.0, n);
+mask *= 1.0 - smoothstep(0.72, 1.0, t) * 0.72;
+vec3 c_core = vec3(1.0, 0.90, 0.62);
+vec3 c_hot  = vec3(1.0, 0.62, 0.14);
+vec3 c_mid  = vec3(0.95, 0.32, 0.05);
+vec3 c_tail = vec3(0.45, 0.09, 0.02);
+vec3 col = mix(c_core, c_hot, smoothstep(0.0, 0.18, t));
+col = mix(col, c_mid, smoothstep(0.18, 0.50, t));
+col = mix(col, c_tail, smoothstep(0.50, 1.0, t));
+col += c_core * 0.16 * smoothstep(0.55, 1.0, mask) * (1.0 - t);
+output0 = col;
+output1 = clamp(mask * 0.85, 0.0, 1.0);
+output2 = col * 2.2;
+"
+
+[resource]
+nodes/fragment/2/node = SubResource("VisualShaderNodeExpression_acr4f")
+nodes/fragment/2/position = Vector2(-26.666666, 40)
+nodes/fragment/2/size = Vector2(439, 280)
+nodes/fragment/2/input_ports = ""
+nodes/fragment/2/output_ports = "0,4,output0;1,0,output1;2,4,output2;"
+nodes/fragment/2/expression = "
+float t = clamp(1.0 - UV.y, 0.0, 1.0);
+float radius = mix(0.04, 0.52, pow(t, 0.55));
+float d = abs(UV.x - 0.5);
+float mask = 1.0 - smoothstep(radius * 0.12, radius, d);
+float n1 = sin(UV.x * 17.0 + TIME * 2.7) * 0.5 + 0.5;
+float n2 = sin(t * 21.0 - TIME * 7.1 + UV.x * 9.3) * 0.5 + 0.5;
+float n3 = sin((UV.x + t) * 31.0 + TIME * 11.0) * 0.5 + 0.5;
+float n = clamp(n1 * 0.5 + n2 * 0.35 + n3 * 0.25, 0.0, 1.0);
+mask *= mix(0.35, 1.0, n);
+mask *= 1.0 - smoothstep(0.72, 1.0, t) * 0.72;
+vec3 c_core = vec3(1.0, 0.90, 0.62);
+vec3 c_hot  = vec3(1.0, 0.62, 0.14);
+vec3 c_mid  = vec3(0.95, 0.32, 0.05);
+vec3 c_tail = vec3(0.45, 0.09, 0.02);
+vec3 col = mix(c_core, c_hot, smoothstep(0.0, 0.18, t));
+col = mix(col, c_mid, smoothstep(0.18, 0.50, t));
+col = mix(col, c_tail, smoothstep(0.50, 1.0, t));
+col += c_core * 0.16 * smoothstep(0.55, 1.0, mask) * (1.0 - t);
+output0 = col;
+output1 = clamp(mask * 0.85, 0.0, 1.0);
+output2 = col * 2.2;
+"
+nodes/fragment/connections = PackedInt32Array(2, 0, 0, 0, 2, 1, 0, 1, 2, 2, 0, 5)

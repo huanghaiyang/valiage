@@ -10,12 +10,14 @@ extends Node
 ##   按住左键   -> 朝角色正前方持续喷射（从法杖顶端喷出），魔法值耗尽自动停
 
 const SpellWheel := preload("res://scripts/spells/spell_wheel.gd")
-const FlameJet := preload("res://scripts/spells/flame_jet.gd")
+const FlameVisual := preload("res://scripts/spells/flame_visual.gd")
+
 
 @export var enabled := true
 @export var wheel_action := "spell_wheel"     ## 输入动作名（没有就退回直接读 E）
 @export var cast_action := "spell_cast"       ## 没有就退回直接读鼠标左键
 @export var auto_find_interval := 0.5
+
 
 var wheel: CanvasLayer = null
 var jet: Node3D = null
@@ -124,7 +126,7 @@ func _ensure_jet() -> void:
 		return
 	if _player == null or _staff == null:
 		return
-	var j: Node3D = FlameJet.new()
+	var j: Node3D = FlameVisual.new()
 	j.name = "FlameJet"
 	_player.get_parent().add_child(j)
 	j.call("setup", _player, _staff)
