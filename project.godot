@@ -60,6 +60,8 @@ SimpleGrass="*uid://bfq0snth8sj3h"
 Quality="*res://scripts/quality/quality_manager.gd"
 GameSettings="*res://scripts/settings/game_settings.gd"
 Wind="*res://scripts/wind.gd"
+Mana="*res://scripts/spells/mana.gd"
+SpellCaster="*res://scripts/spells/spell_caster.gd"
 
 [display]
 
