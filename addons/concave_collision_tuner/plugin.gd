@@ -62,8 +62,10 @@ func _selected_collider() -> CollisionShape3D:
 	if sel == null:
 		return null
 	for n in sel.get_selected_nodes():
-		if n is CollisionShape3D and (n as CollisionShape3D).shape is ConcavePolygonShape3D:
-			return n as CollisionShape3D
+		if n is CollisionShape3D:
+			var sh := (n as CollisionShape3D).shape
+			if sh is ConcavePolygonShape3D or sh is ConvexPolygonShape3D:
+				return n as CollisionShape3D
 	return null
 
 

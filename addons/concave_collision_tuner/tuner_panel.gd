@@ -21,6 +21,16 @@ const META_SRC := &"concave_tuner_src_faces"   # 记系数时的源网格面数�
 
 var _cs: CollisionShape3D = null
 var _shape: ConcavePolygonShape3D = null
+## ★ 凸包模式：形状是 ConvexPolygonShape3D 时走这条路（点数可控）
+var _convex: ConvexPolygonShape3D = null
+var _is_convex := false
+var _simplify_check: CheckBox = null
+## ★ 两套功能**各自独立记忆**：凹沿用原有键（向后兼容已有场景），凸用新键，互不串味
+const META_RATIO_CVX := &"convex_tuner_ratio"
+const META_SRC_CVX := &"convex_tuner_src_faces"
+var _concave_only: Array[Control] = []     # 只在凹三角网模式显示的控件
+var _convex_only: Array[Control] = []      # 只在凸包模式显示的控件
+var _title: Label = null
 var _src: MeshInstance3D = null
 var _src_faces := 0
 
@@ -52,6 +62,8 @@ var _thread_report := ""           # 拓扑校验的完整报告
 func setup(collision_shape: CollisionShape3D) -> void:
 	_cs = collision_shape
 	_shape = _cs.shape as ConcavePolygonShape3D
+	_convex = _cs.shape as ConvexPolygonShape3D
+	_is_convex = _convex != null
 	_build_ui()
 	_find_source()
 	_restore_ratio()      # 先恢复上次记住的系数（没有就让 _refresh 按当前形状预填）
@@ -61,15 +73,24 @@ func setup(collision_shape: CollisionShape3D) -> void:
 # ------------------------------------------------------------------ 系数记忆
 
 ## 这个节点上有没有记过系数
+## 当前模式该用哪个记忆键（凹/凸完全分开，互不影响）
+func _ratio_key() -> StringName:
+	return META_RATIO_CVX if _is_convex else META_RATIO
+
+
+func _src_key() -> StringName:
+	return META_SRC_CVX if _is_convex else META_SRC
+
+
 func _has_saved_ratio() -> bool:
-	return _cs != null and _cs.has_meta(META_RATIO)
+	return _cs != null and _cs.has_meta(_ratio_key())
 
 
 ## 从节点 metadata 恢复系数；没有就等 _refresh 按"当前形状 / 源网格"预填
 func _restore_ratio() -> void:
 	if not _has_saved_ratio():
 		return
-	var r := clampf(float(_cs.get_meta(META_RATIO)), 0.0005, 1.0)
+	var r := clampf(float(_cs.get_meta(_ratio_key())), 0.0005, 1.0)
 	_spin.set_value_no_signal(r * 100.0)
 	_slider.set_value_no_signal(clampf(r * 100.0, _slider.min_value, _slider.max_value))
 	_prefilled = true
@@ -79,18 +100,18 @@ func _restore_ratio() -> void:
 func _save_ratio(ratio: float) -> void:
 	if _cs == null:
 		return
-	_cs.set_meta(META_RATIO, ratio)
-	_cs.set_meta(META_SRC, _src_faces)
+	_cs.set_meta(_ratio_key(), ratio)
+	_cs.set_meta(_src_key(), _src_faces)
 
 
 # ------------------------------------------------------------------ UI
 
 func _build_ui() -> void:
 	add_child(_make_sep())
-	var title := Label.new()
-	title.text = "凹多边形碰撞调参"
-	title.add_theme_font_size_override("font_size", 14)
-	add_child(title)
+	_title = Label.new()
+	_title.text = "碰撞调参"
+	_title.add_theme_font_size_override("font_size", 14)
+	add_child(_title)
 
 	_info = Label.new()
 	_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -127,15 +148,24 @@ func _build_ui() -> void:
 	br.add_child(_make_button("照当前形状填系数", _on_sync_pressed))
 	add_child(br)
 
+	_simplify_check = CheckBox.new()
+	_simplify_check.text = "凸包额外简化（simplify=true）"
+	_simplify_check.button_pressed = false
+	_simplify_check.tooltip_text = "★ 实测：同一个 190 万面模型，simplify=true 只得到 32 个点的凸包（过于简化），simplify=false 得到 1031 个点。凸包太糙时不要勾它。"
+	add_child(_simplify_check)
+
 	_clean_check = CheckBox.new()
 	_clean_check.text = "重建时修拓扑（去重复/退化面 + 统一绕序）"
 	_clean_check.button_pressed = true
 	_clean_check.tooltip_text = "抽面后常留重复面/退化面；绕序反了的部分在 backface_collision 关闭时会变成单向墙（能从背面穿过去）"
 	add_child(_clean_check)
+	_concave_only.append(_clean_check)
+	_convex_only.append(_simplify_check)
 
 	var cr := HBoxContainer.new()
 	cr.add_child(_make_button("拓扑校验（当前形状）", _on_check_pressed))
 	add_child(cr)
+	_concave_only.append(cr)
 
 	_status = Label.new()
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -196,11 +226,15 @@ func _find_source() -> void:
 
 
 func _refresh() -> void:
+	_apply_mode_visibility()
 	var cur := 0
-	if _shape != null:
+	if _is_convex and _convex != null:
+		cur = _convex.points.size()          # 凸包看**点数**
+	elif _shape != null:
 		cur = _shape.get_faces().size() / 3
 	if _src == null:
-		_info.text = "当前碰撞 %s 面\n⚠️ 找不到源网格（碰撞体上面没有 MeshInstance3D）" % _fmt(cur)
+		var unit := "点" if _is_convex else "面"
+		_info.text = "当前碰撞 %s %s\n⚠️ 找不到源网格（碰撞体上面没有 MeshInstance3D）" % [_fmt(cur), unit]
 		for b in _buttons:
 			b.disabled = true
 	else:
@@ -208,23 +242,49 @@ func _refresh() -> void:
 		var where := String(_src.get_path()) if _src.is_inside_tree() else _src.name
 		var memo := ""
 		if _has_saved_ratio():
-			memo = "  ［已记住 %.2f%%］" % (float(_cs.get_meta(META_RATIO)) * 100.0)
-		_info.text = "当前碰撞 %s 面 ／ 源网格 %s（%s 面）%s\n系数是相对**源网格**的" % [
-			_fmt(cur), where, _fmt(_src_faces), memo]
-		# 没有记忆时，按"当前形状 / 源网格"预填一次（省得手算，也不覆盖用户已填的值）
-		if not _prefilled and cur > 0 and _src_faces > 0:
-			var r := clampf(100.0 * cur / _src_faces, 0.05, 100.0)
-			_spin.set_value_no_signal(r)
-			_slider.set_value_no_signal(clampf(r, _slider.min_value, _slider.max_value))
-			_prefilled = true
+			# ★ 必须按当前模式取键：凸包节点上没有凹的 meta，硬读会拿到 null
+			#   -> float(null) 会报 "Nonexistent 'float' constructor"（这就是"互相影响"）
+			memo = "  ［已记住 %.2f%%］" % (float(_cs.get_meta(_ratio_key())) * 100.0)
+		if _is_convex:
+			_info.text = "【凸包模式】当前 %s 点 ／ 源网格 %s（%s 面）%s\n系数控制**参与凸包的源面数**（源越密 -> 点数越多）。实测：源 10%% 约 820 点、100%% 约 916 点。" % [
+				_fmt(cur), where, _fmt(_src_faces), memo]
+			# 凸包无法从"当前点数"反推系数 -> 未记忆时默认给 10%（实测性价比最高）
+			if not _prefilled:
+				_spin.set_value_no_signal(10.0)
+				_slider.set_value_no_signal(clampf(10.0, _slider.min_value, _slider.max_value))
+				_prefilled = true
+		else:
+			_info.text = "【凹三角网模式】当前碰撞 %s 面 ／ 源网格 %s（%s 面）%s\n系数是相对**源网格**的" % [
+				_fmt(cur), where, _fmt(_src_faces), memo]
+			# 没有记忆时，按"当前形状 / 源网格"预填一次（省得手算，也不覆盖用户已填的值）
+			if not _prefilled and cur > 0 and _src_faces > 0:
+				var r := clampf(100.0 * cur / _src_faces, 0.05, 100.0)
+				_spin.set_value_no_signal(r)
+				_slider.set_value_no_signal(clampf(r, _slider.min_value, _slider.max_value))
+				_prefilled = true
 	_refresh_estimate()
+
+
+## 按当前模式显示/隐藏控件 —— 两套功能在 UI 上也互不干扰
+func _apply_mode_visibility() -> void:
+	if _title != null:
+		_title.text = "碰撞调参（凸包 ConvexPolygonShape3D）" if _is_convex else "碰撞调参（凹三角网 ConcavePolygonShape3D）"
+	for c in _concave_only:
+		if c != null and is_instance_valid(c):
+			c.visible = not _is_convex
+	for c in _convex_only:
+		if c != null and is_instance_valid(c):
+			c.visible = _is_convex
 
 
 func _refresh_estimate() -> void:
 	if _src == null:
 		_est.text = ""
 		return
-	_est.text = "→ 约 %s 面" % _fmt(int(_src_faces * _ratio()))
+	if _is_convex:
+		_est.text = "→ 源 %s 面（凸包点数重算后才知道）" % _fmt(int(_src_faces * _ratio()))
+	else:
+		_est.text = "→ 约 %s 面" % _fmt(int(_src_faces * _ratio()))
 
 
 func _fmt(n: int) -> String:
@@ -242,11 +302,17 @@ func _fmt(n: int) -> String:
 # ------------------------------------------------------------------ 重建
 
 func _on_rebuild_pressed() -> void:
-	_start(_ratio(), false)
+	if _is_convex:
+		_start_convex(_ratio(), false)      # ★ 凸包走完全独立的流水线
+	else:
+		_start(_ratio(), false)
 
 
 func _on_full_pressed() -> void:
-	_start(1.0, true)
+	if _is_convex:
+		_start_convex(1.0, true)
+	else:
+		_start(1.0, true)
 
 
 func _on_check_pressed() -> void:
@@ -255,7 +321,12 @@ func _on_check_pressed() -> void:
 
 ## 只校验当前碰撞形状的拓扑（不重建），报告显示在状态行
 func _start_check() -> void:
-	if _busy or _cs == null or _shape == null:
+	if _busy or _cs == null:
+		return
+	if _is_convex:
+		_finish(false, "凸包没有三角网拓扑可校验（拓扑校验只对凹三角网模式有意义）。")
+		return
+	if _shape == null:
 		return
 	_busy = true
 	_thread_mode = "check"
@@ -284,14 +355,105 @@ func _start_check() -> void:
 
 
 func _on_sync_pressed() -> void:
-	if _src == null or _src_faces <= 0 or _shape == null:
+	if _src == null or _src_faces <= 0:
+		return
+	if _is_convex:
+		# 凸包没有"面数/源面数"的线性关系 -> 无法从当前形状反推系数，直接提示
+		_finish(true, "凸包模式无法按当前形状反推系数（点数与源面数无关），请按需要挑系数后重建。")
+		return
+	if _shape == null:
 		return
 	var cur := _shape.get_faces().size() / 3
 	_spin.value = clampf(100.0 * cur / _src_faces, 0.05, 100.0)
 
 
+## ★ 凸包流水线（与凹三角网**完全独立**：自己的分支、自己的记忆键、自己的状态文案）
+##   只共用底层工具（mesh_decimate.py）与文件 IO 助手。
+func _start_convex(ratio: float, full: bool) -> void:
+	if _busy or _cs == null or _convex == null or _src == null or _src.mesh == null:
+		return
+	_busy = true
+	_thread_ok = false
+	_thread_log = ""
+	_thread_faces = PackedVector3Array()
+	_thread_ratio = ratio
+	_thread_full_rebuild = full
+	_thread_mode = "convex"
+	_thread_summary = ""
+	for b in _buttons:
+		b.disabled = true
+	_status.text = "取源网格三角面中…（凸包模式）"
+	await get_tree().process_frame
+
+	var faces: PackedVector3Array = _src.mesh.get_faces()
+	if faces.is_empty():
+		_finish(false, "源网格没有三角面")
+		return
+	var xf: Transform3D = _cs.global_transform.affine_inverse() * _src.global_transform
+	if not xf.is_equal_approx(Transform3D.IDENTITY):
+		var moved := PackedVector3Array()
+		moved.resize(faces.size())
+		for i in faces.size():
+			moved[i] = xf * faces[i]
+		faces = moved
+
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TEMP_DIR))
+	if full:
+		_apply_convex(_hull_from(faces), "恢复全量凸包（源 %d 面）" % (faces.size() / 3))
+		return
+
+	# 复用同一个抽面工具，但**不**做拓扑清理（凸包不需要，也不该动三角网那套）
+	_thread = Thread.new()
+	_thread.start(_worker.bind(faces,
+			ProjectSettings.globalize_path(TEMP_DIR.path_join("cvx_src.f32")),
+			ProjectSettings.globalize_path(TEMP_DIR.path_join("cvx_out.f32")),
+			ProjectSettings.globalize_path("res://"),
+			ProjectSettings.globalize_path(DECIMATE_TOOL), ratio, "convex", false))
+	_status.text = "凸包抽面中…（源 %s 面 × %.2f%%）" % [_fmt(faces.size() / 3), ratio]
+
+
+## ★ 从三角面重算**凸包**：返回凸包点数（点数就是"密度"）
+##   simplify=false（默认）时不会额外削面 —— 实测同一模型：true=32 点 / false=1031 点。
+##   抽面系数决定**参与凸包的源面数**：源越密 -> 凸包点数越多、越贴合。
+func _hull_from(faces: PackedVector3Array) -> PackedVector3Array:
+	if faces.is_empty():
+		return PackedVector3Array()
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for p in faces:
+		st.add_vertex(p)
+	var m := st.commit()
+	if m == null:
+		return PackedVector3Array()
+	var simp: bool = _simplify_check != null and _simplify_check.button_pressed
+	var sh := m.create_convex_shape(true, simp)
+	if sh is ConvexPolygonShape3D:
+		return (sh as ConvexPolygonShape3D).points
+	return PackedVector3Array()
+
+
+## ★ 应用凸包结果（带撤销/重做，和凹模式一致）
+func _apply_convex(points: PackedVector3Array, action_name: String) -> void:
+	if _convex == null or points.is_empty():
+		_finish(false, "凸包重算失败（结果为空）")
+		return
+	_save_ratio(_thread_ratio)
+	var old := _convex.points
+	var ur := EditorInterface.get_editor_undo_redo()
+	ur.create_action(action_name)
+	ur.add_do_method(_convex, "set_points", points)
+	ur.add_undo_method(_convex, "set_points", old)
+	ur.commit_action()
+	if EditorInterface.has_method("mark_scene_as_unsaved"):
+		EditorInterface.call("mark_scene_as_unsaved")
+	_finish(true, "%s ✓（旧 %s 点 → 新 %s 点，Ctrl+Z 可撤销）" % [
+			action_name, _fmt(old.size()), _fmt(points.size())])
+
+
 func _start(ratio: float, full: bool) -> void:
-	if _busy or _cs == null or _shape == null or _src == null or _src.mesh == null:
+	if _busy or _cs == null or _src == null or _src.mesh == null:
+		return
+	if _shape == null:
 		return
 	_busy = true
 	_thread_ok = false
@@ -457,6 +619,13 @@ func _process(_delta: float) -> void:
 	_thread = null
 	if _thread_mode == "check":
 		_finish(_thread_ok, _thread_report if _thread_ok else _thread_log)
+		return
+	if _thread_mode == "convex":
+		if _thread_ok:
+			_apply_convex(_hull_from(_thread_faces), "按系数 %.2f%% 重建凸包（源 %d 面）" % [
+					_thread_ratio * 100.0, _thread_faces.size() / 3])
+		else:
+			_finish(false, _thread_log)
 		return
 	if _thread_ok:
 		_apply(_thread_faces, "按系数 %.2f%% 重建（%d 面）" % [_thread_ratio * 100.0,
