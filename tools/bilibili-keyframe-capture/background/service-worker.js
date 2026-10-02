@@ -26,6 +26,59 @@ const CONTENT_FILES = [
 ];
 
 /**
+ * 在主世界钩住 History API，检测 B 站（Vue SPA）的站内跳转。
+ *
+ * B 站是 Vue SPA，站内跳转（点推荐视频 / 换分P / 切番剧）走 history.pushState /
+ * replaceState，并且 B 站自己对这些函数还有一层封装 —— 但无论封几层，最终都会
+ * 经过原生方法，所以钩住原生方法一定抓得到。
+ *
+ * 在隔离世界里读 location 虽然也能拿到新地址，但：
+ *   · 只能靠轮询，慢（1.5 秒）；
+ *   · 读页面 window 上的 __INITIAL_STATE__ 拿到的是**旧值**（跨 JS 世界），
+ *     所以 cid 之类的兜底一直是错的。
+ * 因此这里在主世界直接钩住，事件驱动、零延迟、拿得到真实状态。
+ */
+function mainWorldNavHook() {
+  if (window.__bkfNavHook) return 'already';
+  window.__bkfNavHook = true;
+
+  let last = location.href;
+
+  const notify = (reason) => {
+    const href = location.href;
+    if (href === last && reason !== 'popstate' && reason !== 'hashchange') return;
+    last = href;
+    // 同时用自定义事件与 postMessage 广播（隔离世界两种都能收到）
+    try {
+      window.dispatchEvent(new CustomEvent('bkf:navigate', { detail: { href, reason } }));
+    } catch (error) {
+      /* 忽略 */
+    }
+    try {
+      window.postMessage({ __bkf: 'navigate', href, reason }, location.origin);
+    } catch (error) {
+      /* 忽略 */
+    }
+  };
+
+  for (const name of ['pushState', 'replaceState']) {
+    const original = history[name];
+    if (typeof original !== 'function') continue;
+    history[name] = function (...args) {
+      const result = original.apply(this, args);
+      notify(name);
+      return result;
+    };
+  }
+  window.addEventListener('popstate', () => notify('popstate'));
+  window.addEventListener('hashchange', () => notify('hashchange'));
+  return 'hooked';
+}
+
+/** 记录已经注入过钩子的标签页，避免重复注入 */
+const navHookedTabs = new Set();
+
+/**
  * 在主世界（页面自己的 JS 环境）里找播放信息。
  * B 站的 __playinfo__ 挂在页面 window 上，隔离世界读不到，所以必须注入主世界执行。
  */
@@ -238,6 +291,14 @@ const handlers = {
     return result;
   },
 
+  // 清空会话里的帧，但**保留会话本身**（与 db.deleteSession 区分）
+  'db.clearSession': async (msg) => {
+    const result = await db.clearSession(msg.sessionId);
+    broadcast({ type: 'sessions-changed' });
+    broadcast({ type: 'frames-updated', sessionId: msg.sessionId, cleared: true });
+    return result;
+  },
+
   'db.deleteSession': async (msg) => {
     const result = await db.deleteSession(msg.sessionId);
     broadcast({ type: 'sessions-changed' });
@@ -283,6 +344,24 @@ const handlers = {
       return first || { urls: [] };
     } catch (error) {
       return { urls: [], error: (error && error.message) || String(error) };
+    }
+  },
+
+  // 在主世界安装 History 钩子，用来事件驱动地检测站内跳转（换视频 / 换分P）
+  'nav.hook': async (msg, sender) => {
+    const tabId = msg.tabId || (sender && sender.tab && sender.tab.id);
+    if (!tabId) return { hooked: false, error: '没有可用的标签页' };
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func: mainWorldNavHook
+      });
+      const first = results && results[0] && results[0].result;
+      navHookedTabs.add(tabId);
+      return { hooked: true, state: first || 'hooked' };
+    } catch (error) {
+      return { hooked: false, error: (error && error.message) || String(error) };
     }
   },
 

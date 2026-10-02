@@ -293,6 +293,47 @@ check('刚开始播（没有上一次）不算重播', core.isVideoLooped(0, 0.5
 check('小幅回退（seek 微调）不算重播', core.isVideoLooped(50, 49.6) === false);
 check('回退超过 1 秒才算重播', core.isVideoLooped(50, 48.5) === true && core.isVideoLooped(50, 49) === false);
 
+/* 会话身份：切视频必须换会话，且同一个视频不能因元数据时序而分裂成两个会话 */
+const idA = core.sessionIdentity({ href: 'https://www.bilibili.com/video/BV1AAA?p=1' });
+const idB = core.sessionIdentity({ href: 'https://www.bilibili.com/video/BV1BBB' });
+const idA2 = core.sessionIdentity({ href: 'https://www.bilibili.com/video/BV1AAA?p=2' });
+check('不同视频得到不同会话 id', idA.id !== idB.id, `${idA.id} vs ${idB.id}`);
+check('不同分P 得到不同会话 id', idA.id !== idA2.id, `${idA.id} vs ${idA2.id}`);
+check('会话 id 里不含时长（避免元数据时序导致会话分裂）',
+  !/\d{3,}s?\b/.test(idA.id.replace(/BV\w+/, '')) && idA.id === 'BV1AAA', idA.id);
+check('同一个视频重复计算 id 稳定', core.sessionIdentity({ href: 'https://www.bilibili.com/video/BV1AAA?p=1' }).id === idA.id);
+check('target 用于判断是否换视频', idA.target !== idB.target && idA.target === core.sessionIdentity({ href: 'https://www.bilibili.com/video/BV1AAA?p=1' }).target);
+check('番剧页面用 ep 号做 id',
+  core.sessionIdentity({ href: 'https://www.bilibili.com/bangumi/play/ep123456' }).id === 'ep123456',
+  core.sessionIdentity({ href: 'https://www.bilibili.com/bangumi/play/ep123456' }).id);
+check('URL 里的 cid 参数进入会话 id',
+  core.sessionIdentity({ href: 'https://www.bilibili.com/video/BV1AAA?cid=99' }).id === 'BV1AAA-99',
+  core.sessionIdentity({ href: 'https://www.bilibili.com/video/BV1AAA?cid=99' }).id);
+// 关键回归：不能因为页面 window 上的旧 cid 而算出「假的新会话」
+check('忽略页面状态里的 cid（隔离世界读到的是旧值，会导致会话反复重建）',
+  core.sessionIdentity({ href: 'https://www.bilibili.com/video/BV1AAA', state: { videoData: { cid: 99 } } }).id === 'BV1AAA',
+  core.sessionIdentity({ href: 'https://www.bilibili.com/video/BV1AAA', state: { videoData: { cid: 99 } } }).id);
+check('同一 URL 带不同跟踪参数 → 会话 id 相同（不会误判换视频）',
+  core.sessionIdentity({ href: 'https://www.bilibili.com/video/BV1AAA/?spm_id_from=333.788&trackid=web_related_0&vd_source=abc' }).id ===
+    core.sessionIdentity({ href: 'https://www.bilibili.com/video/BV1AAA/' }).id);
+
+/* 取帧源归属：只按「会话」判断（换视频 = 换会话） */
+check('取帧源未记录时视为匹配', core.sourceMatchesSession('', 'BV1AAA') === true);
+check('同一会话视为匹配', core.sourceMatchesSession('BV1AAA', 'BV1AAA') === true);
+check('换会话视为不匹配', core.sourceMatchesSession('BV1AAA', 'BV1BBB') === false);
+
+/* 会话变化判断：同一会话的重复调用必须被挡住（否则统计被反复归零） */
+const idA3 = core.sessionIdentity({ href: 'https://www.bilibili.com/video/BV1AAA' });
+const idB3 = core.sessionIdentity({ href: 'https://www.bilibili.com/video/BV1BBB' });
+const stateA = { sessionKey: idA3.id, sourceTarget: idA3.target };
+check('首次进入（当前为空）视为变化', core.sessionChanged(idA3, { sessionKey: '', sourceTarget: '' }) === true);
+check('同一会话重复调用 → 不算变化（关键：防止统计归零）',
+  core.sessionChanged(idA3, stateA) === false);
+check('换视频 → 算变化', core.sessionChanged(idB3, stateA) === true);
+check('会话 id 相同但标记不同 → 仍算变化',
+  core.sessionChanged({ id: idA3.id, target: 'other' }, stateA) === true);
+check('空身份安全', core.sessionChanged(null, stateA) === false && core.sessionChanged({}, stateA) === false);
+
 /* ------------------------------------------------------------------ */
 console.log('\n[4] ZIP 打包器（store 模式）');
 
@@ -942,15 +983,16 @@ check('有外部观察地址时优先用它（blob 优先，无需网络探针�
 check('sourceName 标记来源为 network.video', framesource.sourceName === 'network.video', framesource.sourceName);
 check('同一地址再次调用直接复用元素', (await framesource.ensure(pageVideoStub, {})) === elementWithObserved);
 
-// 关键回归：播放器换了视频（currentSrc 变了）时，旧的观察地址必须作废
+// 关键回归：播放器换了视频（会话也跟着换）时，旧的观察地址必须作废
 const switched = await framesource.ensure(
   { currentSrc: 'blob:https://www.bilibili.com/other', src: '' },
-  {}
+  { sessionKey: 'BV1OTHER' }
 );
-check('换视频后不再使用上一个视频的地址',
+check('换会话后不再使用上一个会话的地址',
   framesource.activeUrl !== 'blob:first' && framesource.sourceName !== 'network.video',
   `${framesource.sourceName} / ${framesource.activeUrl}`);
-check('换视频后重新加载了取帧源', switched !== elementWithObserved);
+check('换会话后重新加载了取帧源', switched !== elementWithObserved);
+check('换会话后取帧源记录的会话已更新', framesource.loadedForSession === 'BV1OTHER', framesource.loadedForSession);
 
 framesource.reset();
 framesource.observed = [];

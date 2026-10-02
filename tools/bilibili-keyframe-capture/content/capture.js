@@ -137,7 +137,12 @@
   /** 取源 + 把某次操作包一层策略回退 */
   async function withSource(pageVideo, options, operation) {
     const opts = options || {};
-    let element = await NS.framesource.ensure(pageVideo, { extra: opts.extra });
+    // 关键：把「当前会话」传给取帧源，由它判断是否需要重新准备（换视频就换会话）
+    let element = await NS.framesource.ensure(pageVideo, {
+      extra: opts.extra,
+      sessionKey: opts.sessionKey,
+      force: opts.forceSource
+    });
     try {
       return await operation(element);
     } catch (error) {

@@ -433,6 +433,28 @@
       }
     },
 
+    /**
+     * 清空会话里的全部帧，但**保留会话本身**。
+     * 与 deleteSession（连同会话记录一起删）区分开：
+     * 「清空本会话」应该只清画面，会话还在，可以继续往里抓。
+     */
+    async clearSession(sessionId) {
+      const keys = await db.frameIdsOf(sessionId);
+      for (const key of keys) {
+        await tx(FRAME_STORE, 'readwrite', (store) => store.delete(key));
+      }
+      await db.unindexSession(sessionId);
+      const session = await db.getSession(sessionId);
+      if (session) {
+        session.frameCount = 0;
+        session.bytes = 0;
+        session.coverThumb = '';
+        session.updatedAt = Date.now();
+        await tx(SESSION_STORE, 'readwrite', (store) => store.put(session));
+      }
+      return { removed: keys.length, kept: !!session };
+    },
+
     async deleteSession(sessionId) {
       const keys = await db.frameIdsOf(sessionId);
       for (const key of keys) {
@@ -450,7 +472,10 @@
       for (const session of sessions) {
         const keys = await db.frameIdsOf(session.id);
         const known = validSessionIds && validSessionIds.has(session.id);
-        if (!keys.length && (known || session.frameCount === 0)) {
+        // 只清理「没有任何帧、且不在任何打开的页面上」的空会话。
+        // 正在用的会话绝不能删（以前写成 known || frameCount === 0，
+        // 结果清空会话后紧接着就把当前会话删掉了）。
+        if (!keys.length && !known && session.frameCount === 0) {
           await db.unindexSession(session.id);
           await tx(SESSION_STORE, 'readwrite', (store) => store.delete(session.id));
           removedSessions += 1;

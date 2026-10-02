@@ -196,6 +196,11 @@ if (!bgError && messages.length) {
   const unknown = await sendBg({ type: 'no.such.type' });
   check('未知消息返回可读错误', !!unknown && unknown.ok === false && /未知消息类型/.test(unknown.error));
 
+  // nav.hook：在主世界安装 history 钩子（用于检测 B 站站内跳转）。
+  // 桩环境里 chrome.scripting.executeScript 是假的，这里只验证路由存在且不抛异常。
+  const navHook = await sendBg({ type: 'nav.hook' });
+  check('nav.hook 路由存在并有响应', !!navHook && typeof navHook.ok === 'boolean', JSON.stringify(navHook));
+
   const framePayload = {
     sessionKey: 'smoke-session',
     time: 1.5,
@@ -222,6 +227,59 @@ if (!bgError && messages.length) {
 
   const pruned = await sendBg({ type: 'db.pruneDuplicates', sessionId: 'smoke-session' });
   check('db.pruneDuplicates 有响应', !!pruned && pruned.ok === true, pruned && pruned.error);
+
+  // 关键回归：「清空本会话」必须只删帧、保留会话（以前错用了 deleteSession，把会话整条删了）
+  const cleared = await sendBg({ type: 'db.clearSession', sessionId: 'smoke-session' });
+  check(
+    'db.clearSession 只删帧',
+    !!cleared && cleared.ok === true && cleared.data.removed >= 1 && cleared.data.kept === true,
+    JSON.stringify(cleared && cleared.data)
+  );
+  const afterClear = await sendBg({ type: 'db.listSessions' });
+  const sessionsAfterClear = (afterClear && afterClear.data) || [];
+  const stillThere = sessionsAfterClear.some((s) => s.id === 'smoke-session');
+  check('清空后会话仍然存在（帧数为 0）', stillThere, JSON.stringify(sessionsAfterClear));
+
+  const clearedStats = await sendBg({ type: 'db.sessionStats', sessionKey: 'smoke-session' });
+  check(
+    '清空后帧数归零',
+    !!clearedStats && clearedStats.ok === true && clearedStats.data.frameCount === 0,
+    JSON.stringify(clearedStats && clearedStats.data)
+  );
+
+  // 对比：deleteSession 才应该连会话一起删掉
+  const deleted = await sendBg({ type: 'db.deleteSession', sessionId: 'smoke-session' });
+  check('db.deleteSession 删除会话', !!deleted && deleted.ok === true, deleted && deleted.error);
+  const afterDelete = await sendBg({ type: 'db.listSessions' });
+  const sessionsAfterDelete = (afterDelete && afterDelete.data) || [];
+  check('删除后会话不再出现在列表里', !sessionsAfterDelete.some((s) => s.id === 'smoke-session'));
+
+  // cleanup（后台内部调用，没有独立消息路由）绝不能删掉「正在页面上使用」的空会话。
+  // 以前的条件写成 known || frameCount === 0，清空后紧接着就把当前会话删了。
+  const bgDb = bg.self.BKFdb;
+  if (bgDb && typeof bgDb.cleanup === 'function') {
+    await sendBg({ type: 'db.addFrame', frame: Object.assign({}, framePayload, { hash: 'livehash', time: 2.5 }) });
+    await sendBg({ type: 'db.clearSession', sessionId: 'smoke-session' });
+    await bgDb.cleanup(new Set(['smoke-session']));
+    const afterCleanup = await sendBg({ type: 'db.listSessions' });
+    const sessionsAfterCleanup = (afterCleanup && afterCleanup.data) || [];
+    check(
+      'cleanup 不会删掉活跃的空会话（清空后仍在页面上使用）',
+      sessionsAfterCleanup.some((s) => s.id === 'smoke-session'),
+      JSON.stringify(sessionsAfterCleanup.map((s) => s.id))
+    );
+    // 反过来：没有任何页面在用的空会话应当被清掉
+    await bgDb.cleanup(new Set());
+    const afterIdleCleanup = await sendBg({ type: 'db.listSessions' });
+    const idle = (afterIdleCleanup && afterIdleCleanup.data) || [];
+    check(
+      'cleanup 会清掉没人使用的空会话',
+      !idle.some((s) => s.id === 'smoke-session'),
+      JSON.stringify(idle.map((s) => s.id))
+    );
+  } else {
+    check('能拿到后台 db 模块以测试 cleanup', false, 'bg.self.BKFdb 不可用');
+  }
 } else {
   check('后台消息路由冒烟', false, bgError ? bgError.message : '没有 onMessage');
 }

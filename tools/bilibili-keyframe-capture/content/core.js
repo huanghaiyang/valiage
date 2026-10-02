@@ -206,7 +206,68 @@
     },
 
     /**
-     * 判定一次采样里的「重复画面」。
+     * 计算视频的「会话身份」。
+     * 抽成纯函数是为了可测。这里踩过两个坑：
+     *
+     * 1. **不能把 duration 放进 id**：切视频时新视频元数据还没加载完、duration 仍是旧值，
+     *    同一个视频会先建一个会话、加载完又建另一个（会话分裂）。
+     * 2. **不能用页面 window 上的 __INITIAL_STATE__ 取 cid**：内容脚本在隔离世界，
+     *    读到的是页面**首次加载时**的 videoData（旧视频的 cid）。站内跳转后 URL 里没有 cid，
+     *    于是用旧 cid 算出「新」会话 id，下一拍元数据更新又变回去 —— 会话反复重建。
+     *    cid 真正的可靠来源是 URL 参数；媒体地址里也带 cid（/upgcxcode/xx/xx/<cid>/）。
+     *
+     * 所以身份只由：视频号 + URL 里的 cid + 分P 组成。
+     *
+     * @param {object} input { href }
+     * @returns {{id:string, bvid:string, page:number, cid:string, url:string, target:string}}
+     */
+    sessionIdentity(input) {
+      const href = (input && input.href) || location.href;
+      let url;
+      try {
+        url = new URL(href);
+      } catch {
+        url = { pathname: '/', searchParams: new URLSearchParams() };
+      }
+      const path = url.pathname || '/';
+      const bv = (path.match(/\/(BV[0-9A-Za-z]+)/) || [])[1] || '';
+      const av = (path.match(/\/av(\d+)/) || [])[1] || '';
+      const ep = (path.match(/\/ep(\d+)/) || [])[1] || '';
+      const ss = (path.match(/\/ss(\d+)/) || [])[1] || '';
+      const page = url.searchParams.get('p') || '1';
+      const cid = url.searchParams.get('cid') || '';
+      let bvid = bv || (av ? `av${av}` : '') || (ep ? `ep${ep}` : '') || (ss ? `ss${ss}` : '');
+      if (!bvid) bvid = path.replace(/[^\w]+/g, '_').slice(1, 60) || 'bilibili';
+      // id 与 target 都不含 duration，也不含任何来自页面 window 的状态
+      const id = `${bvid}${cid ? `-${cid}` : ''}${page !== '1' ? `-p${page}` : ''}`;
+      return { id, bvid, page: Number(page) || 1, cid, url: href, target: `${bvid}|${page}|${cid}` };
+    },
+
+    /**
+     * 会话身份是否真的变了。
+     * syncSession 被多条路径触发（启动 / history 跳转 / video 的 loadstart、
+     * emptied、loadedmetadata / 兜底轮询），一次换源常常走到两次；
+     * 如果每次都重置计数与去重表，采样统计会被反复归零
+     * （表现：判定很多次却只存几张）。所以必须用这个判断挡住重复调用。
+     *
+     * @param {{id:string, target:string}} info 本次算出的身份
+     * @param {{sessionKey:string, sourceTarget:string}} current 当前记录的身份
+     * @returns {boolean}
+     */
+    sessionChanged(info, current) {
+      if (!info || !info.id) return false;
+      const state = current || {};
+      return info.id !== state.sessionKey || info.target !== state.sourceTarget;
+    },
+
+    /** 判断取帧源是否仍对应当前会话（换视频 = 换会话，这是唯一的归属判断） */
+    sourceMatchesSession(loadedForSession, sessionKey) {
+      if (!loadedForSession) return true; // 还没加载过，交给 ensure() 处理
+      return loadedForSession === sessionKey;
+    },
+
+    /**
+     * 采样计数 + 重复画面判定。
      * 单独抽出来是为了可测：它回答了「采了 50 次为什么只存 6 张」这类问题。
      * 逐帧模式（every）下只有连续两次采样落在同一帧才会被判重复，
      * 所以按 100ms 采样 5 秒仍然能存下接近 50 张（画面有变化时哈希必然不同）。

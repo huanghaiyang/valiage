@@ -54,6 +54,7 @@
     sourceName: '',
     observed: [],
     loadedForPlayerUrl: '',
+    loadedForSession: '',   // 取帧源当前服务的是哪个会话（唯一的归属判断依据）
 
     /* ---------------- 元素管理 ---------------- */
 
@@ -104,7 +105,9 @@
       source.attempts = [];
       // 复位取消标志：降级到下一级策略时必须重新可下载
       source.aborted = false;
-    },    abort() {
+    },
+
+    abort() {
       source.aborted = true;
       if (source.mse) {
         source.mse.aborted = true;
@@ -223,19 +226,38 @@
      * @param {object} [options] { extra: [{url, from}] 外部提供的候选（例如从网络请求里抓到的） }
      * @returns {Promise<HTMLVideoElement>}
      */
+    /**
+     * 确保隐藏 video 已经加载好「当前会话要用的视频」。
+     *
+     * 唯一的判断规则：**取帧源绑定会话**。
+     *   - 已经为同一个会话加载好 → 直接复用；
+     *   - 会话变了（换视频 / 换分P）→ 丢掉记住的地址与已加载的源，重新准备。
+     * 不再比对地址、不再有 pending 状态机 —— 那些启发式互相干扰，反而更容易出错。
+     *
+     * @param {HTMLVideoElement} pageVideo 页面里的播放器
+     * @param {object} options { extra: 外部候选, sessionKey: 当前会话 id }
+     */
     async ensure(pageVideo, options) {
       const opts = options || {};
-      if (opts.extra && opts.extra.length) source.addObserved(opts.extra);
+      const sessionKey = opts.sessionKey || '';
+      const sessionChanged = !!sessionKey && sessionKey !== source.loadedForSession;
 
-      // 播放器当前地址：换视频 / 换分P 时它一定会变。
-      // 只比较「候选列表第一项」不够 —— SPA 切集时 currentSrc 可能仍是旧值，
-      // 于是两边都判定「没变」，取帧源就一直用上一个视频（严重 bug）。
-      const playerUrl = pageVideo ? core.absolutize(pageVideo.currentSrc || pageVideo.src || '') : '';
-      if (opts.force || (playerUrl && source.loadedForPlayerUrl && playerUrl !== source.loadedForPlayerUrl)) {
-        source.observed = []; // 上一个视频的地址全部作废
+      if (sessionChanged) {
+        // 换视频：上一个视频的地址、已加载的 reader 全部作废
+        source.observed = [];
+        source.loadedForPlayerUrl = '';
+        source.reset();
+      } else if (opts.force) {
         source.reset();
       }
-      source.loadedForPlayerUrl = playerUrl;
+      if (sessionKey) source.loadedForSession = sessionKey;
+
+      if (opts.extra && opts.extra.length) source.addObserved(opts.extra);
+
+      // 记录播放器地址仅用于诊断展示
+      source.loadedForPlayerUrl = pageVideo
+        ? core.absolutize(pageVideo.currentSrc || pageVideo.src || '')
+        : '';
 
       let list = source.candidates(pageVideo);
       if (source.observed.length) {
@@ -248,7 +270,7 @@
       const primary = list[0].url;
       if (!source.element) source.element = source.createElement();
 
-      if (!opts.force && source.activeUrl === primary && source.mode !== 'failed') {
+      if (!sessionChanged && !opts.force && source.activeUrl === primary && source.mode !== 'failed') {
         if (source.element.readyState >= 1) return source.element;
         // 正在进行中（例如 MSE 边下边播）就复用现有元素
         if (source.element.readyState === 0 && !source.error) {
@@ -257,17 +279,19 @@
         }
       }
 
-      // 地址变化：整套重来，并按候选顺序逐个尝试
+      // 地址变化 / 换了会话：整套重来，并按候选顺序逐个尝试
       source.reset();
+      source.loadedForSession = sessionKey;
       source.element = source.createElement();
       source.activeUrl = primary;
       return source.loadCandidates(list);
     },
 
-    /** 换视频时调用：把记住的地址与已加载的源全部作废 */
+    /** 换会话时调用：把记住的地址与已加载的源全部作废 */
     invalidate() {
       source.observed = [];
       source.loadedForPlayerUrl = '';
+      source.loadedForSession = '';
       source.reset();
       return true;
     },
@@ -661,6 +685,18 @@
       lines.push(`视频主机：${info.host || '未知'}`);
       lines.push(`视频路径：${info.path || '未知'}`);
       lines.push(`当前取帧方式：${source.mode}`);
+      lines.push(`取帧源服务会话：${source.loadedForSession || '（未加载）'}`);
+      lines.push(`取帧源地址：${source.activeUrl ? String(source.activeUrl).slice(0, 120) : '（未加载）'}`);
+      lines.push(`播放器媒体：${(source.loadedForPlayerUrl || '（未记录）').slice(0, 120)}`);
+      if (options && options.stats) {
+        lines.push(`当前会话：${options.stats.sessionKey || '（无）'}`);
+        lines.push(`视频标记：${options.stats.sourceTarget || '（空）'}`);
+        lines.push(`history 钩子：${options.stats.navHook || '（未安装）'}`);
+        lines.push(
+          `跳转检测：识别到 ${options.stats.navCount || 0} 次换视频 · 会话建立 ${options.stats.syncCount || 0} 次`
+        );
+        if (options.stats.pendingSession) lines.push(`待切换会话：${options.stats.pendingSession}`);
+      }
       // 采样统计：回答「采了 N 次为什么只存 M 张」
       if (options && options.stats) {
         const stats = options.stats;

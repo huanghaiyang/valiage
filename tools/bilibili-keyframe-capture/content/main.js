@@ -20,7 +20,12 @@
     video: null,
     sessionKey: null,
     session: null,
-    lastHref: '',            // 上一次的页面地址（用于识别换视频/换分P）
+    lastHref: '',            // 上一次的页面地址
+    navHookState: '',        // 主世界 history 钩子的安装状态（诊断用）
+    navCount: 0,             // 检测到几次「真的换视频」（诊断用）
+    syncCount: 0,            // 会话建立次数（诊断用：数值疯涨说明会话在反复重建）
+    pendingSession: null,    // 已跳转、等待播放器换源后再同步的会话
+    sourceTarget: '',        // 当前会话对应的视频标记（视频号|分P|cid）
     loopActive: false,       // 帧回调链是否已拉起（防止重复注册 / 状态脱节）
     running: false,
     busy: false,
@@ -64,7 +69,14 @@
           NS.panel.setVisible(controller.settings.showPanel);
         }
       });
-      core.on('frames-updated', () => controller.refreshCounts());
+      core.on('frames-updated', (payload) => {
+        // 当前会话被清空时，把面板上的帧数也归零，别显示已经不存在的数字
+        if (payload && payload.cleared) {
+          controller.resetAfterClear(payload.sessionId);
+          return;
+        }
+        controller.refreshCounts();
+      });
 
       controller.video = await core.waitForVideo(30000);
       if (!controller.video) {
@@ -80,8 +92,29 @@
       NS.panel.setVisible(controller.settings.showPanel);
       NS.panel.renderStats();
 
-      // B 站是 SPA：定期检查 URL / video 元素是否变化
+      // —— 站内跳转检测（事件驱动，替代轮询猜测）——
+      // 1) 主世界钩住 history.pushState/replaceState：B 站是 Vue SPA，站内跳转必经此处
+      core.send({ type: 'nav.hook' }).then((result) => {
+        if (result && result.hooked) {
+          controller.navHookState = result.state || 'hooked';
+        } else {
+          controller.navHookState = `失败：${(result && result.error) || '未知'}`;
+        }
+      });
+      // 2) 接收主世界广播的跳转事件（自定义事件 + postMessage 双保险）
+      window.addEventListener('bkf:navigate', (event) => {
+        controller.onNavigate((event && event.detail && event.detail.href) || location.href);
+      });
+      window.addEventListener('message', (event) => {
+        const data = event && event.data;
+        if (data && data.__bkf === 'navigate') controller.onNavigate(data.href || location.href);
+      });
+      // 3) 浏览器前进/后退
+      window.addEventListener('popstate', () => controller.onNavigate(location.href));
+      window.addEventListener('hashchange', () => controller.onNavigate(location.href));
+
       controller.lastHref = location.href;
+      // 兜底轮询（万一钩子没装上；正常路径不依赖它）
       setInterval(controller.watchNavigation, 1500);
       // video 元素可能被播放器重建，定期重新绑定；顺带兜底把帧回调链拉起来
       setInterval(() => {
@@ -212,12 +245,21 @@
       controller.video = video;
       for (const off of controller.detached) off();
       controller.detached = [];
+
+      // 播放器换源的原生信号： emptied（清空）→ loadstart（开始加载）→ loadedmetadata（元数据就绪）
+      // 站内跳转时这几个事件一定会来，用它来触发「换源后再重建取帧源」，
+      // 比轮询 URL 可靠得多（B 站的路由钩子先于媒体加载完成）。
+      const onSourceChanged = () => controller.onVideoSourceChanged();
       const onMeta = () => controller.syncSession();
+      for (const type of ['emptied', 'loadstart']) {
+        video.addEventListener(type, onSourceChanged);
+      }
       video.addEventListener('loadedmetadata', onMeta);
-      video.addEventListener('emptied', onMeta);
       controller.detached.push(() => {
+        for (const type of ['emptied', 'loadstart']) {
+          video.removeEventListener(type, onSourceChanged);
+        }
         video.removeEventListener('loadedmetadata', onMeta);
-        video.removeEventListener('emptied', onMeta);
       });
       // 注意：这里不要再直接 setRunning，否则会把 running 置位却又拉不起回调链；
       // 需要开始时统一走 setRunning(false) → setRunning(true) 或 ensureLoop()
@@ -232,70 +274,73 @@
     },
 
     watchNavigation() {
-      const href = location.href;
-      const navChanged = href !== controller.lastHref;
-      if (navChanged) controller.lastHref = href;
       const video = core.findVideo();
       if (video && video !== controller.video) {
         controller.bindVideo(video);
         controller.syncSession();
         return;
       }
-      // 地址变了（换视频 / 换分P）也一定要重新会话，光比 sessionKey 不够：
-      // SPA 切集时 video 元素的 currentSrc 可能还是旧的，导致两边都判定「没变」
-      if (navChanged) {
+      // 消息驱动为主（本函数每 1.5 秒兜底一次）：
+      // 会话身份（视频号|分P|cid）变化就重新同步，取帧源由「会话」归属自动重建
+      const key = controller.sessionKeyFor(video);
+      if (key && key.id !== controller.sessionKey) {
+        controller.lastHref = location.href;
         controller.syncSession();
         return;
       }
-      const key = controller.sessionKeyFor(video);
-      if (key && key !== controller.sessionKey) controller.syncSession();
+      controller.lastHref = location.href;
     },
 
     /**
-     * 会话标识：站点 + 视频号 + 分 P + cid。切换视频/分 P 会自动换会话，
-     * 避免不同视频的关键帧混在一起。
+     * 会话标识：站点 + 视频号 + 分 P + cid（**不含 duration**）。
+     * 具体计算在 core.sessionIdentity 里（纯函数、可测）。
      */
     sessionKeyFor(video) {
-      const url = new URL(location.href);
-      const bv = (location.pathname.match(/\/(BV[0-9A-Za-z]+)/) || [])[1] || '';
-      const av = (location.pathname.match(/\/av(\d+)/) || [])[1] || '';
-      const ep = (location.pathname.match(/\/ep(\d+)/) || [])[1] || '';
-      const ss = (location.pathname.match(/\/ss(\d+)/) || [])[1] || '';
-      const page = url.searchParams.get('p') || '1';
-      let cid = url.searchParams.get('cid') || '';
-      if (!cid && window.__INITIAL_STATE__ && window.__INITIAL_STATE__.videoData) {
-        cid = String(window.__INITIAL_STATE__.videoData.cid || '');
-      }
-      let id = bv || (av ? `av${av}` : '') || (ep ? `ep${ep}` : '') || (ss ? `ss${ss}` : '');
-      if (!id) id = url.pathname.replace(/[^\w]+/g, '_').slice(1, 60) || 'bilibili';
+      // 只依赖 URL（含 cid 参数）；**不读页面 window 的状态** —— 隔离世界里那是旧值
+      const info = core.sessionIdentity({ href: location.href });
       const duration = video && Number.isFinite(video.duration) ? Math.round(video.duration) : 0;
-      return {
-        id: `${id}${cid ? `-${cid}` : ''}${page !== '1' ? `-p${page}` : ''}`,
-        bvid: bv || av || ep || ss,
-        page: Number(page) || 1,
-        cid,
-        duration,
-        url: location.href
-      };
+      return Object.assign({}, info, { duration });
     },
 
+    /**
+     * 视频标题。
+     * **DOM 优先**：DOM 是两个 JS 世界共享的，B 站站内跳转后会更新它；
+     * 而隔离世界里的 window.__INITIAL_STATE__ 永远是页面首次加载时的旧值，
+     * 所以只在 DOM 拿不到时才退回去用它。
+     */
     videoTitle() {
+      const h1 =
+        document.querySelector('h1.video-title') ||
+        document.querySelector('.video-title') ||
+        document.querySelector('h1');
+      const fromDom = h1 && h1.textContent ? h1.textContent.trim() : '';
+      if (fromDom) return fromDom;
       const state = window.__INITIAL_STATE__;
       if (state && state.videoData && state.videoData.title) return state.videoData.title;
       if (state && state.epInfo && state.epInfo.title) return state.epInfo.title;
-      const h1 = document.querySelector('h1.video-title') || document.querySelector('h1');
-      const text = h1 ? h1.textContent.trim() : '';
-      return text || document.title.replace(/_哔哩哔哩.*$/, '').trim();
+      return document.title.replace(/[_-]哔哩哔哩.*$/, '').trim();
     },
 
     videoMeta() {
       const info = controller.sessionKeyFor(controller.video);
-      const state = window.__INITIAL_STATE__;
       let author = '';
+      // 作者名同样 DOM 优先（隔离世界的 state 是旧值）
       try {
-        author = (state && state.videoData && (state.videoData.owner && state.videoData.owner.name)) || '';
+        const node =
+          document.querySelector('.up-name') ||
+          document.querySelector('.up-info .name') ||
+          document.querySelector('a.up-name');
+        author = node && node.textContent ? node.textContent.trim() : '';
       } catch {
         author = '';
+      }
+      if (!author) {
+        const state = window.__INITIAL_STATE__;
+        try {
+          author = (state && state.videoData && (state.videoData.owner && state.videoData.owner.name)) || '';
+        } catch {
+          author = '';
+        }
       }
       return {
         url: location.href,
@@ -308,11 +353,21 @@
       };
     },
 
-    /** 视频变化时确保后台存在对应会话，并重置检测状态 */
+    /**
+     * 视频变化时确保后台存在对应会话，并重置检测状态。
+     *
+     * **同一个会话只初始化一次**：这个函数被多条路径触发（启动、history 跳转、
+     * video 的 loadstart/emptied/loadedmetadata、1.5 秒兜底轮询），一次换源往往会走到两次。
+     * 如果每次都重置计数与去重表，采样统计会被反复归零（表现为「判定很多次却只存几张」），
+     * 所以这里必须先判断「会话是不是真的变了」，没变就直接返回。
+     */
     async syncSession() {
       const info = controller.sessionKeyFor(controller.video);
-      const changed = info.id !== controller.sessionKey;
+      // 同一会话的重复调用直接返回，否则计数与去重表会被反复归零
+      if (!core.sessionChanged(info, controller)) return;
+      controller.syncCount = (controller.syncCount || 0) + 1;
       controller.sessionKey = info.id;
+      controller.sourceTarget = info.target;
       // 会话世代号：切视频瞬间还在途中的抓帧结果一律丢弃，避免写进新会话
       controller.epoch = (controller.epoch || 0) + 1;
       // 新视频 = 新会话：采样统计与去重表都归零
@@ -323,13 +378,11 @@
       controller.lastVideoTime = 0;
       controller.pass = 1;
       controller.lastDecision = null;
-      if (changed) {
-        // 换视频了一定要把取帧源作废，否则会继续用上一个视频的流（严重 bug）
-        controller.lastAccepted = null;
-        if (NS.framesource) NS.framesource.invalidate();
-        controller.status = '检测到切换视频，正在重建取帧源…';
-        NS.panel.renderStats();
-      }
+      // 换视频 = 换会话：取帧源会在下次抓帧时按新会话重建（见 framesource.ensure）
+      controller.lastAccepted = null;
+      if (NS.framesource) NS.framesource.invalidate();
+      controller.status = `已切换到新视频（${info.bvid || info.id}），下次抓帧时重建取帧源`;
+      NS.panel.renderStats();
       try {
         const session = await core.send({
           type: 'db.ensureSession',
@@ -345,6 +398,60 @@
         controller.status = `会话创建失败：${error.message}`;
       }
       NS.panel.renderStats();
+    },
+
+    /**
+     * 站内跳转的统一入口（由主世界的 history 钩子、popstate、video 事件调用）。
+     *
+     * 跳转后不能立刻重建取帧源：此刻播放器还挂在旧视频上，`__playinfo__` 也还是旧的，
+     * 立刻重建只会重建出「上一个视频的流」。所以先记下要切到的新会话，等
+     * video 元素真的换源（loadstart/emptied）之后再重建。
+     */
+    onNavigate(href) {
+      const url = href || location.href;
+      if (url === controller.lastHref) return;
+      controller.lastHref = url;
+      // 把新会话算出来（会话 id 只依赖 URL，此刻就能确定）。
+      // 注意：只有**会话身份真的变了**才算换视频 —— 同一视频重发一次
+      // pushState（B 站更新 spm_id_from / trackid 这类参数时会这样）不能触发会话重建，
+      // 否则统计会被反复归零、会话被反复重建，表现就是「全乱了」。
+      const info = controller.sessionKeyFor(controller.video);
+      if (!info || info.id === controller.sessionKey) return;
+      controller.pendingSession = info;
+      controller.navCount = (controller.navCount || 0) + 1;
+      controller.status = `检测到站内跳转（${info.id}），等待播放器换源…`;
+      NS.panel.renderStats();
+    },
+
+    /** video 元素换源了（loadstart/emptied）：现在可以安全地重建取帧源 */
+    onVideoSourceChanged() {
+      // 重新绑定（播放器可能重建了 video 元素）
+      const current = core.findVideo();
+      if (current && current !== controller.video) {
+        controller.bindVideo(current);
+      }
+      controller.pendingSession = null;
+      // syncSession 自带「同一会话不重复初始化」的保护，这里直接调用即可
+      controller.syncSession();
+    },
+
+    /**
+     * 会话被清空后把本地计数归零并重新拉取。
+     * 面板显示的帧数必须跟着变成 0，否则会显示一个已经不存在的数字。
+     */
+    resetAfterClear(sessionId) {
+      if (sessionId && controller.sessionKey && sessionId !== controller.sessionKey) return;
+      controller.sampleCount = 0;
+      controller.skipCount = 0;
+      controller.savedCount = 0;
+      controller.totalCount = 0;
+      controller.savedHashes = new Set();
+      controller.lastSampleHash = '';
+      controller.lastAccepted = null;
+      controller.lastDecision = null;
+      controller.pass = 1;
+      controller.status = '会话已清空';
+      controller.refreshCounts();
     },
 
     async refreshCounts() {
@@ -489,6 +596,7 @@
         const settings = controller.settings;
         const time = video.currentTime;
         if (!(time > 0)) return;
+
         const signature = NS.detector.sample(video, NS.detectorCanvas);
         controller.sampleCount += 1;
         const epoch = controller.epoch;
@@ -987,6 +1095,21 @@
         error: controller.lastError,
         sessionKey: controller.sessionKey,
         title: controller.sessionKey ? controller.videoTitle() : '',
+        // 诊断用：判断站内跳转的检测链路是否正常
+        navHook: controller.navHookState || '（未安装）',
+        navCount: controller.navCount || 0,
+        syncCount: controller.syncCount || 0,
+        pendingSession: controller.pendingSession ? controller.pendingSession.id : '',
+        sourceTarget: controller.sourceTarget,
+        frameSource: NS.framesource
+          ? {
+              mode: NS.framesource.mode,
+              source: NS.framesource.sourceName,
+              forSession: NS.framesource.loadedForSession,
+              activeUrl: NS.framesource.activeUrl
+            }
+          : null,
+        mediaUrl: (controller.video && (controller.video.currentSrc || controller.video.src)) || '',
         scanning: !!controller.scanning,
         scan: scan && scan.scanning ? scan : null
       };

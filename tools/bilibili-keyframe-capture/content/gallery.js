@@ -953,16 +953,22 @@
       }
     },
 
-    async clearSession() {      if (!gallery.sessionId) return;
+    async clearSession() {
+      if (!gallery.sessionId) return;
       const session = gallery.sessions.find((s) => s.id === gallery.sessionId);
       const name = session ? session.title : gallery.sessionId;
-      if (!window.confirm(`确定清空「${name}」的全部关键帧吗？此操作不可撤销。`)) return;
+      if (!window.confirm(`确定清空「${name}」的全部关键帧吗？会话本身会保留。`)) return;
       try {
-        await core.send({ type: 'db.deleteSession', sessionId: gallery.sessionId });
+        // 注意用 clearSession：只删帧、保留会话。
+        // 以前这里错用了 deleteSession，把整个会话记录一起删掉了。
+        const result = await core.send({ type: 'db.clearSession', sessionId: gallery.sessionId });
         gallery.selected.clear();
+        if (gallery.controller && typeof gallery.controller.resetAfterClear === 'function') {
+          gallery.controller.resetAfterClear(gallery.sessionId);
+        }
         await gallery.loadSessions();
         await gallery.reload();
-        gallery.toast('已清空该会话');
+        gallery.toast(`已清空 ${result && result.removed ? result.removed : 0} 张，会话已保留`);
       } catch (error) {
         gallery.toast(`清空失败：${error.message}`, true);
       }
