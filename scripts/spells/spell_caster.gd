@@ -10,7 +10,10 @@ extends Node
 ##   按住左键   -> 朝角色正前方持续喷射（从法杖顶端喷出），魔法值耗尽自动停
 
 const SpellWheel := preload("res://scripts/spells/spell_wheel.gd")
-const FlameVisual := preload("res://scripts/spells/flame_visual.gd")
+## 火焰喷射的视觉实现 —— 粒子版：内部实例化 scenes/fire_jet.tscn。
+## 想换回着色器版（flame_visual.gd + assets/shaders/flame_jet_visual.tres）：
+## 把下面这行改回 preload("res://scripts/spells/flame_visual.gd") 即可，接口完全一致。
+const FlameVisual := preload("res://scripts/spells/flame_jet_particles.gd")
 
 
 @export var enabled := true

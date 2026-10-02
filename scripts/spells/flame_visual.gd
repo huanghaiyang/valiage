@@ -6,24 +6,27 @@ extends Node3D
 ## 着色器：assets/shaders/flame_jet_visual.tres —— VisualShader 节点图，编辑器里可直接改。
 ##   节点图里是一个 Expression 节点（output0 -> Albedo / output1 -> Alpha / output2 -> Emission）。
 ##
-## 对外接口（spell_caster 调用）：
-##   setup(player, staff) / start_cast() / stop_cast() / aim_dir() / origin_global() / ran_out_of_mana()
+## 瞄准方向 / 喷射起点不再自己实现，改用与粒子版共用的 spell_aim.gd —— 两个实现的弹道
+## 行为因此永远一致（不想再出现"同一段代码抄两份、只修一处"的事故）。
+##
+## 对外接口（spell_caster 调用，与 flame_jet_particles.gd 完全一致）：
+##   setup(player, staff) / start_cast() / stop_cast() / is_casting()
+##   / aim_dir() / origin_global() / ran_out_of_mana()
 
 const SHADER_PATH := "res://assets/shaders/flame_jet_visual.tres"
-const StaffTip := preload("res://scripts/spells/staff_tip.gd")
+## 瞄准方向 + 喷射起点：与粒子版共用同一份实现。
+## 想改成"从法杖顶端喷"，改 spell_aim.gd 里的 origin_at_staff（两个实现同时生效）。
+const SpellAim := preload("res://scripts/spells/spell_aim.gd")
 
 @export var mana_per_sec := 22.0
 @export var jet_length := 3.2          ## 火柱长度（米）
 @export var jet_width := 1.10          ## 火柱宽度（米）
 @export var blade_count := 4           ## 交叉片数（圆柱公告板）
-@export var origin_at_staff := false   ## true = 从法杖顶端喷
 
 var casting := false
+var _aim := SpellAim.new()
 var _root: Node3D = null
 var _blades: Array[MeshInstance3D] = []
-var _staff: Node3D = null
-var _player: Node3D = null
-var _last_dir := Vector3.FORWARD
 var _ran_out := false
 
 
@@ -53,8 +56,7 @@ func _ready() -> void:
 
 
 func setup(player: Node3D, staff: Node3D) -> void:
-	_player = player
-	_staff = staff
+	_aim.setup(player, staff, self)
 
 
 # ---------------------------------------------------------------- 对外
@@ -78,37 +80,14 @@ func ran_out_of_mana() -> bool:
 	return _ran_out
 
 
-## 喷射方向（水平、世界空间）
+## 喷射方向（水平、世界空间）—— 实现在 spell_aim.gd，与粒子版共用
 func aim_dir() -> Vector3:
-	var d := Vector3.ZERO
-	if _player != null and is_instance_valid(_player) and "velocity" in _player:
-		var v: Variant = _player.get("velocity")
-		if v is Vector3:
-			d = Vector3(v.x, 0.0, v.z)
-	if d.length_squared() < 0.0004:
-		var cam := get_viewport().get_camera_3d() if is_inside_tree() else null
-		if cam != null and is_instance_valid(cam):
-			var cf := -cam.global_transform.basis.z
-			d = Vector3(cf.x, 0.0, cf.z)
-	if d.length_squared() < 0.0004 and _player != null and is_instance_valid(_player) and _player.has_method("get_facing_yaw"):
-		var yaw := float(_player.call("get_facing_yaw"))
-		d = Vector3(-sin(yaw), 0.0, -cos(yaw))
-	if d.length_squared() < 0.000001:
-		return _last_dir
-	d = d.normalized()
-	_last_dir = d
-	return d
+	return _aim.aim_dir()
 
 
-## 喷射起点（世界坐标）
+## 喷射起点（世界坐标）—— 实现在 spell_aim.gd，与粒子版共用
 func origin_global() -> Vector3:
-	if origin_at_staff and _staff != null and is_instance_valid(_staff):
-		var tip: Vector3 = StaffTip.tip_global(_staff)
-		if tip != Vector3.ZERO:
-			return tip
-	if _player != null and is_instance_valid(_player):
-		return _player.global_position + Vector3.UP * 1.05 + aim_dir() * 0.6
-	return global_position
+	return _aim.origin_global()
 
 
 # ---------------------------------------------------------------- 每帧
