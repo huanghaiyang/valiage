@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>B站关键帧抓取器 · 使用说明</title>
+    <link rel="stylesheet" href="popup.css" />
+    <style>
+      body { width: auto; max-width: 900px; margin: 0 auto; padding: 26px 22px 60px; }
+      h1 { font-size: 20px; margin: 0 0 6px; }
+      h2 { font-size: 15px; margin: 26px 0 8px; color: #fff; }
+      p, li { line-height: 1.85; color: #b9c2cf; font-size: 13.5px; }
+      code { background: #22262d; border: 1px solid #333941; border-radius: 5px; padding: 1px 5px;
+             font-size: 12.5px; color: #ffb3c8; }
+      ol, ul { padding-left: 22px; }
+      .note { background: #1b1f26; border: 1px solid #2f3641; border-left: 3px solid #fb7299;
+              border-radius: 8px; padding: 12px 14px; margin: 12px 0; }
+      .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+      .card { background: #14171c; border: 1px solid #2b3038; border-radius: 10px; padding: 12px 14px; }
+      .card h3 { margin: 0 0 6px; font-size: 13.5px; color: #fff; }
+      .card p { margin: 0; font-size: 12.5px; }
+      a { color: #7fd0ff; }
+    </style>
+  </head>
+  <body>
+    <h1>B站关键帧抓取器 · 使用说明</h1>
+    <p>在 B 站播放视频时自动检测并抓取关键帧（场景切换画面），按视频分会话保存在浏览器本地
+      IndexedDB 中，可浏览、回跳、重命名、下载与导出 ZIP。</p>
+
+    <h2>快速上手</h2>
+    <ol>
+      <li>打开任意 B 站视频页（<code>www.bilibili.com/video/BV...</code>），播放视频。</li>
+      <li>页面左侧会出现「关键帧抓取」悬浮面板，点 <strong>开始自动抓取</strong>（默认已自动开始）。</li>
+      <li>画面发生场景切换时，扩展会自动保存该帧；也可点击 <strong>抓取当前帧</strong> 或按
+        <code>Alt+K</code> 手动抓取（快捷键可在 <code>chrome://extensions/shortcuts</code> 修改）。</li>
+      <li>点面板上的 <strong>图库</strong> 打开全屏图库，浏览 / 回跳 / 导出。</li>
+    </ol>
+
+    <h2>抓取模式</h2>
+    <div class="grid2">
+      <div class="card">
+        <h3>仅手动（默认）</h3>
+        <p><b>进入页面后不自动抓取</b>，需要时自己点「抓取当前帧」（或 <code>Alt+K</code>）、
+          「开始自动抓取」、「🎬 播放并抓帧」。这样不会在后台默默消耗 CPU 与磁盘。
+          老版本升级上来时，若模式仍是「自动·关键帧」，会一次性迁移成此模式。</p>
+      </div>
+      <div class="card">
+        <h3>自动 · 关键帧</h3>
+        <p>对画面做 dHash（感知哈希）+ 灰度平均绝对差比较，变化超过阈值即认为发生场景切换，
+          保存该帧。<b>注意：采样间隔只决定「判定节奏」，只保存画面明显变化的帧</b> ——
+          5 秒按 100ms 会判定约 50 次，但可能只命中几次场景切换，这是设计如此。
+          面板与弹窗都会显示「判定 N 次 · 命中 X%」。</p>
+      </div>
+      <div class="card">
+        <h3>逐帧抓取（100ms ≈ 每秒 10 张）</h3>
+        <p>按采样间隔<b>无条件全部保存</b>，只挡掉「连续两次采样落在同一帧」的情况。
+          想让 5 秒视频出 50 张图就用这个模式（记得把单会话上限调大）。</p>
+      </div>
+      <div class="card">
+        <h3>定间隔抓取</h3>
+        <p>同样是全部保存，但通常配合较大的间隔（以秒计）做时间轴抽样；
+          切到这个模式时间隔会自动设为 1000ms。</p>
+      </div>
+      <div class="card">
+        <h3>播放并抓帧（🎬 整片扫描）</h3>
+        <p>让隐藏的取帧 video 以设定倍速从片头播到片尾，按间隔判定并保存关键帧，
+          界面上显示进度与预计剩余，可随时中止。这是你点按钮才会启动的动作，
+          不受默认暂停影响。</p>
+      </div>
+    </div>
+
+    <h2>想抓更多：多播几遍</h2>
+    <p>采样是异步推进的，某次编码写入超过采样间隔时，那一段的采样点会被跳过，
+      而这些空洞在每次播放里位置固定。面板上的 <strong>🔁 再抓一遍</strong> 会：回到片头重播、
+      重置判定基准、累加遍数（面板显示「第 2 遍」），从而让新一遍覆盖上一遍漏掉的画面；
+      <strong>完全相同的画面不会重复保存</strong>，所以多播几遍只增不减。
+      导出的 <code>metadata.json</code> / <code>index.csv</code> 里每帧都带 <code>pass</code> 字段。</p>
+
+    <h2>「暂停自动抓取」会记住状态</h2>
+    <p>点暂停会把抓取模式持久化成「仅手动」，并记住暂停前用的模式；下次进页面 <b>不会</b> 自动开跑，
+      点「开始」则恢复到原来的模式（关键帧 / 逐帧 / 定间隔），不会被强制改成关键帧模式。
+      面板与弹窗两条路径行为一致。</p>
+
+    <h2>抓取风格预设（一键套用）</h2>
+    <ul>
+      <li><strong>逐帧：100ms，5 秒 ≈ 50 张</strong> —— 模式=逐帧抓取，上限提到 5000 帧。</li>
+      <li><strong>平衡：200ms + 灵敏度 8</strong> —— 关键帧模式，比默认更灵敏，日常推荐。</li>
+      <li><strong>仅场景切换：100ms + 灵敏度 14</strong> —— 只要分镜图时用。</li>
+    </ul>
+
+    <h2>播放并抓帧怎么调</h2>
+    <ul>
+      <li><strong>扫描倍速</strong>：默认 4×。倍速越高越快，但极短的镜头更容易被跳过；
+        1× 最准。耗时大致为「时长 ÷ 倍速」。</li>
+      <li><strong>采样间隔</strong>：默认 1 秒（逐点定位，最准）。调到 0.2~0.4 秒会切换为
+        倍速连续播放采样，更快但可能漏掉短镜头。</li>
+      <li><strong>扫描时暂停正在看的播放器</strong>：默认开启，省带宽与 CPU；扫描结束会自动恢复播放。</li>
+      <li><strong>扫描结束后自动打开图库</strong>：默认开启，方便立刻查看/导出结果。</li>
+      <li>扫描按「单会话上限」的剩余额度抓取，抓满即停；中止或失败时已抓到的帧都会保留。</li>
+    </ul>
+
+    <h2>参数怎么调</h2>
+    <ul>
+      <li><strong>采样间隔（毫秒，默认 100ms）</strong>：每隔多久<b>判定</b>一次画面。
+        默认 100ms 已接近「帧级」——B 站视频普遍 60fps，一帧约 16.7ms。
+        <b>它不决定保存张数</b>：关键帧模式只保存命中变化的帧；想要「每 100ms 一张」请用逐帧抓取模式。</li>
+      <li><strong>关键帧灵敏度</strong>（dHash 阈值）：数值越小越灵敏，抓得越多；10~14 适合大多数视频，
+        动作快的视频可降到 8，演讲类可升到 18。</li>
+      <li><strong>相似度去重（默认 2.5%）</strong>：与上一张已保存帧的差异小于它就跳过，
+        避免同一场景被连续采样存成好几张几乎一样的图。想抓得更密就调小，设为 0 等于关闭。
+        另外同一会话内指纹完全相同的帧在存储层也不会被写入第二次。</li>
+      <li><strong>自动删除重复帧（默认开启）</strong>：一批画面写完后（防抖 4 秒）后台会扫一遍，
+        把同一指纹的旧帧删掉，每个画面只留最后一张。升级前攒下的重复帧可用图库工具栏的
+        「清理重复帧」按钮一次性清掉。关闭该开关则只保留「相似度去重 + 指纹不重复入库」两道。</li>
+      <li><strong>灰度变化阈值</strong>（MAD）：对整体亮度变化敏感，互补于 dHash；10 左右即可。</li>
+      <li><strong>单会话上限</strong>：达到上限后停止追加，可选自动导出 ZIP 或自动写入本地文件夹。</li>
+      <li><strong>图片格式 / 质量 / 最长边</strong>：默认 JPEG 85%、1280px，兼顾清晰度与体积；
+        需要无损切片可改为 PNG。</li>
+    </ul>
+
+    <h2>性能提示</h2>
+    <p>采样本身很便宜（把画面缩到 11×10 / 16×16 灰度图做哈希），真正耗时的是<b>判定命中后的编码与写入</b>。
+      所以 100ms 间隔在普通视频上不会有明显开销；如果画面切换非常密集（例如快剪 MV），
+      单次编码可能超过 100ms，此时采样会自动让位（同一时刻只处理一帧），不会堆积。
+      觉得卡顿时把间隔调大，或调低最长边 / JPEG 质量即可。</p>
+
+    <h2>导出</h2>
+    <ul>
+      <li><strong>导出 ZIP</strong>：包含 <code>frames/</code> 全部原图，以及 <code>index.csv</code>
+        （帧号、时间点、分辨率、变化量）与 <code>metadata.json</code>（视频标题、UP 主、BV 号、时间点列表）。</li>
+      <li><strong>存到文件夹</strong>：使用 Chrome 的文件系统访问 API，直接写入你选的目录
+        （目录内会新建「视频名 + 时间戳」子文件夹）。</li>
+      <li><strong>单帧下载</strong>：图库缩略图下方的「下载」，或大图预览里的下载。</li>
+    </ul>
+
+    <h2>数据存在哪里</h2>
+    <p>关键帧保存在扩展自己的 IndexedDB（<code>bilibili-keyframe-capture</code>）中，
+      不随 B 站页面刷新、清缓存而丢失；卸载扩展会一并删除。扩展申请了
+      <code>unlimitedStorage</code>，不受网页 localStorage 5MB 限制。</p>
+    <div class="note">
+      <strong>取帧原理与已知限制：</strong>B 站 CDN 不接受带 <code>Origin</code> 的匿名请求，
+      所以扩展不靠网页去读视频像素，而是<b>自己把数据取回来</b>再喂给隐藏 video：
+      先试直连（最快），不行就 <code>fetch</code> 下载成 blob（面板会显示下载进度），
+      超长视频再用 <code>MediaSource</code> 边下边取帧。因此取帧不会影响你正在播放的画面，
+      代价是抓帧时有一次额外的视频下载（一般命中浏览器缓存）。
+      付费 / DRM 内容与直播流（<code>blob:</code> 地址）仍无法取帧，面板会给出具体原因。
+    </div>
+
+    <h2>常见问题</h2>
+    <ul>
+      <li><strong>面板没出现？</strong>刷新一次 B 站页面；或在扩展弹窗里勾选「在页面左侧显示悬浮面板」。</li>
+      <li><strong>面板挡住内容 / 想换个位置？</strong>按住面板顶部把手拖到任意位置；
+        点右上角 <code>‹</code> 可收起成一条细竖条；弹窗里的「重置位置」可恢复默认。</li>
+      <li><strong>抓不到帧 / 面板一直显示「跳过」？</strong>画面可能是纯色、黑场或变化不大，
+        调低「关键帧灵敏度」即可。</li>
+      <li><strong>提示地址是 <code>blob:</code>？</strong>点面板的「诊断 → 重新获取视频地址」：
+        扩展会去看播放器实际下载了哪些 CDN 地址（右侧推荐位的封面图会被自动排除），
+        找到后直接切换取帧源。记得先让视频播起来，播放器才会发出媒体请求。</li>
+      <li><strong>图库打开后视频还在播？</strong>这是默认行为；勾选「打开图库时暂停视频」可自动暂停。</li>
+      <li><strong>抓多了很占空间？</strong>图库内可多选删除、清空会话，弹窗顶部会显示已占用空间。</li>
+    </ul>
+
+    <p style="margin-top:26px">
+      <a href="https://www.bilibili.com/" target="_blank" rel="noreferrer">前往 B 站 →</a>
+    </p>
+  </body>
+</html>

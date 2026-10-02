@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>B站关键帧抓取器</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <div class="logo">KF</div>
+      <div class="titles">
+        <h1>B站关键帧抓取器</h1>
+        <p class="sub">播放中自动抓取场景关键帧并本地保存</p>
+      </div>
+    </header>
+
+    <div id="status" class="status idle">正在连接页面…</div>
+    <p id="detail" class="detail"></p>
+    <p id="notBilibili" class="detail warn" hidden>当前标签页不是 B 站视频页，请在 <code>bilibili.com</code> 页面使用。</p>
+
+    <div id="errorBox" class="errorbox" hidden>
+      <pre id="errorText"></pre>
+      <div class="erroracts">
+        <button id="copyDiag" class="ghost">复制诊断信息</button>
+        <span id="copyHint" class="copyhint"></span>
+      </div>
+      <div class="erroracts">
+        <button id="refetch" class="ghost" title="让扩展去看播放器实际请求的视频地址，然后切换到它">重新获取视频地址</button>
+      </div>
+    </div>
+
+    <div id="actions" class="actions">
+      <button id="captureBtn" class="primary">抓取当前帧</button>
+      <button id="replayBtn" title="回到片头再抓一遍，补齐上一遍漏掉的采样点">再抓一遍</button>
+      <button id="autoBtn">暂停自动抓取</button>
+      <button id="galleryBtn" class="ghost">打开图库</button>
+      <button id="videoBtn" class="ghost" title="下载页面里正在播放的原视频（保存到浏览器默认下载目录）">下载视频</button>
+      <button id="openDownloads" class="ghost" title="在文件管理器里打开浏览器的默认下载目录">打开下载目录</button>
+    </div>
+
+    <button id="scanBtn" class="scan">🎬 播放并抓帧（自动扫描整个视频）</button>
+    <div id="scanBox" class="scanbox" hidden>
+      <div class="scanline">
+        <span id="scanText">准备中…</span>
+        <span id="scanPct" class="pct">0%</span>
+      </div>
+      <div class="bar"><i id="scanBar"></i></div>
+      <div id="scanEta" class="eta"></div>
+    </div>
+
+    <div class="row">
+      <label for="modeSelect">抓取模式</label>
+      <select id="modeSelect">
+        <option value="off">仅手动（默认 · 进页面不自动抓）</option>
+        <option value="auto">自动 · 关键帧（只存画面变化）</option>
+        <option value="every">逐帧抓取（按间隔全部存）</option>
+        <option value="interval">定间隔抓取（全部存，间隔较大）</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <label for="presetSelect">抓取风格 <span class="hint">一键套用</span></label>
+      <select id="presetSelect">
+        <option value="frame">逐帧：100ms，5 秒 ≈ 50 张</option>
+        <option value="balanced">平衡：200ms + 灵敏度 8</option>
+        <option value="scene">仅场景切换：100ms + 灵敏度 14</option>
+      </select>
+    </div>
+
+    <details open>
+      <summary>抓取设置</summary>
+      <div class="settings">
+        <div class="row">
+          <label for="hashThreshold">关键帧灵敏度 <span class="hint">越小越灵敏</span></label>
+          <input id="hashThreshold" type="number" min="1" max="60" step="1" />
+        </div>
+        <div class="row">
+          <label for="madThreshold">灰度变化阈值 <span class="hint">越大越迟钝</span></label>
+          <input id="madThreshold" type="number" min="1" max="60" step="1" />
+        </div>
+        <div class="row">
+          <label for="intervalMs">采样间隔（毫秒） <span class="hint">100ms ≈ 帧级</span></label>
+          <input id="intervalMs" type="number" min="100" max="10000" step="10" />
+        </div>
+        <div class="row">
+          <label for="formatSelect">图片格式</label>
+          <select id="formatSelect">
+            <option value="jpeg">JPEG（体积小）</option>
+            <option value="png">PNG（无损）</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="minChange">相似度去重 <span class="hint">越小抓得越多</span></label>
+          <input id="minChange" type="number" min="0" max="50" step="0.5" />
+        </div>
+        <div class="row">
+          <label for="quality">JPEG 质量（%）</label>
+          <input id="quality" type="number" min="30" max="100" step="1" />
+        </div>
+        <div class="row">
+          <label for="maxWidth">原图最长边（px）</label>
+          <input id="maxWidth" type="number" min="320" max="3840" step="10" />
+        </div>
+        <div class="row">
+          <label for="maxFrames">单会话上限（帧）</label>
+          <input id="maxFrames" type="number" min="10" max="5000" step="10" />
+        </div>
+        <div class="row">
+          <label for="autoExportSelect">达到上限后</label>
+          <select id="autoExportSelect">
+            <option value="none">停止抓取</option>
+            <option value="download">自动导出 ZIP</option>
+            <option value="folder">自动写入文件夹</option>
+          </select>
+        </div>
+        <div class="sub-title">播放并抓帧</div>
+        <div class="row">
+          <label for="scanInterval">扫描采样间隔（秒） <span class="hint">越大越快</span></label>
+          <input id="scanInterval" type="number" min="0.15" max="10" step="0.05" />
+        </div>
+        <div class="row">
+          <label for="scanRate">扫描倍速</label>
+          <select id="scanRate">
+            <option value="1">1×（最准）</option>
+            <option value="2">2×</option>
+            <option value="4">4×</option>
+            <option value="8">8×</option>
+            <option value="16">16×（最快）</option>
+          </select>
+        </div>
+        <div class="row switch">
+          <label for="scanPauseMain">扫描时暂停正在看的播放器</label>
+          <input id="scanPauseMain" type="checkbox" />
+        </div>
+        <div class="row switch">
+          <label for="scanOpenGallery">扫描结束后自动打开图库</label>
+          <input id="scanOpenGallery" type="checkbox" />
+        </div>
+        <div class="row switch">
+          <label for="autoPrune">自动删除重复帧 <span class="hint">指纹相同的只留一张</span></label>
+          <input id="autoPrune" type="checkbox" />
+        </div>
+        <div class="row switch">
+          <label for="showPanel">在页面左侧显示悬浮面板</label>
+          <input id="showPanel" type="checkbox" />
+        </div>
+        <div class="row">
+          <label>面板位置 <span class="hint">按住面板顶部把手可拖动</span></label>
+          <button id="resetPanel" class="ghost">重置位置</button>
+        </div>
+        <div class="row switch">
+          <label for="autoPause">打开图库时暂停视频</label>
+          <input id="autoPause" type="checkbox" />
+        </div>
+      </div>
+    </details>
+
+    <div class="section-title">最近的会话</div>
+    <div id="sessions" class="sessions"></div>
+    <p id="usage" class="usage"></p>
+    <footer>
+      <button id="openOptions" class="ghost">使用说明 / 参数详解</button>
+      <button id="captureHelp" class="ghost">快捷键：Alt+K</button>
+    </footer>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

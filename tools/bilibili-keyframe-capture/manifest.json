@@ -1,0 +1,83 @@
+{
+  "manifest_version": 3,
+  "name": "B站关键帧抓取器 (Bilibili Keyframe Capture)",
+  "version": "1.0.0",
+  "description": "播放 B 站视频时自动检测并抓取关键帧（场景切换画面），按视频分会话保存在本地，可浏览、回跳、导出 ZIP。",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "downloads",
+    "tabs",
+    "scripting",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "*://*.bilibili.com/*",
+    "*://*.bilivideo.com/*",
+    "*://*.bilivideo.cn/*",
+    "*://*.hdslb.com/*",
+    "*://*.akamaized.net/*",
+    "*://*.mcdn.bilivideo.cn/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "action": {
+    "default_title": "B站关键帧抓取器",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://www.bilibili.com/video/*",
+        "*://www.bilibili.com/bangumi/play/*",
+        "*://www.bilibili.com/list/*",
+        "*://www.bilibili.com/medialist/play/*",
+        "*://www.bilibili.com/cheese/play/*"
+      ],
+      "js": [
+        "content/core.js",
+        "content/detector.js",
+        "content/framesource.js",
+        "content/capture.js",
+        "content/scanner.js",
+        "content/panel.js",
+        "content/gallery.js",
+        "content/main.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "commands": {
+    "capture-now": {
+      "suggested_key": {
+        "default": "Alt+K"
+      },
+      "description": "立即抓取当前画面为关键帧"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "icons/*"
+      ],
+      "matches": [
+        "*://*.bilibili.com/*"
+      ]
+    }
+  ]
+}
