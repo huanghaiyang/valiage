@@ -2,9 +2,9 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://dkst0kxsr5nmf"
-path.s3tc="res://.godot/imported/staff_fantasy_1_Normal.jpg-e55b19b399ee3d7d2a65e715180238c8.s3tc.ctex"
-path.etc2="res://.godot/imported/staff_fantasy_1_Normal.jpg-e55b19b399ee3d7d2a65e715180238c8.etc2.ctex"
+uid="uid://bowi7toogvc3f"
+path.bptc="res://.godot/imported/T_Noise1_nk.png-249fd5af5a06a1ffb4429031da86b18d.bptc.ctex"
+path.astc="res://.godot/imported/T_Noise1_nk.png-249fd5af5a06a1ffb4429031da86b18d.astc.ctex"
 metadata={
 "imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
@@ -12,18 +12,18 @@ metadata={
 
 [deps]
 
-source_file="res://assets/models/crafted/staff_fantasy_1_Normal.jpg"
-dest_files=["res://.godot/imported/staff_fantasy_1_Normal.jpg-e55b19b399ee3d7d2a65e715180238c8.s3tc.ctex", "res://.godot/imported/staff_fantasy_1_Normal.jpg-e55b19b399ee3d7d2a65e715180238c8.etc2.ctex"]
+source_file="res://assets/textures/法术特效/龙卷风/T_Noise1_nk.png"
+dest_files=["res://.godot/imported/T_Noise1_nk.png-249fd5af5a06a1ffb4429031da86b18d.bptc.ctex", "res://.godot/imported/T_Noise1_nk.png-249fd5af5a06a1ffb4429031da86b18d.astc.ctex"]
 
 [params]
 
 compress/mode=2
-compress/high_quality=false
+compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0
 compress/hdr_compression=1
-compress/normal_map=1
+compress/normal_map=0
 compress/channel_pack=0
 mipmaps/generate=true
 mipmaps/limit=-1

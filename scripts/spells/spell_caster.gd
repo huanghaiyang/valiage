@@ -2,18 +2,24 @@ extends Node
 ## 法术施放控制器（自动加载为 SpellCaster）。
 ##
 ## 为什么做成自动加载：这样**完全不用改你的场景** —— 它自己在运行时找到玩家和手里的法杖，
-## 挂上火焰喷射，并弹出法术圆盘。
+## 挂上当前选中的术法视觉，并弹出法术圆盘。
 ##
 ## 操作：
 ##   E          -> 唤出 / 收起 法术圆盘
-##   左键点圆盘 -> 选中术法（火焰喷射）-> 圆盘关闭
-##   按住左键   -> 朝角色正前方持续喷射（从法杖顶端喷出），魔法值耗尽自动停
+##   左键点圆盘 -> 选中术法 -> 圆盘关闭
+##   按住左键   -> 持续施放（火焰喷射朝前方喷、火龙卷在身前竖起火柱），魔法值耗尽自动停
+##
+## 术法在下面的 SPELLS 里注册；换术法时旧视觉会被停掉并释放。
 
 const SpellWheel := preload("res://scripts/spells/spell_wheel.gd")
-## 火焰喷射的视觉实现 —— 粒子版：内部实例化 scenes/fire_jet.tscn。
-## 想换回着色器版（flame_visual.gd + assets/shaders/flame_jet_visual.tres）：
-## 把下面这行改回 preload("res://scripts/spells/flame_visual.gd") 即可，接口完全一致。
-const FlameVisual := preload("res://scripts/spells/flame_jet_particles.gd")
+## 术法注册表：id -> 视觉脚本。视觉脚本只要实现
+##   setup(player, staff) / start_cast() / stop_cast()
+## 这三件事即可；瞄准方向与起始位置由 scripts/spells/spell_aim.gd 共用。
+## 想换回着色器版火焰喷射：把 "flame_jet" 的值改成 preload(".../flame_visual.gd")。
+const SPELLS := {
+	"flame_jet": preload("res://scripts/spells/flame_jet_particles.gd"),
+	"fire_tornado": preload("res://scripts/spells/fire_tornado_particles.gd"),
+}
 
 
 @export var enabled := true
@@ -23,8 +29,9 @@ const FlameVisual := preload("res://scripts/spells/flame_jet_particles.gd")
 
 
 var wheel: CanvasLayer = null
-var jet: Node3D = null
+var jet: Node3D = null            ## 当前术法的视觉节点
 var selected := ""
+var _jet_spell := ""              ## jet 是哪个术法的视觉（换术法时据此重建）
 
 var _player: Node3D = null
 var _staff: Node3D = null
@@ -53,6 +60,7 @@ func _process(delta: float) -> void:
 			wheel.call("toggle")
 	# 施法（按住左键）
 	_holding = _cast_held()
+	_ensure_jet()          # 选中变化 -> 换视觉
 	if jet != null and is_instance_valid(jet):
 		if selected.is_empty() or not _holding:
 			jet.call("stop_cast")
@@ -64,14 +72,16 @@ func _process(delta: float) -> void:
 func _just_pressed_wheel() -> bool:
 	if InputMap.has_action(wheel_action):
 		return Input.is_action_just_pressed(wheel_action)
-	return Input.is_key_pressed(KEY_E) and not _e_was_down_prev()
-	
-var _e_prev := false
-func _e_was_down_prev() -> bool:
+	# ★ _e_prev 必须**每帧都更新**，所以不能用 `... and not _e_was_down_prev()` 那种写法：
+	#   更新 _e_prev 的代码一旦放到 and 右边，GDScript 的短路求值会在"E 没按下"时整段跳过，
+	#   于是松开 E 后 _e_prev 永远停在 true -> E 一局只能生效一次
+	#   （症状：选完法术再按 E 唤不出轮盘）。
 	var now := Input.is_key_pressed(KEY_E)
-	var was := _e_prev
+	var just := now and not _e_prev
 	_e_prev = now
-	return was
+	return just
+
+var _e_prev := false
 
 
 func _cast_held() -> bool:
@@ -88,8 +98,6 @@ func _find_nodes() -> void:
 		_player = _find_player()
 	if _player != null and (_staff == null or not is_instance_valid(_staff)):
 		_staff = _find_staff(_player)
-		if _staff != null:
-			_ensure_jet()
 
 
 func _find_player() -> Node3D:
@@ -125,15 +133,26 @@ func _find_staff(root: Node) -> Node3D:
 
 
 func _ensure_jet() -> void:
+	if selected.is_empty() or _player == null or _staff == null:
+		return
+	# 已经是这个术法的视觉：什么都不用做
+	if jet != null and is_instance_valid(jet) and _jet_spell == selected:
+		return
+	var script: GDScript = SPELLS.get(selected, null)
+	if script == null:
+		push_warning("[SpellCaster] 未注册的术法: " + selected)
+		return
+	# 换术法：停掉并释放上一个
 	if jet != null and is_instance_valid(jet):
-		return
-	if _player == null or _staff == null:
-		return
-	var j: Node3D = FlameVisual.new()
-	j.name = "FlameJet"
+		jet.call("stop_cast")
+		jet.queue_free()
+		jet = null
+	var j: Node3D = script.new()
+	j.name = "Spell_" + selected
 	_player.get_parent().add_child(j)
 	j.call("setup", _player, _staff)
 	jet = j
+	_jet_spell = selected
 
 
 func _on_spell_chosen(id: String) -> void:

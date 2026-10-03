@@ -1,0 +1,38 @@
+[gd_scene format=3 uid="uid://bw47oftj1kkpx"]
+
+[ext_resource type="ArrayMesh" uid="uid://bo62y0eh1hb8l" path="res://assets/models/法术特效/龙卷风.obj" id="1_ucio2"]
+[ext_resource type="Shader" uid="uid://ceqwhbhgrkvio" path="res://scenes/法术特效/龙卷风.tres" id="2_4g8pk"]
+[ext_resource type="Texture2D" uid="uid://nefgdv5k3705" path="res://assets/textures/法术特效/龙卷风/T_VFX_WindNoise1.png" id="2_81flx"]
+
+[sub_resource type="Gradient" id="Gradient_vqihd"]
+offsets = PackedFloat32Array(0.044096727, 1)
+colors = PackedColorArray(0.0002151329, 4.3923383, 4.179048, 1, 1.5157021, 0.6075951, 0.26521128, 0)
+
+[sub_resource type="GradientTexture1D" id="GradientTexture1D_4g8pk"]
+gradient = SubResource("Gradient_vqihd")
+use_hdr = true
+
+[sub_resource type="Gradient" id="Gradient_lncdj"]
+offsets = PackedFloat32Array(0, 0.019914651, 0.8449502, 1)
+colors = PackedColorArray(1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1)
+
+[sub_resource type="GradientTexture2D" id="GradientTexture2D_ucio2"]
+gradient = SubResource("Gradient_lncdj")
+fill_from = Vector2(1, 0.95156693)
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_ucio2"]
+render_priority = 0
+shader = ExtResource("2_4g8pk")
+shader_parameter/speed = Vector2(1, 1.5)
+shader_parameter/base_texture = ExtResource("2_81flx")
+shader_parameter/sub_texture = SubResource("GradientTexture2D_ucio2")
+shader_parameter/curve_1d = SubResource("GradientTexture1D_4g8pk")
+shader_parameter/opacity = 0.50000002375
+
+[node name="蓝色龙卷风" type="Node2D" unique_id=159760267]
+
+[node name="龙卷风" type="MeshInstance3D" parent="." unique_id=1983362612]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1)
+material_override = SubResource("ShaderMaterial_ucio2")
+cast_shadow = 0
+mesh = ExtResource("1_ucio2")

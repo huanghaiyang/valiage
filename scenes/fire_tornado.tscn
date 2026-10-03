@@ -1,0 +1,180 @@
+[gd_scene format=3 uid="uid://fxnqiuuwpv5q"]
+
+[ext_resource type="Shader" uid="uid://dpm32epli3gn8" path="res://assets/shaders/fire_tornado.gdshader" id="1_shader"]
+[ext_resource type="Texture2D" uid="uid://canhrola3vym5" path="res://assets/textures/特效/光束01.png" id="2_beam"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_outer"]
+transparency = 1
+blend_mode = 1
+cull_mode = 2
+shading_mode = 0
+vertex_color_use_as_albedo = true
+vertex_color_is_srgb = true
+albedo_color = Color(1, 0.42, 0.1, 1)
+albedo_texture = ExtResource("2_beam")
+texture_filter = 0
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_outer"]
+shader = ExtResource("1_shader")
+shader_parameter/speed = 4.23
+shader_parameter/angular_speed = 2.39
+shader_parameter/spin = 1.0
+shader_parameter/base_radius = 0.15
+shader_parameter/top_radius = 0.4
+shader_parameter/radius_jitter = 0.08
+shader_parameter/phase_jitter = 0.26
+shader_parameter/phase_offset = 0.0
+shader_parameter/size_min = 0.22
+shader_parameter/size_max = 0.36
+shader_parameter/stretch = 2.4
+shader_parameter/alpha = 0.55
+shader_parameter/fade_in = 0.1
+shader_parameter/fade_out = 0.28
+shader_parameter/heat = 1.0
+shader_parameter/cam_local_pos = Vector3(0, 0, 10)
+
+[sub_resource type="QuadMesh" id="QuadMesh_outer"]
+size = Vector2(0.3, 0.3)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_mid_outer"]
+transparency = 1
+blend_mode = 1
+cull_mode = 2
+shading_mode = 0
+vertex_color_use_as_albedo = true
+vertex_color_is_srgb = true
+albedo_color = Color(1.03, 0.5, 0.14, 1)
+albedo_texture = ExtResource("2_beam")
+texture_filter = 0
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_mid_outer"]
+shader = ExtResource("1_shader")
+shader_parameter/speed = 4.34
+shader_parameter/angular_speed = 2.65
+shader_parameter/spin = 1.0
+shader_parameter/base_radius = 0.11
+shader_parameter/top_radius = 0.29
+shader_parameter/radius_jitter = 0.1
+shader_parameter/phase_jitter = 0.3
+shader_parameter/phase_offset = 0.25
+shader_parameter/size_min = 0.2
+shader_parameter/size_max = 0.33
+shader_parameter/stretch = 2.3
+shader_parameter/alpha = 0.58
+shader_parameter/fade_in = 0.09
+shader_parameter/fade_out = 0.29
+shader_parameter/heat = 0.85
+shader_parameter/cam_local_pos = Vector3(0, 0, 10)
+
+[sub_resource type="QuadMesh" id="QuadMesh_mid_outer"]
+size = Vector2(0.28, 0.28)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_mid_inner"]
+transparency = 1
+blend_mode = 1
+cull_mode = 2
+shading_mode = 0
+vertex_color_use_as_albedo = true
+vertex_color_is_srgb = true
+albedo_color = Color(1.08, 0.6, 0.22, 1)
+albedo_texture = ExtResource("2_beam")
+texture_filter = 0
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_mid_inner"]
+shader = ExtResource("1_shader")
+shader_parameter/speed = 4.46
+shader_parameter/angular_speed = 2.92
+shader_parameter/spin = 1.0
+shader_parameter/base_radius = 0.07
+shader_parameter/top_radius = 0.19
+shader_parameter/radius_jitter = 0.12
+shader_parameter/phase_jitter = 0.35
+shader_parameter/phase_offset = 0.5
+shader_parameter/size_min = 0.18
+shader_parameter/size_max = 0.3
+shader_parameter/stretch = 2.2
+shader_parameter/alpha = 0.62
+shader_parameter/fade_in = 0.08
+shader_parameter/fade_out = 0.3
+shader_parameter/heat = 0.62
+shader_parameter/cam_local_pos = Vector3(0, 0, 10)
+
+[sub_resource type="QuadMesh" id="QuadMesh_mid_inner"]
+size = Vector2(0.26, 0.26)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_inner"]
+transparency = 1
+blend_mode = 1
+cull_mode = 2
+shading_mode = 0
+vertex_color_use_as_albedo = true
+vertex_color_is_srgb = true
+albedo_color = Color(1.15, 0.75, 0.35, 1)
+albedo_texture = ExtResource("2_beam")
+texture_filter = 0
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_inner"]
+shader = ExtResource("1_shader")
+shader_parameter/speed = 4.6
+shader_parameter/angular_speed = 3.39
+shader_parameter/spin = 1.0
+shader_parameter/base_radius = 0.02
+shader_parameter/top_radius = 0.1
+shader_parameter/radius_jitter = 0.15
+shader_parameter/phase_jitter = 0.42
+shader_parameter/phase_offset = 0.75
+shader_parameter/size_min = 0.16
+shader_parameter/size_max = 0.26
+shader_parameter/stretch = 2.0
+shader_parameter/alpha = 0.68
+shader_parameter/fade_in = 0.06
+shader_parameter/fade_out = 0.3
+shader_parameter/heat = 0.45
+shader_parameter/cam_local_pos = Vector3(0, 0, 10)
+
+[sub_resource type="QuadMesh" id="QuadMesh_inner"]
+size = Vector2(0.23, 0.23)
+
+[node name="fire_tornado" type="Node3D" unique_id=356186923]
+
+[node name="vfx_fire_tornado" type="Node3D" parent="." unique_id=1531149095]
+
+[node name="outer" type="GPUParticles3D" parent="vfx_fire_tornado" unique_id=488000264]
+material_override = SubResource("StandardMaterial3D_outer")
+amount = 400
+speed_scale = 5.0
+fixed_fps = 60
+visibility_aabb = AABB(-1, -1, -1, 2, 4.5, 2)
+local_coords = true
+process_material = SubResource("ShaderMaterial_outer")
+draw_pass_1 = SubResource("QuadMesh_outer")
+
+[node name="mid_outer" type="GPUParticles3D" parent="vfx_fire_tornado" unique_id=1529255899]
+material_override = SubResource("StandardMaterial3D_mid_outer")
+amount = 400
+speed_scale = 5.0
+fixed_fps = 60
+visibility_aabb = AABB(-1, -1, -1, 2, 4.5, 2)
+local_coords = true
+process_material = SubResource("ShaderMaterial_mid_outer")
+draw_pass_1 = SubResource("QuadMesh_mid_outer")
+
+[node name="mid_inner" type="GPUParticles3D" parent="vfx_fire_tornado" unique_id=589980986]
+material_override = SubResource("StandardMaterial3D_mid_inner")
+amount = 400
+speed_scale = 5.0
+fixed_fps = 60
+visibility_aabb = AABB(-1, -1, -1, 2, 4.5, 2)
+local_coords = true
+process_material = SubResource("ShaderMaterial_mid_inner")
+draw_pass_1 = SubResource("QuadMesh_mid_inner")
+
+[node name="inner" type="GPUParticles3D" parent="vfx_fire_tornado" unique_id=208808203]
+material_override = SubResource("StandardMaterial3D_inner")
+amount = 400
+speed_scale = 5.0
+fixed_fps = 60
+visibility_aabb = AABB(-1, -1, -1, 2, 4.5, 2)
+local_coords = true
+process_material = SubResource("ShaderMaterial_inner")
+draw_pass_1 = SubResource("QuadMesh_inner")
