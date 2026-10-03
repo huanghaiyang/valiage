@@ -212,6 +212,8 @@ func update_dust(ratio: float) -> void:
 		_dust.call("set_intensity", ratio)
 
 func _ready() -> void:
+	# 进 group 后 spell_caster / Vitals 这类"找玩家"的代码可以走快路径，不必再按名字递归搜
+	add_to_group("player")
 	_setup_dust()                 # ★ 放在最前：与角色模型加载**解耦**（加载失败也照样有灰尘，方便自检）
 	body = _instantiate_character()
 	if body == null:
@@ -647,6 +649,12 @@ func set_moving(m: bool) -> void:
 	if _action_active or _jump_air:
 		return
 	_update_move_anim()
+
+## 当前是否处于"加速"状态（camera_rig 每帧告知 = 按住 Shift）。
+## 精力值系统读它；注意它只代表"按着加速键"，是否真在跑还要结合 velocity 判断。
+func is_running() -> bool:
+	return _running
+
 
 func set_running(r: bool) -> void:
 	_running = r

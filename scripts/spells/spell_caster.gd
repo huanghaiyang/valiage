@@ -7,7 +7,7 @@ extends Node
 ## 操作：
 ##   E          -> 唤出 / 收起 法术圆盘
 ##   左键点圆盘 -> 选中术法 -> 圆盘关闭
-##   按住左键   -> 持续施放（火焰喷射朝前方喷、火龙卷在身前竖起火柱），魔法值耗尽自动停
+##   按住左键   -> 持续施放（火焰喷射朝前方喷、火焰编织在身前竖起火柱），魔法值耗尽自动停
 ##
 ## 术法在下面的 SPELLS 里注册；换术法时旧视觉会被停掉并释放。
 
@@ -19,6 +19,7 @@ const SpellWheel := preload("res://scripts/spells/spell_wheel.gd")
 const SPELLS := {
 	"flame_jet": preload("res://scripts/spells/flame_jet_particles.gd"),
 	"fire_tornado": preload("res://scripts/spells/fire_tornado_particles.gd"),
+	"blue_tornado": preload("res://scripts/spells/blue_tornado.gd"),
 }
 
 
@@ -37,10 +38,18 @@ var _player: Node3D = null
 var _staff: Node3D = null
 var _timer := 0.0
 var _holding := false
+## 施法许可：这一轮"按住"是否允许施法（规则见 _process 里的施法段）
+var _cast_armed := true
+var _cast_down_prev := false      ## 上一帧的按键状态：用来自己检测"按下"那一瞬
+## 这一次"按下"是否落在 UI 上。**必须在事件阶段判定**（见 _input），
+## 不能在 _process 里判：点圆盘选法术时圆盘会在同一帧内 close()，等到 _process
+## 跑起来鼠标下已经没有 Control 了，会被误判成"在世界区按下"从而当帧施法。
+var _cast_press_blocked := false
 
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	set_process_input(true)        # 施法"按下"要在事件阶段判定是否落在 UI 上，见 _input
 	wheel = SpellWheel.new()
 	wheel.name = "SpellWheel"
 	get_tree().root.add_child.call_deferred(wheel)
@@ -59,7 +68,21 @@ func _process(delta: float) -> void:
 		if wheel != null:
 			wheel.call("toggle")
 	# 施法（按住左键）
-	_holding = _cast_held()
+	# 规则两条，**全部轮询判定**，不依赖事件是否被 UI 消费：
+	#   1. 鼠标下压着 UI 时不施法（面板 / 圆盘 / 小地图 / 量表，见 _ui_blocks_cast）；
+	#   2. "按下"那一瞬若落在 UI 上，这一整轮按住作废 —— 直到真正抬起才重新上膛。
+	#      这条专治"点轮盘选法术 / 点法杖列表，法术当场放出去"。
+	# 为什么不用 _unhandled_input 收施法：main.gd / camera_rig.gd 也在 _unhandled_input
+	# 里处理鼠标，谁先 set_input_as_handled() 谁就把事件吃掉，用事件接收会时灵时不灵
+	# （settings_menu.gd 里有同款坑的注记）。Input.is_mouse_button_pressed() 是全局
+	# 按键状态、不受消费影响，所以这里自己逐帧检测"按下"那一瞬，再配一次 UI 命中测试。
+	var down := _cast_held()
+	if down and not _cast_down_prev:
+		_cast_armed = not _cast_press_blocked     # 按下那一瞬是否在 UI 上（_input 里已判定）
+	elif not down:
+		_cast_armed = true                       # 真正抬起 -> 重新上膛
+	_cast_down_prev = down
+	_holding = down and _cast_armed and not _ui_blocks_cast()
 	_ensure_jet()          # 选中变化 -> 换视觉
 	if jet != null and is_instance_valid(jet):
 		if selected.is_empty() or not _holding:
@@ -84,10 +107,40 @@ func _just_pressed_wheel() -> bool:
 var _e_prev := false
 
 
+## 施法键是否处于"按下"（只读全局按键状态；**不**代表允许施法，许可见 _cast_armed）
 func _cast_held() -> bool:
 	if InputMap.has_action(cast_action):
 		return Input.is_action_pressed(cast_action)
 	return Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+
+
+## 事件阶段记录"这一次按下是否落在 UI 上"。
+## 为什么必须在这里判：Godot 的事件顺序是
+##     Node._input  ->  GUI(Control._gui_input)  ->  Node._unhandled_input
+## 而 _process 在这三者之后才跑。点圆盘选法术时，圆盘会在 GUI 阶段就 close()
+## （visible = false），等 _process 再判"鼠标下有没有 Control"时已经什么都没有了，
+## 于是被当成"在世界区按下"-> 当帧施法（实测症状：选完法术立刻被释放）。
+## 在 _input 里判，看到的还是"点击前"的 UI 状态（圆盘还开着），判定才准。
+func _input(ev: InputEvent) -> void:
+	if ev is InputEventMouseButton:
+		var mb := ev as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_LEFT:
+			_cast_press_blocked = mb.pressed and _ui_blocks_cast()
+	elif InputMap.has_action(cast_action) and ev.is_action(cast_action):
+		_cast_press_blocked = ev.is_pressed() and _ui_blocks_cast()
+
+
+## 鼠标下是否压着 UI（面板 / 圆盘 / 小地图 / 量表…）——**操作 UI 时不施法**。
+## 全屏 Control 只在打开时才 visible（轮盘关闭时 CanvasLayer.visible = false；
+## 大地图 big_root.visible = false），所以它们不会常年把鼠标挡成"UI 区域"。
+func _ui_blocks_cast() -> bool:
+	# 圆盘铺满全屏，但鼠标未必已经移到它上面，所以单独判"是否打开"
+	if wheel != null and is_instance_valid(wheel) and bool(wheel.call("is_open")):
+		return true
+	var vp := get_viewport()
+	if vp == null:
+		return false
+	return vp.gui_get_hovered_control() != null
 
 
 # ---------------------------------------------------------------- 找玩家与法杖
@@ -156,13 +209,15 @@ func _ensure_jet() -> void:
 
 
 func _on_spell_chosen(id: String) -> void:
-	selected = id
-	print("[SpellCaster] 选中术法：", id, "（按住左键喷射）")
+	select_spell(id)
+	print("[SpellCaster] 选中术法：", id, "（松开左键后，再按住左键施法）")
 
 
 # ---------------------------------------------------------------- 对外
 func select_spell(id: String) -> void:
 	selected = id
+	# 选中的这一下不算施法：先上锁，等左键抬起后由 _process 解锁（见 _cast_armed）
+	_cast_armed = false
 
 func stop_spell() -> void:
 	selected = ""

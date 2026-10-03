@@ -3,10 +3,13 @@
 [ext_resource type="ArrayMesh" uid="uid://bo62y0eh1hb8l" path="res://assets/models/法术特效/龙卷风.obj" id="1_ucio2"]
 [ext_resource type="Shader" uid="uid://ceqwhbhgrkvio" path="res://scenes/法术特效/龙卷风.tres" id="2_4g8pk"]
 [ext_resource type="Texture2D" uid="uid://nefgdv5k3705" path="res://assets/textures/法术特效/龙卷风/T_VFX_WindNoise1.png" id="2_81flx"]
+[ext_resource type="Shader" uid="uid://bgyowj7fsy1qr" path="res://scenes/法术特效/蓝色龙卷风_底座.tres" id="4_lncdj"]
+[ext_resource type="Texture2D" uid="uid://blwyntl6klkvb" path="res://assets/textures/法术特效/龙卷风/T_FirePanningCyl45.png" id="5_lncdj"]
+[ext_resource type="ArrayMesh" uid="uid://xsybpxsonjt" path="res://assets/models/法术特效/龙卷风底座.obj" id="6_tsgfb"]
 
 [sub_resource type="Gradient" id="Gradient_vqihd"]
-offsets = PackedFloat32Array(0.044096727, 1)
-colors = PackedColorArray(0.0002151329, 4.3923383, 4.179048, 1, 1.5157021, 0.6075951, 0.26521128, 0)
+offsets = PackedFloat32Array(0, 0.0014224751, 0.0028449502, 0.9530583, 1)
+colors = PackedColorArray(1.3163807e-05, 1.0944359, 1.387857, 1, 0, 0.97895044, 1.2532704, 1, 1.8565501, 1.8565501, 1.8565501, 1, 2.040739, 2.9724245, 3.8277178, 1, 1.5157021, 0.6075951, 0.26521128, 0)
 
 [sub_resource type="GradientTexture1D" id="GradientTexture1D_4g8pk"]
 gradient = SubResource("Gradient_vqihd")
@@ -23,16 +26,124 @@ fill_from = Vector2(1, 0.95156693)
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_ucio2"]
 render_priority = 0
 shader = ExtResource("2_4g8pk")
-shader_parameter/speed = Vector2(1, 1.5)
+shader_parameter/speed = Vector2(1, 1)
 shader_parameter/base_texture = ExtResource("2_81flx")
 shader_parameter/sub_texture = SubResource("GradientTexture2D_ucio2")
 shader_parameter/curve_1d = SubResource("GradientTexture1D_4g8pk")
-shader_parameter/opacity = 0.50000002375
+shader_parameter/opacity = 0.91600004351
+
+[sub_resource type="Animation" id="Animation_4g8pk"]
+length = 0.001
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("Node3D/龙卷风:rotation")
+tracks/0/interp = 1
+tracks/0/loop_wrap = true
+tracks/0/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector3(0, 0, 0)]
+}
+
+[sub_resource type="Animation" id="Animation_81flx"]
+resource_name = "自动旋转"
+loop_mode = 1
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("Node3D/龙卷风:rotation")
+tracks/0/interp = 1
+tracks/0/loop_wrap = true
+tracks/0/keys = {
+"times": PackedFloat32Array(0, 1),
+"transitions": PackedFloat32Array(1, 1.0000012),
+"update": 0,
+"values": [Vector3(0, 0, 0), Vector3(0, -6.2831855, 0)]
+}
+
+[sub_resource type="AnimationLibrary" id="AnimationLibrary_vqihd"]
+_data = {
+&"RESET": SubResource("Animation_4g8pk"),
+&"自动旋转": SubResource("Animation_81flx")
+}
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_ggtua"]
+render_priority = 0
+shader = ExtResource("4_lncdj")
+shader_parameter/base_texture = ExtResource("5_lncdj")
+
+[sub_resource type="Curve" id="Curve_mb2v2"]
+_data = [Vector2(0.0096818805, 0.53444684), 0.0, 0.0, 0, 0, Vector2(0.9958506, 0.9958247), -0.24735904, 0.0, 0, 0]
+point_count = 2
+
+[sub_resource type="CurveTexture" id="CurveTexture_74a3s"]
+texture_mode = 1
+curve = SubResource("Curve_mb2v2")
+
+[sub_resource type="Gradient" id="Gradient_maumj"]
+offsets = PackedFloat32Array(0, 0.013138686)
+colors = PackedColorArray(0.45322934, 1.8728977, 1.9584674, 1, 1, 1, 1, 0.82000005)
+
+[sub_resource type="GradientTexture1D" id="GradientTexture1D_6c3ee"]
+gradient = SubResource("Gradient_maumj")
+
+[sub_resource type="Curve" id="Curve_8cnfe"]
+_data = [Vector2(0.005532503, 0.6367433), 0.0, 0.0, 0, 0, Vector2(1, 0.98985803), 0.0, 0.0, 0, 0]
+point_count = 2
+
+[sub_resource type="CurveTexture" id="CurveTexture_02ohx"]
+curve = SubResource("Curve_8cnfe")
+
+[sub_resource type="ParticleProcessMaterial" id="ParticleProcessMaterial_npple"]
+angle_min = -179.99998
+angle_max = 180.00002
+direction = Vector3(0, 1, 0)
+spread = 36.429
+initial_velocity_max = 2.0
+angular_velocity_min = 349.99997
+angular_velocity_max = 499.99997
+gravity = Vector3(0, 0, 0)
+scale_min = 3.0
+scale_max = 4.0
+scale_curve = SubResource("CurveTexture_02ohx")
+color = Color(1.0002198, 1.0002198, 1.1941766, 1)
+color_ramp = SubResource("GradientTexture1D_6c3ee")
+alpha_curve = SubResource("CurveTexture_74a3s")
 
 [node name="蓝色龙卷风" type="Node3D" unique_id=159760267]
 
-[node name="龙卷风" type="MeshInstance3D" parent="." unique_id=1983362612]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1)
+[node name="Node3D" type="Node3D" parent="." unique_id=2082697057]
+
+[node name="龙卷风" type="MeshInstance3D" parent="Node3D" unique_id=1983362612]
+transform = Transform3D(0.9999998, 0, 0, 0, 1, 0, 0, 0, 0.9999998, -0.04503441, -0.38460803, 0.01465416)
 material_override = SubResource("ShaderMaterial_ucio2")
 cast_shadow = 0
 mesh = ExtResource("1_ucio2")
+skeleton = NodePath("../..")
+
+[node name="动画" type="AnimationPlayer" parent="Node3D" unique_id=1627098045]
+root_node = NodePath("../..")
+libraries/ = SubResource("AnimationLibrary_vqihd")
+autoplay = &"自动旋转"
+
+[node name="GPUParticles3D" type="GPUParticles3D" parent="Node3D" unique_id=197558296]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.07531977, 0, 0.19059181)
+material_override = SubResource("ShaderMaterial_ggtua")
+cast_shadow = 0
+lifetime = 0.5
+fixed_fps = 60
+local_coords = true
+process_material = SubResource("ParticleProcessMaterial_npple")
+draw_pass_1 = ExtResource("6_tsgfb")
+
+[node name="GPUParticles3D2" type="GPUParticles3D" parent="Node3D" unique_id=1124963858]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.07531977, 8.19851, 0.19059181)
+material_override = SubResource("ShaderMaterial_ggtua")
+cast_shadow = 0
+lifetime = 0.5
+fixed_fps = 60
+local_coords = true
+process_material = SubResource("ParticleProcessMaterial_npple")
+draw_pass_1 = ExtResource("6_tsgfb")
