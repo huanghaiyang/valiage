@@ -13,10 +13,9 @@ extends Node
 ##   3. 广播信号给 UI 与手持挂点
 ##   4. **存档**：已解锁 / 当前装备 / 长老石 / 被祝福改写的元素 -> `user://equipment.cfg`
 ##
-## 三条入口（都能改装备，最后都汇到 `equip()`）：
+## 两条入口（都能改装备，最后都汇到 `equip()`）：
 ##   * `F` 装备面板（game_ui.gd，点名字装备）
 ##   * `Q` / `Shift+滚轮` 世界内快速切换（main.gd -> `cycle()`）
-##   * 长老赠杖（elders.gd -> `unlock()` + main.gd 里自动 `equip()`）
 
 signal staff_equipped(id: String)
 signal staff_unlocked(id: String)
@@ -319,7 +318,7 @@ func owned_list(element: int = -1) -> Array:
 	return out
 
 
-## 保留旧名（verify 与 elders 在用）
+## 保留旧名（历史兼容；当前项目内已无调用方）
 func unlocked_list() -> Array:
 	return owned_list()
 

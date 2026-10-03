@@ -1,0 +1,24 @@
+[gd_resource type="ShaderMaterial" format=3]
+
+[ext_resource type="Shader" path="res://assets/shaders/tornado_tint.gdshader" id="1_shader"]
+[ext_resource type="Texture2D" uid="uid://nefgdv5k3705" path="res://assets/textures/法术特效/龙卷风/T_VFX_WindNoise1.png" id="2_noise"]
+
+[sub_resource type="Gradient" id="Gradient_shape"]
+offsets = PackedFloat32Array(0, 0.11, 0.8449502, 1)
+colors = PackedColorArray(1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1)
+
+[sub_resource type="GradientTexture2D" id="GradientTexture2D_shape"]
+gradient = SubResource("Gradient_shape")
+fill_from = Vector2(1, 0.95156693)
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_shader")
+shader_parameter/speed = Vector2(1, 1.5)
+shader_parameter/base_texture = ExtResource("2_noise")
+shader_parameter/sub_texture = SubResource("GradientTexture2D_shape")
+shader_parameter/tint_outer = Color(2.4, 0.2, 0.05, 1)
+shader_parameter/tint_core = Color(4.8, 0.55, 0.12, 1)
+shader_parameter/opacity = 1.0
+shader_parameter/top_fade = 0.06
+shader_parameter/bottom_fade = 0.1

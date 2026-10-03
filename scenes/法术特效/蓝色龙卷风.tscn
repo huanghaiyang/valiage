@@ -13,7 +13,7 @@ gradient = SubResource("Gradient_vqihd")
 use_hdr = true
 
 [sub_resource type="Gradient" id="Gradient_lncdj"]
-offsets = PackedFloat32Array(0, 0.019914651, 0.8449502, 1)
+offsets = PackedFloat32Array(0, 0.16, 0.8449502, 1)
 colors = PackedColorArray(1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1)
 
 [sub_resource type="GradientTexture2D" id="GradientTexture2D_ucio2"]
@@ -29,7 +29,7 @@ shader_parameter/sub_texture = SubResource("GradientTexture2D_ucio2")
 shader_parameter/curve_1d = SubResource("GradientTexture1D_4g8pk")
 shader_parameter/opacity = 0.50000002375
 
-[node name="蓝色龙卷风" type="Node2D" unique_id=159760267]
+[node name="蓝色龙卷风" type="Node3D" unique_id=159760267]
 
 [node name="龙卷风" type="MeshInstance3D" parent="." unique_id=1983362612]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1)

@@ -106,12 +106,6 @@ func _ready() -> void:
 	vegetation.set_camera(camera_rig.camera)
 	# 天气系统：绑定太阳/环境/雨，并订阅相机跟随
 	Weather.bind_world(sun, env, self, vegetation.wind_materials())
-	# 长辈：三个聚落各一位，依赖地形高度贴地
-	var elders := get_node_or_null("/root/Elders")
-	if elders != null:
-		elders.call("build", self)
-		if not elders.is_connected("elder_spoke", _on_elder_spoke):
-			elders.connect("elder_spoke", _on_elder_spoke)
 	Game.world = self
 	Settings.world_environment = env
 	Settings.vegetation_root = vegetation
@@ -387,12 +381,11 @@ func _save_capture(out_path: String) -> void:
 ##     godot --headless --path . -- --verify
 func _run_verify() -> void:
 	print("Verify | ==== Cozy Vale 自检 ====")
-	print("Verify | 法杖/植物建模已整体移除，这部分自检项不再适用（见 _verify_elders）")
+	print("Verify | 法杖/植物建模已整体移除，这部分自检项不再适用")
 
 
 ## 自检的第二段
 func _run_verify_late() -> void:
-	_verify_elders()
 	print("Verify | ==== 自检结束 ====")
 
 
@@ -464,56 +457,7 @@ func sys_elem_name(e: int) -> String:
 	return str(sys.call("element_name", e))
 
 
-func _verify_elders() -> void:
-	# 长老已从项目里移除（用户要求），自检项跳过，不再刷 FAIL
-	if get_node_or_null("/root/Elders") == null:
-		print("Verify | 长老已移除，跳过长老自检")
-		return
-	_verify_elders_impl()
 
-
-func _verify_elders_impl() -> void:
-	var el := get_node_or_null("/root/Elders")
-	if el == null:
-		print("Verify | [FAIL] Elders 未注册")
-		return
-	var defs: Dictionary = el.get("DEFS")
-	print("Verify | 长老定义=%d" % defs.size())
-	var alive := 0
-	var first := ""
-	for id in defs.keys():
-		var n: Node3D = el.call("npc_node", str(id))
-		var pos := "-"
-		if n != null:
-			alive += 1
-			pos = "(%.1f, %.1f)" % [n.global_position.x, n.global_position.z]
-		if first == "":
-			first = str(id)
-		print("Verify |   长老 %s / %s 已生成=%s 位置=%s 好感=%d"
-				% [str(id), str(el.call("elder_name", str(id))), str(n != null), pos,
-				   int(el.call("favor_of", str(id)))])
-	print("Verify | %s 长老实体 %d/%d"
-			% ["[OK]" if alive == defs.size() else "[FAIL]", alive, defs.size()])
-	if first == "":
-		return
-	# 走一遍"对话涨好感 -> 到阈值送杖并祝福"的完整链路，确认长老系统真的接通了
-	var f0 := int(el.call("favor_of", first))
-	var line := str(el.call("talk", first))
-	var f1 := int(el.call("favor_of", first))
-	print("Verify | 对话 %s: 好感 %d -> %d, 台词非空=%s"
-			% [first, f0, f1, str(line != "")])
-	print("Verify | %s 对话涨好感" % ["[OK]" if f1 > f0 else "[FAIL]"])
-	var need := int(el.call("next_threshold", first))
-	var ng := str(el.call("next_gift", first))
-	print("Verify | 下一份赠礼=%s 还差好感%d（当前 %d）" % [ng, need - f1, f1])
-	# 直接把好感刷到阈值，验证送杖 + 祝福是否真的改到 StaffSystem
-	for _i in range(maxi(0, need - f1)):
-		el.call("talk", first)
-	var f2 := int(el.call("favor_of", first))
-	var got := int(el.call("gifted_count", first))
-	print("Verify | 刷到好感 %d 后：已赠 %d 根, 下一份=%s"
-			% [f2, got, str(el.call("next_gift", first))])
-	print("Verify | %s 达到阈值即赠杖" % ["[OK]" if got > 0 else "[FAIL]"])
 
 
 
@@ -707,9 +651,6 @@ func _unhandled_input(event: InputEvent) -> void:
 			set_tool(tool_by_key[event.keycode])
 			return
 		if event.keycode == KEY_E:
-			# 长老优先：站在长老旁边按 E 是交谈，不是用家具
-			if _try_talk_elder():
-				return
 			_try_interact()
 			return
 		if event.keycode == KEY_V:
@@ -807,43 +748,7 @@ func _cycle_weather() -> void:
 	_variant_hint_time = 1.6
 	print("Weather | 手动切换 -> %s (wind=%.2f)" % [Weather.weather_name(), Weather.wind])
 
-## ---------- 长辈（长老） ----------
 
-## 附近有长老就交谈一次；返回 true 表示这次 E 被长老吃掉了
-func _try_talk_elder() -> bool:
-	var elders := get_node_or_null("/root/Elders")
-	if elders == null or player == null:
-		return false
-	var id: String = str(elders.call("nearest", player.global_position))
-	if id == "":
-		return false
-	var line: String = str(elders.call("talk", id))
-	ui.show_interact_hint(line)
-	_variant_hint_time = 2.6
-	player.play_cast_gesture()
-	return true
-
-
-## 长老头顶常驻提示：靠近时告诉玩家按 E
-func _update_elder_hint() -> void:
-	var elders := get_node_or_null("/root/Elders")
-	if elders == null or player == null or ui == null:
-		return
-	var id: String = str(elders.call("nearest", player.global_position))
-	if id == "":
-		return
-	var nm: String = str(elders.call("elder_name", id))
-	var favor: int = int(elders.call("favor_of", id))
-	var thresholds: int = int(elders.call("next_threshold", id))
-	var nxt: String = str(elders.call("next_gift", id))
-	var tip := "按 E 与 %s 交谈 · 声望 %d" % [nm, favor]
-	if nxt != "":
-		tip += "（%d 时赠杖）" % thresholds
-	ui.show_interact_hint(tip)
-
-
-func _on_elder_spoke(_id: String, line: String) -> void:
-	print("[elder] %s" % line)
 
 
 
