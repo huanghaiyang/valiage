@@ -1,6 +1,6 @@
 [gd_scene format=3 uid="uid://fxnqiuuwpv5q"]
 
-[ext_resource type="Shader" uid="uid://dpm32epli3gn8" path="res://assets/shaders/fire_tornado.gdshader" id="1_shader"]
+[ext_resource type="Shader" uid="uid://lmojkc8tmm8g" path="res://assets/shaders/fire_tornado.gdshader" id="1_shader"]
 [ext_resource type="Texture2D" uid="uid://canhrola3vym5" path="res://assets/textures/特效/光束01.png" id="2_beam"]
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_outer"]
