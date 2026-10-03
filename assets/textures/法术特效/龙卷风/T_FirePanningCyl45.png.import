@@ -3,21 +3,19 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://blwyntl6klkvb"
-path.bptc="res://.godot/imported/T_FirePanningCyl45.png-8d4774692372f4f5de24bce3f761465b.bptc.ctex"
-path.astc="res://.godot/imported/T_FirePanningCyl45.png-8d4774692372f4f5de24bce3f761465b.astc.ctex"
+path="res://.godot/imported/T_FirePanningCyl45.png-8d4774692372f4f5de24bce3f761465b.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc", "etc2_astc"],
-"vram_texture": true
+"vram_texture": false
 }
 
 [deps]
 
 source_file="res://assets/textures/法术特效/龙卷风/T_FirePanningCyl45.png"
-dest_files=["res://.godot/imported/T_FirePanningCyl45.png-8d4774692372f4f5de24bce3f761465b.bptc.ctex", "res://.godot/imported/T_FirePanningCyl45.png-8d4774692372f4f5de24bce3f761465b.astc.ctex"]
+dest_files=["res://.godot/imported/T_FirePanningCyl45.png-8d4774692372f4f5de24bce3f761465b.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=0
 compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0

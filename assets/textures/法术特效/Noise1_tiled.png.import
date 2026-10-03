@@ -3,21 +3,19 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://dy7d0riwvwevn"
-path.bptc="res://.godot/imported/Noise1_tiled.png-777c56d9cbad23924b95280a6c389357.bptc.ctex"
-path.astc="res://.godot/imported/Noise1_tiled.png-777c56d9cbad23924b95280a6c389357.astc.ctex"
+path="res://.godot/imported/Noise1_tiled.png-777c56d9cbad23924b95280a6c389357.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc", "etc2_astc"],
-"vram_texture": true
+"vram_texture": false
 }
 
 [deps]
 
 source_file="res://assets/textures/法术特效/Noise1_tiled.png"
-dest_files=["res://.godot/imported/Noise1_tiled.png-777c56d9cbad23924b95280a6c389357.bptc.ctex", "res://.godot/imported/Noise1_tiled.png-777c56d9cbad23924b95280a6c389357.astc.ctex"]
+dest_files=["res://.godot/imported/Noise1_tiled.png-777c56d9cbad23924b95280a6c389357.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=0
 compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0

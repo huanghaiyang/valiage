@@ -3,21 +3,19 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://nefgdv5k3705"
-path.bptc="res://.godot/imported/T_VFX_WindNoise1.png-63ccdd95e479bafba3fb463b899abc18.bptc.ctex"
-path.astc="res://.godot/imported/T_VFX_WindNoise1.png-63ccdd95e479bafba3fb463b899abc18.astc.ctex"
+path="res://.godot/imported/T_VFX_WindNoise1.png-63ccdd95e479bafba3fb463b899abc18.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc", "etc2_astc"],
-"vram_texture": true
+"vram_texture": false
 }
 
 [deps]
 
 source_file="res://assets/textures/法术特效/龙卷风/T_VFX_WindNoise1.png"
-dest_files=["res://.godot/imported/T_VFX_WindNoise1.png-63ccdd95e479bafba3fb463b899abc18.bptc.ctex", "res://.godot/imported/T_VFX_WindNoise1.png-63ccdd95e479bafba3fb463b899abc18.astc.ctex"]
+dest_files=["res://.godot/imported/T_VFX_WindNoise1.png-63ccdd95e479bafba3fb463b899abc18.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=0
 compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0

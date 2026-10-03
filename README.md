@@ -66,9 +66,12 @@ CozyVale/
     │   ├── characters/        # KayKit Adventurers（Mage 等 5 个角色，GLB）
     │   ├── buildings/         # KayKit Medieval Hexagon（建筑模块，glTF）
     │   └── nature/            # Kenney Nature Kit（329 个植被模型，GLB）
-    └── shaders/
-        ├── toon.gdshader      # 卡通三阶渐变光照材质
-        └── grass.gdshader     # 草地风动材质
+    ├── shaders/
+    │   ├── toon.gdshader      # 卡通三阶渐变光照材质
+    │   ├── grass.gdshader     # 草地风动材质
+    │   └── fire_tornado.gdshader  # 火焰编织粒子着色器（螺旋前进 + 火舌拉长）
+    └── textures/
+        └── 法术特效/           # VFX 贴图：T_VFX_* 系列 / 龙卷风/ / kenney/（两个 CC0 贴图包）
 ```
 
 ---
@@ -82,8 +85,12 @@ CozyVale/
 | **KayKit Adventurers** | 玩家角色（Mage/Barbarian/Knight/Rogue） | [KayKit（GitHub）](https://github.com/KayKit-Game-Assets) | CC0 |
 | **KayKit Medieval Hexagon** | 建筑模块（城墙/塔楼/小屋） | [KayKit（GitHub）](https://github.com/KayKit-Game-Assets) | CC0 |
 | **Kenney Nature Kit** | 植被（树/灌木/花/草/石/蘑菇） | [Kenney.nl](https://kenney.nl/assets/nature-kit) | CC0 |
+| **Kenney Particle Pack** | 通用 VFX 贴图：魔法/火焰/火花/星光/拖尾/斩击/烟/光斑等 18 类（透明版 80 张 + 旋转变体 16 张） | [Kenney.nl](https://kenney.nl/assets/particle-pack) | CC0 |
+| **Kenney Smoke Particles** | 烟雾/爆炸/闪光**逐帧序列**（whitePuff 25 帧、blackSmoke 25 帧、explosion 9 帧、flash 9 帧），可直接做翻页书动画 | [Kenney.nl](https://kenney.nl/assets/smoke-particles) | CC0 |
 
 > 模型运行时从 `assets/models/` 加载：角色 GLB 附带骨骼动画；植被 GLB 提取 Mesh 后交给 MultiMesh 批量实例化；建筑 glTF 作为预制场景实例化并按 AABB 自动校准尺寸。
+>
+> VFX 贴图在 `assets/textures/法术特效/`（`kenney/` 子目录下为上述两个贴图包，各包原始许可文件随附为 `LICENSE_*.txt`）。**软 alpha 贴图**（发光/烟雾/噪声/法阵）统一用**无损**导入：`compress/mode=0` 且 `detect_3d/compress_to=0`——后者必须关掉，否则贴图一旦用于 3D 粒子，Godot 会自动改回 VRAM 块压缩，在渐变上产生可见色块。
 
 ---
 
