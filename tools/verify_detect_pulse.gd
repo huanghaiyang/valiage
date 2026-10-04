@@ -116,6 +116,9 @@ func _run(caster: Node) -> void:
 	# 相机摆好之后，1.2 倍屏幕剔除**保持开启**（与真实游戏一致）。
 	# 兜底半径换成一个独特值，用来证明 max_r 真的是相机推导出来的、不是兜底值。
 	jet.set("max_radius_fallback", 7.77)
+	# ★ 下面这一段验证的是**几何描边**那条路（material_overlay），
+	#   所以先关掉屏幕空间模式；屏幕空间那条路在本函数末尾单独验。
+	jet.set("screen_outline", false)
 	var before: float = mana.get("current")
 	jet.set("wave_speed", 12.0)
 	jet.call("start_cast")
@@ -183,6 +186,11 @@ func _run(caster: Node) -> void:
 	# ★ 注意：波纹**还在扩张**时不能直接断言"都没了" —— 这期间不断有新物体被扫到、
 	#   刚描上、1 秒还没到（实测那时还有 34 个，看起来像过期失效，其实是断言写错了）。
 	#   正确做法：先让波纹跑到上限自然结束，再等 1 秒。
+	# ★ 先**停止施法**再等波跑完。
+	#   否则按住状态会按 repeat_interval 不断发新波，_pulses 永远不会空 ——
+	#   以前之所以碰巧通过，是因为蓝在 9 秒内耗尽了（蓝耗尽就不发新波），
+	#   repeat_interval 一改长这个巧合就没了。
+	jet.call("stop_cast")
 	var guard := 0
 	while not (jet.get("_pulses") as Array).is_empty() and guard < 900:
 		jet.call("_process", DT)
@@ -210,6 +218,59 @@ func _run(caster: Node) -> void:
 			not_restored += 1
 	_ck("到期后描边已摘除（没留下永久描边）", not_restored == 0,
 			"仍挂着描边的有 %d 个（共检查 %d 个）" % [not_restored, watched.size()])
+
+	# ---- 屏幕空间描边：全屏面必须挂到相机上，且只在有波纹时可见 ----
+	jet.set("screen_outline", true)
+	# ★ 遮罩默认是关的（那条路还没调通，见 detect_pulse.gd 的注释），
+	#   这里显式打开才能验证遮罩相关行为。
+	jet.set("mask_by_objects", true)
+	# ★ 先回蓝：前面的用例已经打掉不少，_emit_pulse 扣蓝失败就**不会发波**，
+	#   于是 _pulses 为空、全屏面保持隐藏，断言会误判成"面没生效"。
+	mana.call("refill")
+	jet.call("stop_cast")
+	jet.set("_pulses", [])
+	jet.call("start_cast")
+	# 推到 12 米，确保真的探测到物体（否则测不到遮罩层会被挂上）
+	var g2 := 0
+	while g2 < 600:
+		jet.call("_process", DT)
+		g2 += 1
+		var ps2 = jet.get("_pulses") as Array
+		if ps2.size() > 0 and float(ps2[0]["r"]) >= 12.0:
+			break
+	var quad = jet.get("_screen_quad")
+	var quad_ok: bool = quad != null and is_instance_valid(quad) \
+			and (quad as Node).get_parent() is Camera3D
+	_ck("屏幕空间描边：全屏面挂在相机下", quad_ok)
+	_ck("有波纹时全屏描边面可见", quad_ok and (quad as Node3D).visible)
+	# ---- 物体遮罩：子视口就绪 + 被探测物体真的挂上了遮罩层 ----
+	var mvp = jet.get("_mask_vp")
+	var mcam = jet.get("_mask_cam")
+	var mask_ok: bool = mvp != null and is_instance_valid(mvp) \
+			and mcam != null and is_instance_valid(mcam) \
+			and (mcam as Camera3D).cull_mask == (1 << 19)
+	_ck("物体遮罩：子视口 + 只渲染遮罩层的相机已就绪", mask_ok)
+	var layered := 0
+	var od2: Dictionary = jet.get("_outlined")
+	for k in od2.keys():
+		for item in ((od2[k] as Dictionary).get("meshes", []) as Array):
+			var mi = item.get("mi")
+			if mi != null and is_instance_valid(mi) \
+					and ((mi as MeshInstance3D).layers & (1 << 19)) != 0:
+				layered += 1
+	_ck("被探测到的网格已挂上遮罩层（花草没有碰撞体，不会进来）", layered > 0,
+			"挂上 %d 个网格" % layered)
+	# 验完恢复默认（遮罩默认关闭）
+	jet.set("mask_by_objects", false)
+	jet.call("stop_cast")
+	jet.set("_pulses", [])
+	_pump(jet, 2)
+	_ck("默认（遮罩关闭）时全屏描边面隐藏", not quad_ok or not (quad as Node3D).visible)
+	jet.call("stop_cast")
+	jet.set("_pulses", [])
+	_pump(jet, 2)
+	_ck("没有波纹时全屏描边面隐藏（零开销）",
+			not quad_ok or not (quad as Node3D).visible)
 
 	# ---- 地形必须被排除 ----
 	var names2 := []

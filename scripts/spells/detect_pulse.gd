@@ -48,10 +48,12 @@ const SpellAim := preload("res://scripts/spells/spell_aim.gd")
 const RIPPLE_SHADER := "res://assets/shaders/detect_ripple.gdshader"
 ## 描边：视图空间外扩的剪影线，内部按深度丢弃（物体外观不受影响）
 const OUTLINE_SHADER := "res://assets/shaders/detect_outline.gdshader"
+## 屏幕空间描边（全屏后处理，靠深度突变找轮廓）—— 四周都有线、线宽恒定
+const SCREEN_OUTLINE_SHADER := "res://assets/shaders/detect_screen_outline.gdshader"
 
 # ---------------------------------------------------------------- 可调参数
 @export var mana_per_cast := 12.0          ## 每发一圈的耗蓝
-@export var repeat_interval := 1.2         ## 按住时每隔多久再发一圈；0 = 只发一圈
+@export var repeat_interval := 2.4         ## 按住时每隔多久再发一圈；0 = 只发一圈（间隔太短会让多圈叠在一起，看着很密）
 @export var wave_speed := 26.0             ## 波面扩张速度（米/秒）—— 太慢会显得拖
 @export var outline_life := 1.0            ## 轮廓显示多久（秒）—— 需求指定 1s
 
@@ -61,14 +63,36 @@ const OUTLINE_SHADER := "res://assets/shaders/detect_outline.gdshader"
 @export var depth_bias := 0.02             ## 深度比较容差（米）：太小挡不住内部，太大会吃掉边线
 ## 揭示边缘的柔化宽度（米）：线条随波面长出来时，前沿这一小段是渐入的
 @export var reveal_soft := 0.35
+## 让轮廓**提前**这么多米出现。用户反馈"轮廓绘制有延迟" —— 因为轮廓严格等波面扫到
+## 才画，观感上会慢半拍；提前一点点（相对 26 m/s 只有几十毫秒）就没有"在等"的感觉了。
+@export var reveal_ahead := 1.2
 ## 物体半透明度（0 = 保持原样）。调大一点更接近"只显示轮廓"，
 ## 又不至于像早先的实心填充那样糊成黑疙瘩。
 @export_range(0.0, 0.95, 0.01) var ghost := 0.0
 
+# ---- 屏幕空间描边（推荐）：四周都有线、线宽固定为像素，与视角无关 ----
+## true = 用屏幕空间描边（此时上面那套几何描边不生效，二者只取其一）
+@export var screen_outline := true
+@export var screen_line_alpha := 0.9
+@export var screen_sample_px := 1.0        ## 邻域采样偏移（像素）= 线宽（1.0 ≈ 1px 细线）
+@export var screen_depth_threshold := 2.2  ## 视深度梯度阈值（米）：实测 0.6 会把草也描出来，2.2 只剩大物体
+## 只描"被探测到的物体"所占屏幕区域 —— 花草没有碰撞体、探测不到，于是不会被描。
+## ★ 目前**默认关闭**：这条"遮罩边界画线"的路我还没调通（见 _ensure_mask_pass 里记的两个坑），
+##   开着会导致**一条轮廓线都画不出来**。关掉时走的是"主画面深度突变"那条路，
+##   也就是用户评价过"效果还可以"的版本（代价：草会被一起描）。
+##   等遮罩调通、并用 measurements 确认过遮罩内容之后再打开。
+@export var mask_by_objects := false
+## 波纹是否**跟随角色移动**（true = 圆心每帧跟到角色脚下）
+@export var follow_caster := true
+
+## 遮罩用的渲染层（第 20 位）。被探测到的网格临时加上这一层，
+## 遮罩相机只渲染这一层；主相机 cull_mask 全开，所以物体在主画面照常显示。
+const MASK_LAYER := 1 << 19
+
 # ---- 地面波纹：细线环 + 波前亮带 + 噪声扭曲 ----
 @export var wave_color := Color(0.35, 0.90, 1.0)
-@export var wavelength := 5.6              ## 相邻细环的间距（米），越小越密（5.6 ≈ 原来的一半密度）
-@export var sharpness := 110.0             ## 越大，线越细（46 偏粗，110 是细波）
+@export var wavelength := 9.0              ## 相邻细环的间距（米），越小越密（9.0 = 圈数更少）
+@export var sharpness := 180.0             ## 越大，线越细
 @export var decay := 2.8                   ## 后面的环衰减得多快（越大越少）
 @export var wave_intensity := 1.25
 @export var wave_lift := 0.12              ## 波纹抬离地面多少（免得被地表吃掉）
@@ -84,7 +108,11 @@ const OUTLINE_SHADER := "res://assets/shaders/detect_outline.gdshader"
 @export var max_radius_cap := 42.0         ## 最大半径上限（防止超大分辨率下失控）
 @export var max_radius_fallback := 16.0    ## 取不到相机时的兜底半径
 @export var detect_mask := 0               ## 0 = 沿用玩家自己的碰撞掩码
-@export var exclude_name_hints := "terrain,ground"   ## 命中名字含这些就跳过（地形等）
+## 命中名字含这些就跳过。排除逻辑是**沿可视节点向上逐级匹配父节点名字**，
+## 所以只要祖先里有这个词就会被排除。
+## 花草虽然有碰撞体的不多，但 bush / flower / grass_bermuda_01_* 都挂在
+## WorldBrushInstances 下，靠这几个特征词一次全排掉（不需要额外代码）。
+@export var exclude_name_hints := "terrain,ground,grass,bush,flower,plant,leaf,foliage,weed,shrub,fern,clover,草,花,灌木,植物"
 @export var max_results := 512
 
 ## 波动画：中心到当前半径
@@ -104,10 +132,22 @@ var _clock := 0.0
 var _terrain_ok: Dictionary = {}
 ## 地形所在碰撞层，运行时自己找（0 = 还没找到）
 var _terrain_layer_cache := 0
+## 屏幕空间描边用的全屏面（挂在相机下，所以必须自己回收）
+var _screen_quad: MeshInstance3D = null
+## 物体遮罩用的子视口 + 只渲染 MASK_LAYER 的相机
+var _mask_vp: SubViewport = null
+var _mask_cam: Camera3D = null
+## 本帧被探测物体的**世界包围盒**（每个元素 = [min:Vector3, max:Vector3]），
+## 供屏幕描边做三维判定：只有像素的世界坐标落在盒子里才算"这是物体本身"。
+var _boxes: Array = []
 
 
 func _ready() -> void:
 	set_process(true)
+	# ★ 处理优先级提到很高，让本节点的 _process **在相机 rig 之后**执行。
+	#   遮罩相机是在这里同步主相机变换的；如果它先执行、相机 rig 后执行，
+	#   遮罩就会**慢一帧**，画出来的轮廓看起来"跟不上"（用户报过轮廓有延迟）。
+	process_priority = 1000
 
 
 func setup(player: Node3D, staff: Node3D) -> void:
@@ -150,8 +190,10 @@ func origin_global() -> Vector3:
 # ---------------------------------------------------------------- 每帧
 func _process(delta: float) -> void:
 	_clock += delta
+	_boxes.clear()             # 每帧重建：只反映"本帧被探测到的物体"
 	_tick_pulses(delta)
 	_update_reveal()
+	_update_screen_outline()
 	_expire_outlines()
 
 	if not casting:
@@ -196,6 +238,13 @@ func _tick_pulses(delta: float) -> void:
 		pulse["r"] = float(pulse["r"]) + wave_speed * delta
 		var r := float(pulse["r"])
 		var max_r := float(pulse["max_r"])
+		# ★ 跟随角色：圆心每帧跟到角色脚下（用户要求"探测波随人物移动"）。
+		#   注意这会改变语义 —— 圆心与半径同时在动，已经扫过的区域会被重复扫。
+		if follow_caster and _player != null and is_instance_valid(_player):
+			pulse["center"] = _player.global_position
+			var rn = pulse["ripple"]
+			if rn != null and is_instance_valid(rn):
+				(rn as Node3D).global_position = _player.global_position + Vector3.UP * wave_lift
 		# 视觉：只把"波前推进到哪"交给着色器，后面那一串衰减的细环由它自己画
 		_apply_ripple(pulse["ripple"], r, max_r)
 		var pcenter: Vector3 = pulse["center"]
@@ -272,7 +321,110 @@ func _detect(radius: float, center: Vector3, max_r: float, pulse: Dictionary) ->
 			continue
 		if not _in_screen_margin(box):
 			continue
+		# 记录世界包围盒：屏幕描边靠它做三维判定，把物体前后方的草排除掉
+		if screen_outline and mask_by_objects:
+			_add_box(box)
 		_outline(visual, now, pulse)
+
+
+## 记录一个世界包围盒（最多 16 个，按 min 去重）。
+## 去重是必要的：同一个 tripo_part_N 下可能挂多个碰撞体，会拿到同一个可视父节点、
+## 同一个盒，否则 16 个名额会被一个物体占满。
+func _add_box(box: AABB) -> void:
+	if _boxes.size() >= 16:
+		return
+	var lo := box.position
+	for b in _boxes:
+		if (lo - (b as Array)[0] as Vector3).length_squared() < 0.0025:
+			return
+	_boxes.append([lo, box.position + box.size])
+
+
+# ---------------------------------------------------------------- 物体遮罩（SubViewport）
+## 把"本帧被探测到的物体"单独渲进一张遮罩图，供屏幕空间描边按像素判定。
+##
+## 为什么需要：屏幕描边是纯深度边缘检测，被波扫过的屏幕区域里**所有**深度突变都会出线，
+## 包括**没有碰撞体的花草**（用户报过"草也被探测到了"）。
+## 先用屏幕 AABB 矩形遮罩试过 —— 不够：大件物体的矩形覆盖范围很大，落在矩形里的草照样被描出来。
+##
+## 做法：所有被探测到的网格临时加上 MASK_LAYER 这一层；遮罩相机只渲染这一层
+## （cull_mask = MASK_LAYER），主相机的 cull_mask 是全开的，所以物体在主画面照常显示。
+func _ensure_mask_pass() -> bool:
+	if _mask_vp != null and is_instance_valid(_mask_vp) and _mask_cam != null \
+			and is_instance_valid(_mask_cam):
+		return true
+	var world := get_world_3d()
+	if world == null:
+		return false
+	var vp := get_viewport()
+	var size := vp.get_visible_rect().size if vp != null else Vector2(1280.0, 720.0)
+	var sv := SubViewport.new()
+	sv.name = "DetectMask"
+	# ★★ 必须是**纯黑不透明**背景，不能用透明背景。
+	#   踩过两次，方向正好相反：
+	#     · 背景留透明：Godot 里**不透明几何体不写 alpha**，于是整张图 alpha 全 0、
+	#       RGB 也被清零 —— 遮罩全黑，"是否在遮罩内"恒为假，**一条线都画不出来**。
+	#     · environment = null（沿用共享世界的天空）：背景被画成天空 -> 遮罩几乎全覆盖
+	#       -> 草照样被描。
+	#   纯黑不透明则是：背景恰好为 0，物体受光后必然大于 0，判定干净。
+	sv.transparent_bg = false
+	sv.size = Vector2i(maxi(1, int(size.x)), maxi(1, int(size.y)))
+	sv.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	sv.disable_3d = false
+	# ★★ 千万不要给这个子视口设 debug_draw = DEBUG_DRAW_UNSHADED：
+	#   实测会把它渲成**整张全黑**（遮罩最大亮度 0.0），于是"是否在遮罩内"的判断恒为假，
+	#   **一条轮廓线都画不出来**。保持正常渲染即可 —— 物体受光后虽有明暗，
+	#   但亮度都远高于着色器里 0.002 的判定阈值。
+	add_child(sv)
+	# ★ 必须共用主场景的 World3D，否则这个子视口里什么都没有
+	sv.world_3d = world
+	var cam := Camera3D.new()
+	cam.name = "MaskCam"
+	cam.cull_mask = MASK_LAYER          # 只渲染被探测到的物体
+	# ★★ 这里**必须给一个自己的 Environment**，不能留 null。
+	#   整个遮罩子视口共用主场景的 World3D（否则它里面什么都没有），
+	#   而 environment = null 的意思是"沿用共享世界的环境" —— 于是遮罩图里会画出
+	#   **天空背景**，整张图几乎全不是黑的，遮罩等于白做（草照样被描）。
+	#   关键字是 background_color 的 **alpha = 1（不透明）**：不透明几何体不写 alpha，
+	#   背景若透明，整张图会变成全黑。
+	var menv := Environment.new()
+	menv.background_mode = Environment.BG_CLEAR_COLOR
+	menv.background_color = Color(0.0, 0.0, 0.0, 1.0)
+	menv.ambient_light_source = Environment.AMBIENT_SOURCE_DISABLED
+	menv.tonemap_mode = Environment.TONE_MAPPER_LINEAR
+	cam.environment = menv
+	sv.add_child(cam)
+	cam.current = true
+	# ★ 保险：主相机必须能看见遮罩层，否则被探测到的物体会**从主画面消失**
+	#   （网格被加了这一层，而主相机如果没开这一层就渲染不到它）。
+	var main_cam := _camera()
+	if main_cam != null and (main_cam.cull_mask & MASK_LAYER) == 0:
+		main_cam.cull_mask |= MASK_LAYER
+	_mask_vp = sv
+	_mask_cam = cam
+	return true
+
+
+## 每帧把遮罩相机同步到主相机（位置/朝向/投影必须一致，否则遮罩和画面对不上）
+func _sync_mask_camera() -> void:
+	if _mask_cam == null or not is_instance_valid(_mask_cam):
+		return
+	var cam := _camera()
+	if cam == null:
+		return
+	_mask_cam.global_transform = cam.global_transform
+	_mask_cam.projection = cam.projection
+	_mask_cam.fov = cam.fov
+	_mask_cam.size = cam.size
+	_mask_cam.near = cam.near
+	_mask_cam.far = cam.far
+	_mask_cam.keep_aspect = cam.keep_aspect
+	var vp := get_viewport()
+	if vp != null and _mask_vp != null:
+		var s := vp.get_visible_rect().size
+		var want := Vector2i(maxi(1, int(s.x)), maxi(1, int(s.y)))
+		if _mask_vp.size != want:
+			_mask_vp.size = want
 
 
 ## 一组网格的世界包围盒并集
@@ -527,20 +679,29 @@ func _outline(visual: Node, now: float, pulse: Dictionary) -> void:
 				"mi": mesh,
 				"prev_overlay": mesh.material_overlay,
 				"prev_transparency": mesh.transparency,
+				"prev_layers": mesh.layers,
 			})
 		if meshes.is_empty():
 			return
-		var hull := _make_outline_material()
-		for item in meshes:
-			var mesh := item["mi"] as MeshInstance3D
-			# ★ 只加 overlay，**不动物体自己的材质**：物体保持原样，只在外缘多一圈线。
-			#   内部由描边着色器查深度纹理 discard 掉，所以不需要遮挡填充 ——
-			#   早先用"近黑不透明填充"把内部挡掉，结果整个物体变成一个大黑疙瘩，
-			#   用户反馈"太丑"。现在这条路彻底不需要填充了。
-			mesh.material_overlay = hull
-			if ghost > 0.0:
-				mesh.transparency = clampf(ghost, 0.0, 1.0)
-		entry = {"node": visual, "meshes": meshes, "mat": hull, "pulse": pulse}
+		if screen_outline:
+			# 屏幕空间模式：**只把网格挂到遮罩层**，材质一点不动。
+			# 遮罩图里就只剩"被探测到的物体"，花草（没有碰撞体、探测不到）自然不在其中。
+			if mask_by_objects:
+				for item in meshes:
+					(item["mi"] as MeshInstance3D).layers |= MASK_LAYER
+			entry = {"node": visual, "meshes": meshes, "pulse": pulse}
+		else:
+			var hull := _make_outline_material()
+			for item in meshes:
+				var mesh := item["mi"] as MeshInstance3D
+				# ★ 只加 overlay，**不动物体自己的材质**：物体保持原样，只在外缘多一圈线。
+				#   内部由描边着色器查深度纹理 discard 掉，所以不需要遮挡填充 ——
+				#   早先用"近黑不透明填充"把内部挡掉，结果整个物体变成一个大黑疙瘩，
+				#   用户反馈"太丑"。现在这条路彻底不需要填充了。
+				mesh.material_overlay = hull
+				if ghost > 0.0:
+					mesh.transparency = clampf(ghost, 0.0, 1.0)
+			entry = {"node": visual, "meshes": meshes, "mat": hull, "pulse": pulse}
 		_outlined[id] = entry
 	# 记住**最近一次命中它的那个脉冲**：揭示范围按这个脉冲的波面算。
 	# （角色移动时不同脉冲的圆心不同，用全局最大值会算错。）
@@ -566,7 +727,99 @@ func _update_reveal() -> void:
 		# 脉冲结束后这个 dict 仍被 entry 引用着，r 停在最大值 -> 自然保持"已全部揭示"
 		var r := float(pd["r"])
 		(mat as ShaderMaterial).set_shader_parameter("wave_center", c)
-		(mat as ShaderMaterial).set_shader_parameter("wave_radius", r)
+		# + reveal_ahead：让轮廓比波面早一点点出现，消掉"在等"的延迟感
+		(mat as ShaderMaterial).set_shader_parameter("wave_radius", r + reveal_ahead)
+
+
+# ---------------------------------------------------------------- 屏幕空间描边
+## 相机下挂一个覆盖视野的四边形当作全屏后处理面。
+## size 取 4×4：相机前 1 米处、fov 45° 时可见范围约 1.5×0.83 米，4 米足够覆盖，
+## 而且分辨率/宽高比变化也不用重算。
+func _ensure_screen_quad() -> MeshInstance3D:
+	if _screen_quad != null and is_instance_valid(_screen_quad):
+		return _screen_quad
+	var cam := _camera()
+	if cam == null:
+		return null
+	var sh := load(SCREEN_OUTLINE_SHADER) as Shader
+	if sh == null:
+		push_warning("[DetectPulse] 缺少 detect_screen_outline.gdshader，屏幕空间描边不可用")
+		return null
+	var quad := QuadMesh.new()
+	quad.size = Vector2(4.0, 4.0)
+	var m := ShaderMaterial.new()
+	m.shader = sh
+	m.set_shader_parameter("line_color", line_color)
+	m.set_shader_parameter("line_alpha", screen_line_alpha)
+	m.set_shader_parameter("sample_px", screen_sample_px)
+	m.set_shader_parameter("depth_threshold", screen_depth_threshold)
+	m.set_shader_parameter("reveal_soft", reveal_soft)
+	m.set_shader_parameter("wave_center", Vector3.ZERO)
+	m.set_shader_parameter("wave_radius", 0.0)
+	var mi := MeshInstance3D.new()
+	mi.name = "DetectScreenOutline"
+	mi.mesh = quad
+	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# 这个面是"贴脸"的，别让视锥剔除把它裁掉
+	mi.extra_cull_margin = 100.0
+	mi.visible = false
+	cam.add_child(mi)
+	mi.position = Vector3(0.0, 0.0, -1.0)
+	_screen_quad = mi
+	return mi
+
+
+## 只有真的有波纹在飞时才打开这个 pass，其余时间整块隐藏（零开销）
+func _update_screen_outline() -> void:
+	if not screen_outline:
+		return
+	var mi := _ensure_screen_quad()
+	if mi == null:
+		return
+	var newest: Dictionary = {}
+	var best := -1.0
+	for p in _pulses:
+		var pd: Dictionary = p
+		if float(pd["r"]) > best:
+			best = float(pd["r"])
+			newest = pd
+	if newest.is_empty():
+		mi.visible = false
+		return
+	mi.visible = true
+	var m := mi.material_override as ShaderMaterial
+	if m == null:
+		return
+	m.set_shader_parameter("wave_center", newest["center"])
+	# + reveal_ahead：轮廓比波面早一点出现（消延迟感），见 reveal_ahead 的注释
+	m.set_shader_parameter("wave_radius", float(newest["r"]) + reveal_ahead)
+	var vp := get_viewport()
+	if vp != null:
+		m.set_shader_parameter("screen_size", vp.get_visible_rect().size)
+	# 物体遮罩：把"只有被探测物体"的那张图交给描边着色器
+	if mask_by_objects and _ensure_mask_pass():
+		_sync_mask_camera()
+		m.set_shader_parameter("mask_tex", _mask_vp.get_texture())
+		m.set_shader_parameter("mask_enabled", true)
+	else:
+		m.set_shader_parameter("mask_enabled", false)
+	# ★ 三维判定：世界包围盒。二维遮罩挡不住"物体前后方的草"（实测遮罩覆盖 34%，
+	#   草照样被描），必须由像素的世界坐标判断它是否真的在物体体积内。
+	var mins := PackedVector4Array()
+	var maxs := PackedVector4Array()
+	mins.resize(16)
+	maxs.resize(16)
+	for i in range(16):
+		if i < _boxes.size():
+			var b: Array = _boxes[i]
+			var lo: Vector3 = b[0]
+			var hi: Vector3 = b[1]
+			mins[i] = Vector4(lo.x, lo.y, lo.z, 0.0)
+			maxs[i] = Vector4(hi.x, hi.y, hi.z, 0.0)
+	m.set_shader_parameter("box_min", mins)
+	m.set_shader_parameter("box_max", maxs)
+	m.set_shader_parameter("box_count", _boxes.size())
 
 
 func _expire_outlines() -> void:
@@ -590,6 +843,9 @@ func _clear_entry(entry: Dictionary) -> void:
 			var mesh := mi as MeshInstance3D
 			mesh.material_overlay = item.get("prev_overlay")
 			mesh.transparency = float(item.get("prev_transparency", 0.0))
+			# 遮罩层必须摘掉：留着的话物体每帧都会被多渲染一次（白白多一份开销）
+			if mask_by_objects and item.has("prev_layers"):
+				mesh.layers = int(item["prev_layers"])
 	entry["meshes"] = []
 
 
@@ -603,6 +859,14 @@ func _exit_tree() -> void:
 		if n != null and is_instance_valid(n):
 			(n as Node).queue_free()
 	_pulses.clear()
+	# ★ 全屏面挂在**相机**下，不是本节点的子节点 —— 不显式回收就会永久留在相机上
+	if _screen_quad != null and is_instance_valid(_screen_quad):
+		_screen_quad.queue_free()
+		_screen_quad = null
+	if _mask_vp != null and is_instance_valid(_mask_vp):
+		_mask_vp.queue_free()
+		_mask_vp = null
+		_mask_cam = null
 
 
 # ---------------------------------------------------------------- 小工具
