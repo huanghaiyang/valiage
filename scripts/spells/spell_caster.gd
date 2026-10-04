@@ -22,6 +22,7 @@ const SPELLS := {
 	"fire_tornado": preload("res://scripts/spells/fire_tornado_particles.gd"),
 	"blue_tornado": preload("res://scripts/spells/blue_tornado.gd"),
 	"detect_pulse": preload("res://scripts/spells/detect_pulse.gd"),
+	"flame_scorch": preload("res://scripts/spells/flame_scorch.gd"),
 }
 
 

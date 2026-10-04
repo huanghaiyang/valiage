@@ -1,0 +1,65 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://scripts/vfx/fire_burst.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://assets/models/法术特效/火焰燃烧_split/火焰燃烧_01.glb" id="2_f1"]
+[ext_resource type="PackedScene" path="res://assets/models/法术特效/火焰燃烧_split/火焰燃烧_02.glb" id="2_f2"]
+[ext_resource type="PackedScene" path="res://assets/models/法术特效/火焰燃烧_split/火焰燃烧_03.glb" id="2_f3"]
+[ext_resource type="PackedScene" path="res://assets/models/法术特效/火焰燃烧_split/火焰燃烧_04.glb" id="2_f4"]
+[ext_resource type="PackedScene" path="res://assets/models/法术特效/火焰燃烧_split/火焰燃烧_05.glb" id="2_f5"]
+
+[node name="火焰燃烧特效" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="中心主焰" parent="." instance=ExtResource("2_f3")]
+transform = Transform3D(7.2, 0, 0, 0, 7.2, 0, 0, 0, 7.2, 0, 0, 0)
+
+[node name="底层焰1" parent="." instance=ExtResource("2_f1")]
+transform = Transform3D(5.4, 0, 0, 0, 5.4, 0, 0, 0, 5.4, 0, 0, 0.8)
+
+[node name="底层焰2" parent="." instance=ExtResource("2_f2")]
+transform = Transform3D(5, 0, 0, 0, 5, 0, 0, 0, 5, 0.761, 0, 0.247)
+
+[node name="底层焰3" parent="." instance=ExtResource("2_f3")]
+transform = Transform3D(6.2, 0, 0, 0, 6.2, 0, 0, 0, 6.2, 0.47, 0, -0.647)
+
+[node name="底层焰4" parent="." instance=ExtResource("2_f4")]
+transform = Transform3D(5.2, 0, 0, 0, 5.2, 0, 0, 0, 5.2, -0.47, 0, -0.647)
+
+[node name="底层焰5" parent="." instance=ExtResource("2_f5")]
+transform = Transform3D(5.6, 0, 0, 0, 5.6, 0, 0, 0, 5.6, -0.761, 0, 0.247)
+
+[node name="中层焰1" parent="." instance=ExtResource("2_f2")]
+transform = Transform3D(4, 0, 0, 0, 4, 0, 0, 0, 4, 0, 0.95, 0.55)
+
+[node name="中层焰2" parent="." instance=ExtResource("2_f3")]
+transform = Transform3D(4.4, 0, 0, 0, 4.4, 0, 0, 0, 4.4, 0.523, 0.95, 0.17)
+
+[node name="中层焰3" parent="." instance=ExtResource("2_f4")]
+transform = Transform3D(4.8, 0, 0, 0, 4.8, 0, 0, 0, 4.8, 0.323, 0.95, -0.445)
+
+[node name="中层焰4" parent="." instance=ExtResource("2_f5")]
+transform = Transform3D(3.8, 0, 0, 0, 3.8, 0, 0, 0, 3.8, -0.323, 0.95, -0.445)
+
+[node name="中层焰5" parent="." instance=ExtResource("2_f1")]
+transform = Transform3D(4.2, 0, 0, 0, 4.2, 0, 0, 0, 4.2, -0.523, 0.95, 0.17)
+
+[node name="上层焰1" parent="." instance=ExtResource("2_f1")]
+transform = Transform3D(3.4, 0, 0, 0, 3.4, 0, 0, 0, 3.4, 0, 1.9, 0.45)
+
+[node name="上层焰2" parent="." instance=ExtResource("2_f2")]
+transform = Transform3D(3.8, 0, 0, 0, 3.8, 0, 0, 0, 3.8, 0.428, 1.9, 0.139)
+
+[node name="上层焰3" parent="." instance=ExtResource("2_f3")]
+transform = Transform3D(4.2, 0, 0, 0, 4.2, 0, 0, 0, 4.2, 0.265, 1.9, -0.364)
+
+[node name="上层焰4" parent="." instance=ExtResource("2_f4")]
+transform = Transform3D(3.5, 0, 0, 0, 3.5, 0, 0, 0, 3.5, -0.265, 1.9, -0.364)
+
+[node name="上层焰5" parent="." instance=ExtResource("2_f5")]
+transform = Transform3D(3.3, 0, 0, 0, 3.3, 0, 0, 0, 3.3, -0.428, 1.9, 0.139)
+
+[node name="火光" type="OmniLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
+light_color = Color(1, 0.35, 0.1, 1)
+light_energy = 3.0
+omni_range = 14.0

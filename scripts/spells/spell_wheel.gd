@@ -14,13 +14,14 @@ const RING_COUNTS := [6, 9, 12, 15]      ## 4 层，每层格子数
 const RING_INNER := 46.0                 ## 最内层半径
 const RING_WIDTH := 54.0                 ## 每层厚度
 const GAP := 3.0                         ## 层与层之间的缝
-const SPELL_NAMES := { "flame_jet": "火焰喷射", "fire_tornado": "火焰编织", "blue_tornado": "蓝色龙卷风", "detect_pulse": "物体探测" }
+const SPELL_NAMES := { "flame_jet": "火焰喷射", "fire_tornado": "火焰编织", "blue_tornado": "蓝色龙卷风", "detect_pulse": "物体探测", "flame_scorch": "火焰灼烧" }
 ## 已实现的术法：key = 层*1000 + 格（层从 0 开始，格从正上方顺时针）
 const ASSIGNED := {
 	0: "flame_jet",
 	1: "fire_tornado",
 	2: "blue_tornado",
 	3: "detect_pulse",
+	4: "flame_scorch",
 }
 
 var _open := false
@@ -180,7 +181,7 @@ func _on_draw(c: Control) -> void:
 		else:
 			tip = "%d 层第 %d 格：空" % [_hover / 1000 + 1, _hover % 1000 + 1]
 	elif _t < 3.0:
-		tip = "第 1 层：火焰喷射 / 火焰编织 / 蓝色龙卷风 / 物体探测（其余暂空）"
+		tip = "第 1 层：火焰喷射 / 火焰编织 / 蓝色龙卷风 / 物体探测 / 火焰灼烧（其余暂空）"
 	var ts := _font.get_string_size(tip, HORIZONTAL_ALIGNMENT_LEFT, -1, 15)
 	c.draw_string(_font, center - Vector2(ts.x * 0.5, -ts.y * 0.25), tip, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color(0.9, 0.94, 1.0, 0.95))
 
