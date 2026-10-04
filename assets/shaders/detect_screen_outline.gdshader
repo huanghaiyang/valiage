@@ -48,6 +48,10 @@ uniform float reveal_soft : hint_range(0.0, 3.0) = 0.35;
 //   只查当前像素会把线裁掉一半，所以连同深度采样用的四个邻居一起查。
 uniform sampler2D mask_tex : hint_default_black;
 uniform bool mask_enabled = false;
+/// mask 图里"算作在物体内"的阈值。透明背景处 RGB 恰好为 0，
+/// 物体即使很暗也远大于 0，所以取个极小值最稳。
+/// ★ 别用 0.5 之类的高阈值：物体是受光后的暗色，会被判成"不在遮罩里"→ 一条线都没有。
+uniform float mask_threshold : hint_range(0.0, 0.5) = 0.005;
 
 // ---- 被探测物体的**世界 AABB**：只画"这个像素真的落在某个物体体积内"的线 ----
 // 【为什么光有遮罩图不够】遮罩是**二维屏幕区域**：围栏/遗迹这类大件在屏幕上占很大面积，
@@ -96,30 +100,45 @@ void fragment() {
 	float g = max(max(abs(zc - zl), abs(zc - zr)),
 			max(abs(zc - zu), abs(zc - zd)));
 
-	// ---- 画线：优先用**遮罩自身的边界** ----
-	// ★ 这才是真正的解法。
-	//   遮罩图里只有"被探测到的物体"，**草、地形等根本不在里面** ——
-	//   所以直接对遮罩做边缘检测，得到的就是物体轮廓，草一个像素都不会被描。
-	//   （之前用主画面的深度突变找轮廓，所以必须先想办法把草排除掉；
-	//     试过屏幕矩形、遮罩覆盖、世界 AABB 三种过滤，全都是近似，草照样漏。
-	//     换成"遮罩边界"之后这个过滤问题直接从根上消失了。）
-	//   另外它天生就是 ~1px 的连续细线：边界像素的"自己在内、邻居在外"判定。
-	float a = 0.0;
+	// ---- 画线：UE "Custom Depth + Stencil" 后处理的 Godot 等价实现 ----
+	//
+	// UE 里的做法（公开资料）：把要描边的物体勾上 Render CustomDepth Pass，
+	// 它们被单独渲进 Custom Depth/Stencil 缓冲；后处理材质用
+	// SceneTexture:CustomDepth 在**四/八邻域**取样，中心与邻居不同 -> 就是轮廓，
+	// 再靠 stencil 值把"只要这一类物体"筛出来，最后做一次 dilation 让线有厚度。
+	//
+	// Godot 没有 Custom Depth/Stencil，等价物就是：
+	//   layers(位) + SubViewport + 一台 cull_mask 只开该位的相机 = 专用的 mask 通道。
+	//   然后对**这张 mask 图**做邻域边缘检测 —— 它里面只有被探测到的物体，
+	//   屏幕上的草/地形根本不在其中，所以一个像素都不会被描（结构性排除）。
+	//
+	// ★ mask 图必须只在 GPU 端采样，**不要用 get_image() 判断它对不对**：
+	//   Godot 未修复的 #91828：transparent_bg 打开时 Viewport.get_texture() 的
+	//   CPU 回读数据不可信（会全 0），而着色器里采样是正常的。我上一轮就是被这个
+	//   回读骗了，误判成"遮罩没渲染"，然后把好端端的方案关掉了。
+	float edge_depth = smoothstep(depth_threshold * 0.55, depth_threshold, g);
+	float a = edge_depth;
 	float mc = mask_at(SCREEN_UV);
 	if (mask_enabled) {
-		float m1 = mask_at(SCREEN_UV + vec2(off.x, 0.0));
-		float m2 = mask_at(SCREEN_UV - vec2(off.x, 0.0));
-		float m3 = mask_at(SCREEN_UV + vec2(0.0, off.y));
-		float m4 = mask_at(SCREEN_UV - vec2(0.0, off.y));
-		float mn = max(max(m1, m2), max(m3, m4));
-		// 当前像素在物体内、邻居在物体外 -> 轮廓（线贴在物体外缘）。
-		// ★ 阈值 0.005：遮罩背景是**纯黑不透明**，物体受光后必然大于 0，判定很干净。
-		//   踩过的两个反例：阈值 0.5 时暗色物体全被判为"不在遮罩里"→ 一条线都没有；
-		//   而背景若是天空或透明，整张遮罩又会出问题（见 GDScript 里的注释）。
-		a = step(0.005, mc) * (1.0 - step(0.005, mn));
+		// 八邻域：比四邻域更容易得到连续的线（UE 里也是 4/8 邻域取 max）
+		float mn = 0.0;
+		mn = max(mn, mask_at(SCREEN_UV + vec2(off.x, 0.0)));
+		mn = max(mn, mask_at(SCREEN_UV - vec2(off.x, 0.0)));
+		mn = max(mn, mask_at(SCREEN_UV + vec2(0.0, off.y)));
+		mn = max(mn, mask_at(SCREEN_UV - vec2(0.0, off.y)));
+		mn = max(mn, mask_at(SCREEN_UV + off));
+		mn = max(mn, mask_at(SCREEN_UV - off));
+		mn = max(mn, mask_at(SCREEN_UV + vec2(off.x, -off.y)));
+		mn = max(mn, mask_at(SCREEN_UV + vec2(-off.x, off.y)));
+		// 中心在物体内、八邻域里至少一个在外面 -> 轮廓（线贴在物体外缘，约 1px）
+		float mask_edge = step(mask_threshold, mc) * (1.0 - step(mask_threshold, mn));
+		// ★ 用 max 而不是替换：mask 通道是**主路径**（草结构性排除）；
+		//   深度边缘是**托底** —— 万一 mask 通道在某个平台/引擎版本上失效，
+		//   也不至于"一条轮廓线都画不出来"（这个坑我踩过）。
+		a = max(mask_edge, edge_depth);
 	} else {
-		// 没有遮罩时才退回深度突变边缘检测（会把草、地形一起描出来）
-		a = smoothstep(depth_threshold * 0.55, depth_threshold, g);
+		// 没有 mask 通道时才纯靠深度突变（会把草、地形一起描出来）
+		a = edge_depth;
 	}
 
 	// 波面揭示：只有被扫过的屏幕区域才有线

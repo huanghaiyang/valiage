@@ -59,8 +59,8 @@ const SCREEN_OUTLINE_SHADER := "res://assets/shaders/detect_screen_outline.gdsha
 
 # ---- 描边：动漫风格（物体保持原样，只在外缘加一圈线）----
 @export var line_color := Color(0.30, 0.95, 1.0)
-@export var line_grow := 0.016             ## 视图空间外扩（米）= 线有多粗（细线）
-@export var depth_bias := 0.02             ## 深度比较容差（米）：太小挡不住内部，太大会吃掉边线
+## 线宽（**像素**）：按视深度缩放，远近一样粗
+@export var outline_px := 1.0
 ## 揭示边缘的柔化宽度（米）：线条随波面长出来时，前沿这一小段是渐入的
 @export var reveal_soft := 0.35
 ## 让轮廓**提前**这么多米出现。用户反馈"轮廓绘制有延迟" —— 因为轮廓严格等波面扫到
@@ -71,17 +71,21 @@ const SCREEN_OUTLINE_SHADER := "res://assets/shaders/detect_screen_outline.gdsha
 @export_range(0.0, 0.95, 0.01) var ghost := 0.0
 
 # ---- 屏幕空间描边（推荐）：四周都有线、线宽固定为像素，与视角无关 ----
-## true = 用屏幕空间描边（此时上面那套几何描边不生效，二者只取其一）
-@export var screen_outline := true
+## true = 用屏幕空间后处理描边（全屏 pass，需要 mask 通道才能不描到草）
+## false = 用**逐物体反壳描边**（material_overlay）—— 草是结构性排除的，推荐
+@export var screen_outline := false
 @export var screen_line_alpha := 0.9
 @export var screen_sample_px := 1.0        ## 邻域采样偏移（像素）= 线宽（1.0 ≈ 1px 细线）
 @export var screen_depth_threshold := 2.2  ## 视深度梯度阈值（米）：实测 0.6 会把草也描出来，2.2 只剩大物体
-## 只描"被探测到的物体"所占屏幕区域 —— 花草没有碰撞体、探测不到，于是不会被描。
-## ★★ 目前默认**关闭**：遮罩通道（SubViewport + cull_mask）还没拿到干净的物体图，
-##    开着会导致**一条轮廓线都画不出来**。关掉时走"主画面深度突变"那条路，
-##    也就是评价过"效果还可以"的版本（代价：草会被一起描）。
-##    已确认的测量事实记录在 _ensure_mask_pass() 的注释里，别重复踩。
-@export var mask_by_objects := false
+## 物体遮罩通道（UE Custom Depth/Stencil 的 Godot 等价物）。
+## 被探测到的网格临时挂到 MASK_LAYER，由一台 cull_mask 只开该位的相机渲进 SubViewport；
+## 着色器把这张图当"Custom Depth"做邻域边缘检测 —— 图里只有被探测到的物体，
+## 草/地形根本不在其中，所以草是**结构性排除**，不靠名字也不靠过滤。
+##
+## ★ 判断遮罩对不对**不能**用 get_texture().get_image()：Godot 未修复的 #91828 表明
+##   transparent_bg 打开时 CPU 回读不可信（返回全 0），而 GPU 端采样正常。
+##   我上一轮就是被这个回读误导，误判"遮罩没渲染"并把方案关掉了。**只能靠截图验证**。
+@export var mask_by_objects := true
 ## 波纹是否**跟随角色移动**（true = 圆心每帧跟到角色脚下）
 @export var follow_caster := true
 
@@ -900,7 +904,7 @@ func _visible_meshes(node: Node) -> Array:
 	return out
 
 
-## 描边材质（作为 material_overlay；内部由着色器按深度丢弃）
+## 描边材质（作为 material_overlay 逐个物体叠加；草不在探测集合里，天然不会被描）
 func _make_outline_material() -> ShaderMaterial:
 	var m := ShaderMaterial.new()
 	var sh := load(OUTLINE_SHADER) as Shader
@@ -909,11 +913,16 @@ func _make_outline_material() -> ShaderMaterial:
 		return m
 	m.shader = sh
 	m.set_shader_parameter("line_color", line_color)
-	m.set_shader_parameter("line_grow", line_grow)
-	m.set_shader_parameter("depth_bias", depth_bias)
+	m.set_shader_parameter("line_alpha", 1.0)
+	m.set_shader_parameter("line_px", outline_px)
 	m.set_shader_parameter("reveal_soft", reveal_soft)
-	# 波面参数由 _update_reveal() 每帧刷新（每个物体用**命中它的那个脉冲**，
-	# 而不是全局最大值 —— 角色移动时不同脉冲的圆心不一样）
+	# 像素恒定线宽需要 screen_k = 2*tan(fov/2) / 视口高度
+	var cam := _camera()
+	var vp := get_viewport()
+	var h := float(vp.get_visible_rect().size.y) if vp != null else 720.0
+	if cam != null and h > 1.0:
+		m.set_shader_parameter("screen_k",
+				2.0 * tan(deg_to_rad(cam.fov * 0.5)) / h)
 	m.set_shader_parameter("wave_center", Vector3.ZERO)
 	m.set_shader_parameter("wave_radius", 0.0)
 	return m
