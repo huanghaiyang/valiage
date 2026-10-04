@@ -134,7 +134,11 @@ func aim_from_player() -> void:
 	if player == null:
 		return
 	var fwd := Vector3(-sin(_current_yaw), 0.0, -cos(_current_yaw))
-	player.face_direction(fwd)
+	# ★ 传一个足够大的 delta 让它**一步到位**：face_direction 的单帧步长会被夹到
+	#   "剩余角度"，所以这一下必定转满。出生点朝向必须一次定死 ——
+	#   平滑转向下每帧只转 ~15°，而本函数只在装配阶段被调一次（world_builder.gd），
+	#   只转一步的话角色出生时是歪的。
+	player.face_direction(fwd, 10.0)
 
 func _set_mouse_captured(captured: bool) -> void:
 	_mouse_captured = captured
@@ -500,6 +504,10 @@ func _physics_process(delta: float) -> void:
 	var move_xz := Vector3.ZERO
 	var running := Input.is_key_pressed(KEY_SHIFT)
 	var yaw_before: float = player.get_facing_yaw()
+	## 本次**想转到的**朝向。要传它而不是"本帧实际转过的角度"给 notify_facing_change，
+	## 才反映得出"转身幅度"——平滑转向下每帧最多转 15°，永远够不到 45° 阈值
+	## （见 player.gd::notify_facing_change 的注记）。
+	var turn_want_yaw := yaw_before
 	player.set_running(running)
 	if dir.x != 0.0 or dir.y != 0.0:
 		moved = true
@@ -518,7 +526,8 @@ func _physics_process(delta: float) -> void:
 				move_xz = Vector3.ZERO
 		# 角色面向水平移动方向
 		if face.length_squared() > 0.001:
-			player.face_direction(face.normalized())
+			turn_want_yaw = atan2(face.x, face.z)
+			player.face_direction(face.normalized(), delta)
 		# 鼠标释放时旋转视线短暂面向移动方向，便于无鼠标浏览
 		if not _mouse_captured:
 			_current_yaw = lerp_angle(_current_yaw, atan2(-face.x, -face.z), 8.0 * delta)
@@ -570,8 +579,9 @@ func _physics_process(delta: float) -> void:
 			_velocity_y = 0.0
 
 	# 转向过渡：侧向速度 → 侧移动画；朝向突变 → 转向动画 + 压弯
+	# ★ 传"想转的角度"而不是"本帧实际转过的角度"（见 turn_want_yaw 的注释）
 	var yaw_after: float = player.get_facing_yaw()
-	player.notify_facing_change(angle_difference(yaw_before, yaw_after))
+	player.notify_facing_change(angle_difference(yaw_before, turn_want_yaw))
 	player.set_lateral(_lateral_speed(move_xz, yaw_after))
 	player.update_turn(delta, moved, running)
 

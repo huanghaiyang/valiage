@@ -543,18 +543,44 @@ func set_body_visible(v: bool) -> void:
 ## （用户："玩家移动时，旋转场景，怎么法杖也跟着转圈"）。
 ## 打开后按 turn_speed_deg 逐帧转过去，观感是"转身"而不是"甩"。
 @export var smooth_turn := true
+## 角速度**上限**（度/秒）：不论差多少角度，转得再快也不超过它
 @export var turn_speed_deg := 900.0
+## 转向响应系数（1/秒）：本帧角速度 = 该系数 × 剩余角度，再夹到
+## [TURN_MIN_RATE, turn_speed_deg] 之间。**这就是"过渡"的来源**——
+## 剩余角度大时转得快、接近目标时自动减速收势，起势与收势都是连续的。
+@export var turn_response := 12.0
+## 转向时是否播放"转向动作"（kaykit/DashLeft/Right）。
+## 默认**关闭**：这两个剪辑是**冲刺**动作，并不是专门的转身动作；而
+## kaykit_library.tres 里根本没有 Strafe_Left/Strafe_Right（所以 ANIM_STRAFE_L/R
+## 一直在静默回退成 Walking_A）。循环播冲刺动作会像"边走边反复侧冲"，
+## 先用**压弯**做过渡更稳；想试动作把这个开关打开即可。
+@export var turn_anim_enabled := false
+
+## 角速度下限（弧度/秒）：只剩几度时也得有个最小速度，
+## 否则指数式收敛会在最后一点角度上拖出长长的尾巴。
+const TURN_MIN_RATE := deg_to_rad(180.0)
 
 ## 角色面向水平移动方向（Mage 模型 +Z 为面部前方）
-func face_direction(face: Vector3) -> void:
+##
+## delta 必须由调用方传入：本函数是在 camera_rig 的 **_physics_process** 里调的，
+## 而 get_process_delta_time() 返回的是**空闲帧**时长 —— 两者在"物理 60Hz /
+## 渲染 144Hz"这类配置下并不相等，用错了转向速度会随机器刷新率漂移。
+func face_direction(face: Vector3, delta: float = -1.0) -> void:
 	if body == null:
 		return
 	var target := atan2(face.x, face.z)
 	if not smooth_turn:
 		body.rotation.y = target
 		return
-	var rate := deg_to_rad(turn_speed_deg) * get_process_delta_time()
-	body.rotation.y = rotate_toward(body.rotation.y, target, rate)
+	var dt := delta if delta > 0.0 else get_physics_process_delta_time()
+	# 剩余角度（带符号、走最短弧）。
+	# 为什么不用 rotate_toward：那是**匀速**旋转 —— 起步瞬间满速、到位瞬间急停，
+	# 观感很硬。改成让角速度正比于剩余角度，天然就是"快起慢收"的过渡曲线；
+	# step 再夹一个"不超过剩余角度"，保证不会转过头来回摆。
+	var remain := angle_difference(body.rotation.y, target)
+	var rate := clampf(turn_response * absf(remain), TURN_MIN_RATE, deg_to_rad(turn_speed_deg))
+	var step := minf(rate * dt, absf(remain))
+	body.rotation.y += signf(remain) * step
 
 # ---------- 转向过渡 ----------
 
@@ -564,15 +590,20 @@ func set_lateral(lateral: float) -> void:
 
 
 ## 朝向发生明显变化时调用（由相机控制器在转身时触发）
+##
+## ★ angle_delta 必须是**本次想转的总角度**（当前朝向 → 目标朝向），
+## 不能传"本帧实际转过的角度"：平滑转向下每帧最多转 turn_speed_deg × dt
+## （900°/s @60fps = 15°），永远够不到 45° 的阈值 —— 那样这套压弯/转向过渡
+## 就整个是死代码（本函数历史上正是被这样调的，所以压弯从来没出现过）。
 func notify_facing_change(angle_delta: float) -> void:
 	if absf(angle_delta) < TURN_ANIM_ANGLE:
 		return
 	_turn_dir = signf(angle_delta)
 	_turn_timer = TURN_ANIM_TIME
-	# 转向瞬间给一个侧倾冲量，随后回正
+	# 转向期间持续给侧倾一个同向冲量（会被夹在上限内），转完自然回正
 	_lean = clampf(_lean - _turn_dir * TURN_LEAN_MAX, -TURN_LEAN_MAX, TURN_LEAN_MAX)
-	# 移动中才播转向动作，站立转向只靠侧倾
-	if _moving and not _action_active and not _jump_air:
+	# 移动中才播转向动作，站立转向只靠侧倾。默认关闭，原因见 turn_anim_enabled
+	if turn_anim_enabled and _moving and not _action_active and not _jump_air:
 		_play_move_anim(ANIM_TURN_L if _turn_dir > 0.0 else ANIM_TURN_R)
 
 
