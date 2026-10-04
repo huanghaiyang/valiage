@@ -32,6 +32,9 @@ uniform float warp = 0.55;
 uniform float lead_width = 0.9;
 /// 波前亮带强度
 uniform float lead_gain = 1.5;
+/// 细环的**截断窗口**（米）：只保留波前附近这么多范围内的环。
+/// 每个脉冲只画一圈 —— 因为"一圈"就是一个真实脉冲（真·多圈模式）。
+uniform float ring_window = 1.5;
 
 float hash21(vec2 p) {
 	p = fract(p * vec2(123.34, 456.21));
@@ -72,9 +75,14 @@ void fragment() {
 	// ① 波前亮带
 	float lead = exp(-pow((r - front) / max(lead_width, 0.05), 2.0));
 
-	// ② 尾随细环
-	float s = sin((r - front) * 6.28318530718 / max(wavelength, 0.05));
-	float rings = pow(max(s, 0.0), max(sharpness, 1.0));
+	// ② 细环：**每个脉冲只画一圈**（真·多圈模式）
+	//    cos 让峰值正好落在波前（x = 0 处）而不是 x = 波长/4；
+	//    再用一个高斯窗口把前后截断，于是就算波长 9 米也只留下"一圈"。
+	//    这样"你看到的每一圈"都对应一个**真实脉冲**——它有自己的球查询与轮廓时序，
+	//    而不是同一个脉冲拖着的一串视觉余波。
+	float s = cos((r - front) * 6.28318530718 / max(wavelength, 0.05));
+	float rings = pow(max(s, 0.0), max(sharpness, 1.0))
+			* exp(-pow((front - r) / max(ring_window, 0.05), 2.0));
 
 	// ③ 越靠后的环越淡
 	float age = clamp((front - r) / max(max_radius, 0.001), 0.0, 1.0);

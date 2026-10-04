@@ -50,10 +50,28 @@ const RIPPLE_SHADER := "res://assets/shaders/detect_ripple.gdshader"
 const OUTLINE_SHADER := "res://assets/shaders/detect_outline.gdshader"
 ## 屏幕空间描边（全屏后处理，靠深度突变找轮廓）—— 四周都有线、线宽恒定
 const SCREEN_OUTLINE_SHADER := "res://assets/shaders/detect_screen_outline.gdshader"
+## 扫描带：波面经过物体时，一道亮带贴着物体表面推过去（挂在描边的 next_pass 上）
+const SCAN_SHADER := "res://assets/shaders/detect_scan.gdshader"
+
+# ---- 表面扫描带（进阶效果）：波面在物体表面"游走" ----
+@export var surface_scan := true
+@export var scan_color := Color(0.35, 0.95, 1.0)
+@export var scan_alpha := 0.85
+@export var scan_band_width := 0.7      ## 前沿亮带宽度（米）
+@export var scan_band_gain := 1.6       ## 前沿亮带强度
+@export var scan_trail_len := 2.2       ## 身后余辉长度（米）
+@export var scan_trail_gain := 0.10     ## 身后余辉强度（多圈会**叠加**，所以调得低）
+@export var scan_climb := 0.8           ## >0 = 波面沿表面往上爬（每米高度减少多少到达半径）
+@export var scan_edge_boost := 0.6      ## 掠射角增强
+@export var scan_pattern_freq := 1.4    ## 横向条纹频率（0 = 关）
+@export var scan_pattern_gain := 0.25   ## 横向条纹强度
 
 # ---------------------------------------------------------------- 可调参数
 @export var mana_per_cast := 12.0          ## 每发一圈的耗蓝
-@export var repeat_interval := 2.4         ## 按住时每隔多久再发一圈；0 = 只发一圈（间隔太短会让多圈叠在一起，看着很密）
+## 按住时每隔多久再发一圈；0 = 只发一圈。
+## ★ 真·多圈模式下这个值要**小**：每一圈都是一个独立脉冲（各自一次球查询 + 自己的轮廓时序），
+##   所以 0.28 秒 ≈ 每 7 米一圈 —— 你看到的每一圈都在真的扫描。
+@export var repeat_interval := 0.28
 @export var wave_speed := 26.0             ## 波面扩张速度（米/秒）—— 太慢会显得拖
 @export var outline_life := 1.0            ## 轮廓显示多久（秒）—— 需求指定 1s
 
@@ -94,6 +112,8 @@ const SCREEN_OUTLINE_SHADER := "res://assets/shaders/detect_screen_outline.gdsha
 ##    网格的 layers 确实置位了、遮罩相机的 cull_mask 也是同一位（AND 非零），
 ##    但子视口里**看不到任何物体**（遮罩一片背景色）—— 高位在渲染端疑似不被支持。
 const MASK_LAYER := 1 << 7
+## 扫描带一次最多叠加几圈（与 detect_scan.gdshader 里的 vec4[8] 对应）
+const SCAN_MAX_WAVES := 8
 
 # ---- 地面波纹：细线环 + 波前亮带 + 噪声扭曲 ----
 @export var wave_color := Color(0.35, 0.90, 1.0)
@@ -103,8 +123,11 @@ const MASK_LAYER := 1 << 7
 @export var wave_intensity := 1.25
 @export var wave_lift := 0.12              ## 波纹抬离地面多少（免得被地表吃掉）
 @export var wave_warp := 0.55              ## 噪声扭曲幅度（米）：0 = 标准圆
-@export var lead_width := 0.9              ## 波前亮带宽度（米）
-@export var lead_gain := 1.5               ## 波前亮带强度
+@export var lead_width := 0.5              ## 波前亮带宽度（米）
+@export var lead_gain := 0.4               ## 波前亮带强度（真·多圈下细环才是主角，亮带压弱）
+## 细环的截断窗口（米）。真·多圈模式下每个脉冲只画一圈，
+## 所以"一圈"= 一个真实脉冲（有独立的球查询与轮廓时序），不是视觉余波。
+@export var ring_window := 1.5
 @export var screen_margin := 1.2           ## 需求指定：屏幕 1.2 倍区域
 ## 关掉屏幕内剔除（**只给无头自检用**）。
 ## 无头运行时相机不会跟到玩家身上（跟随要真实帧），物体投影会落在视口外，
@@ -695,20 +718,28 @@ func _outline(visual: Node, now: float, pulse: Dictionary) -> void:
 			entry = {"node": visual, "meshes": meshes, "pulse": pulse}
 		else:
 			var hull := _make_outline_material()
+			# 扫描带挂在描边的 next_pass 上：同一次绘制的后续 pass。
+			# 这样只用一个 material_overlay 槽位就能同时有描边 + 表面扫描带。
+			# （顺序上让描边先建好，即使 next_pass 出问题也只是少了扫描带，描边不受影响。）
+			var scan: ShaderMaterial = null
+			if surface_scan:
+				scan = _make_scan_material()
+				hull.next_pass = scan
 			for item in meshes:
 				var mesh := item["mi"] as MeshInstance3D
 				# ★ 只加 overlay，**不动物体自己的材质**：物体保持原样，只在外缘多一圈线。
-				#   内部由描边着色器查深度纹理 discard 掉，所以不需要遮挡填充 ——
-				#   早先用"近黑不透明填充"把内部挡掉，结果整个物体变成一个大黑疙瘩，
-				#   用户反馈"太丑"。现在这条路彻底不需要填充了。
+				#   内部由深度测试自然挡掉（不再手工查深度纹理，那会丢掉靠镜头那侧的边线）。
 				mesh.material_overlay = hull
 				if ghost > 0.0:
 					mesh.transparency = clampf(ghost, 0.0, 1.0)
-			entry = {"node": visual, "meshes": meshes, "mat": hull, "pulse": pulse}
+			entry = {"node": visual, "meshes": meshes, "mat": hull, "scan": scan, "pulse": pulse}
 		_outlined[id] = entry
-	# 记住**最近一次命中它的那个脉冲**：揭示范围按这个脉冲的波面算。
-	# （角色移动时不同脉冲的圆心不同，用全局最大值会算错。）
-	entry["pulse"] = pulse
+	# ★ 真·多圈：同一个物体每帧会被**多个**脉冲命中（球查询覆盖整个圆盘内）。
+	#   这里只保留**半径最大**的那个 —— 揭示半径取最大，已经扫过的部分才会保持显示；
+	#   若取"最后一次命中"的（最小圈），轮廓会随着内圈推进而**往回缩**。
+	var cur = entry.get("pulse")
+	if cur == null or float((cur as Dictionary)["r"]) < float(pulse["r"]):
+		entry["pulse"] = pulse
 	entry["until"] = now + outline_life
 
 
@@ -717,6 +748,18 @@ func _outline(visual: Node, now: float, pulse: Dictionary) -> void:
 func _update_reveal() -> void:
 	if _outlined.is_empty():
 		return
+	# 真·多圈：把**当前所有活跃脉冲**打包给扫描带着色器，最多 SCAN_MAX_WAVES 圈。
+	# 于是物体表面会被每一圈**依次**扫过（每一圈都是真实脉冲）。
+	var waves := PackedVector4Array()
+	waves.resize(SCAN_MAX_WAVES)
+	var wn := 0
+	for p in _pulses:
+		if wn >= SCAN_MAX_WAVES:
+			break
+		var pd0: Dictionary = p
+		var pc: Vector3 = pd0["center"]
+		waves[wn] = Vector4(pc.x, pc.z, float(pd0["r"]), 0.0)
+		wn += 1
 	for id in _outlined.keys():
 		var entry: Dictionary = _outlined[id]
 		var mat = entry.get("mat")
@@ -732,6 +775,14 @@ func _update_reveal() -> void:
 		(mat as ShaderMaterial).set_shader_parameter("wave_center", c)
 		# + reveal_ahead：让轮廓比波面早一点点出现，消掉"在等"的延迟感
 		(mat as ShaderMaterial).set_shader_parameter("wave_radius", r + reveal_ahead)
+		# 扫描带用**真实波面半径**（不加提前量）：亮带本来就该压在波前上，
+		# 加了提前量会让它跑到波圈前面，看起来脱节。
+		var sc = entry.get("scan")
+		if sc != null and sc is ShaderMaterial:
+			(sc as ShaderMaterial).set_shader_parameter("scan_waves", waves)
+			(sc as ShaderMaterial).set_shader_parameter("wave_count", wn)
+			(sc as ShaderMaterial).set_shader_parameter("wave_center", c)
+			(sc as ShaderMaterial).set_shader_parameter("wave_radius", r)
 
 
 # ---------------------------------------------------------------- 屏幕空间描边
@@ -928,6 +979,29 @@ func _make_outline_material() -> ShaderMaterial:
 	return m
 
 
+## 扫描带材质（挂在描边材质的 next_pass 上）：波面经过时一道亮带贴着表面推过去
+func _make_scan_material() -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	var sh := load(SCAN_SHADER) as Shader
+	if sh == null:
+		push_warning("[DetectPulse] 缺少 detect_scan.gdshader，表面扫描带不会显示")
+		return m
+	m.shader = sh
+	m.set_shader_parameter("scan_color", scan_color)
+	m.set_shader_parameter("scan_alpha", scan_alpha)
+	m.set_shader_parameter("band_width", scan_band_width)
+	m.set_shader_parameter("band_gain", scan_band_gain)
+	m.set_shader_parameter("trail_len", scan_trail_len)
+	m.set_shader_parameter("trail_gain", scan_trail_gain)
+	m.set_shader_parameter("climb", scan_climb)
+	m.set_shader_parameter("edge_boost", scan_edge_boost)
+	m.set_shader_parameter("pattern_freq", scan_pattern_freq)
+	m.set_shader_parameter("pattern_gain", scan_pattern_gain)
+	m.set_shader_parameter("wave_center", Vector3.ZERO)
+	m.set_shader_parameter("wave_radius", 0.0)
+	return m
+
+
 ## 地面波纹：一块**平面** + 着色器按径向距离画一圈圈细线。
 ##
 ## 不再用实体圆环（torus）：管子粗（看着像厚带子而不是线）、贴地的圆环在起伏地形上
@@ -952,6 +1026,7 @@ func _make_ripple(max_r: float) -> MeshInstance3D:
 		m.set_shader_parameter("warp", wave_warp)
 		m.set_shader_parameter("lead_width", lead_width)
 		m.set_shader_parameter("lead_gain", lead_gain)
+		m.set_shader_parameter("ring_window", ring_window)
 	var mi := MeshInstance3D.new()
 	mi.name = "Ripple"
 	mi.mesh = plane
