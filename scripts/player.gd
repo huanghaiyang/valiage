@@ -17,6 +17,10 @@ var _action_active := false      # 正在播放非移动动作
 var _action_loop := false        # 当前动作是否循环播放
 var _jump_air := false           # 跳跃滞空（保持跳跃动画直到落地）
 var _cast_timer := 0.0            # 放置施法手势剩余时间（到时恢复移动/Idle）
+## 持续施法中（法术系统驱动，见 start_spell_cast / stop_spell_cast）。
+## 与 _cast_timer 的区别：那是**一次性**放置手势（0.9s 自动恢复）；
+## 这是**按住施法键期间持续**的状态——法术本身是按住持续施放的，动画必须同寿。
+var _spell_casting := false
 var _interact := ""                 # "", "sit", "sleep", "climb"（家具互动）
 var _interact_top_y := 0.0        # 爬梯目标顶 y
 
@@ -120,6 +124,9 @@ const TURN_LEAN_MAX := deg_to_rad(14.0)
 const TURN_LEAN_RECOVER := 6.0
 # 放置物体时施法手势时长（挥舞法杖 loop 动画限时播放）
 const CAST_DURATION := 0.9
+## 施法动画名。必须是 Mage.glb 自带、且已列入 LOOP_CLIPS 的剪辑 ——
+## 不在 LOOP_CLIPS 里的话 loop_mode 仍是 LOOP_NONE，循环播放会定格在末帧。
+const CAST_ANIM := "Spellcasting"
 const CLIMB_SPEED := 1.3          # 爬梯上升速度（米/秒）
 
 ## 动作注册表：[显示名, 动画名, 模式]
@@ -643,7 +650,9 @@ func get_facing_yaw() -> float:
 func set_moving(m: bool) -> void:
 	_moving = m
 	# 玩家实际移动时打断当前测试动作，恢复正常移动动画（动作菜单为测试用途）
-	if m and _action_active:
+	# ★ 持续施法例外：法术在移动途中照样喷（spell_caster 不会因移动停手），
+	#   动画若被走路顶掉，就成了"火在喷、人却在走"的错位。
+	if m and _action_active and not _spell_casting:
 		_action_active = false
 		_action_loop = false
 	if _action_active or _jump_air:
@@ -695,13 +704,53 @@ func get_action_lib() -> Array:
 
 ## 放置物体时的施法手势：挥舞法杖动画限时播放，到时自动恢复移动/Idle
 func play_cast_gesture() -> void:
-	if anim_player == null or not anim_player.has_animation("Spellcasting"):
+	# 持续施法期间不让放置手势抢动画状态：_cast_timer 一旦跑起来，它会到点把
+	# _action_active 清零（见 _physics_process 的"施法手势计时"段），正在循环的
+	# 施法动画会被当场打断 —— 而法术其实还在喷。
+	if _spell_casting:
+		return
+	if anim_player == null or not anim_player.has_animation(CAST_ANIM):
 		return
 	_action_active = true
 	_action_loop = false
 	_jump_air = false
 	_cast_timer = CAST_DURATION
-	anim_player.play("Spellcasting")
+	anim_player.play(CAST_ANIM)
+
+# ---------- 持续施法（法术系统驱动，见 scripts/spells/spell_caster.gd） ----------
+
+## 开始/维持持续施法。法术系统每帧调用，**内部做了幂等**：
+## 只有当前剪辑不是施法动画时才 play() —— 直接每帧 play() 会把剪辑重置回第一帧，
+## 看起来就是"卡在起手式抖动"。幂等还有第二个好处：起跳等打断之后能自动把姿势找回来。
+func start_spell_cast() -> void:
+	if anim_player == null or not anim_player.has_animation(CAST_ANIM):
+		return
+	if not _spell_casting:
+		_spell_casting = true
+		# 清掉放置手势计时，否则它到点会把 _action_active 清零、打断这次的循环施法
+		_cast_timer = 0.0
+	# 滞空期间不抢跳跃动画，落地后下一帧自然会恢复施法姿势
+	if _jump_air:
+		return
+	_action_active = true
+	_action_loop = true
+	if anim_player.current_animation != CAST_ANIM or not anim_player.is_playing():
+		anim_player.play(CAST_ANIM)
+
+## 结束持续施法（松手 / 换法术 / 取消选中）。恢复移动 / Idle。
+func stop_spell_cast() -> void:
+	if not _spell_casting:
+		return
+	_spell_casting = false
+	_action_active = false
+	_action_loop = false
+	# 坐在家具上时不要抢回移动动画，交给家具互动状态机
+	if not _jump_air and _interact == "":
+		_update_move_anim()
+
+## 是否正在持续施法
+func is_spell_casting() -> bool:
+	return _spell_casting
 
 ## ---------- 家具互动（坐/睡/爬梯） ----------
 

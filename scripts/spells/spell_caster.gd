@@ -45,6 +45,9 @@ var _cast_down_prev := false      ## 上一帧的按键状态：用来自己检�
 ## 不能在 _process 里判：点圆盘选法术时圆盘会在同一帧内 close()，等到 _process
 ## 跑起来鼠标下已经没有 Control 了，会被误判成"在世界区按下"从而当帧施法。
 var _cast_press_blocked := false
+## 施法动作是否已经打开（对应 player 侧的施法动画状态）。只在开关切换时通知 player，
+## 避免每帧重复 play() 把施法剪辑重置回第一帧。
+var _cast_anim_on := false
 
 
 func _ready() -> void:
@@ -58,6 +61,8 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	if not enabled:
+		# 控制器被关掉时不能把角色留在施法姿势上
+		_update_cast_anim(false)
 		return
 	_timer += delta
 	if _timer >= auto_find_interval or _player == null or _staff == null:
@@ -84,11 +89,19 @@ func _process(delta: float) -> void:
 	_cast_down_prev = down
 	_holding = down and _cast_armed and not _ui_blocks_cast()
 	_ensure_jet()          # 选中变化 -> 换视觉
+	# 是否真的在施法：选了法术 + 按住 + 没被 UI 挡住 + 视觉节点有效。
+	# ★ 刻意**不看蓝量**：蓝耗尽时视觉自己会停（各视觉的 ran_out_of_mana），
+	#   但动画若跟着蓝量一起抖，会在回蓝阈值上来回闪。手上保持"我在施法"的
+	#   姿势更稳，观感也更像在硬撑。
+	var casting := _holding and not selected.is_empty() \
+			and jet != null and is_instance_valid(jet)
+	# 施法动作：和视觉同寿（按住则持续、松手则收回）
+	_update_cast_anim(casting)
 	if jet != null and is_instance_valid(jet):
-		if selected.is_empty() or not _holding:
-			jet.call("stop_cast")
-		else:
+		if casting:
 			jet.call("start_cast")
+		else:
+			jet.call("stop_cast")
 
 
 # ---------------------------------------------------------------- 输入（动作优先，缺失就退回读键）
@@ -206,6 +219,31 @@ func _ensure_jet() -> void:
 	j.call("setup", _player, _staff)
 	jet = j
 	_jet_spell = selected
+
+
+## 施法动作：驱动玩家角色的施法动画（player.gd::start_spell_cast / stop_spell_cast）。
+##
+## start 每帧都调 —— player 侧是**幂等**的（只在当前剪辑不是施法动画时才 play），
+## 所以这里不必自己判断"是否已开始"；好处是起跳、被别的动作顶掉之后，
+## 下一帧就能自动把施法姿势找回来。
+## stop 只在"由开到关"那一次调，避免多余的动画切换。
+##
+## 用 has_method 而不是直接调 player.start_spell_cast()：player 是**运行时按 group
+## 找到的**，可能被换成别的角色脚本（见 _find_player 的兜底搜索），
+## 硬调会在换角色时直接报错。
+func _update_cast_anim(casting: bool) -> void:
+	var p := _player
+	var ok := p != null and is_instance_valid(p)
+	if casting:
+		_cast_anim_on = true
+		if ok and p.has_method("start_spell_cast"):
+			p.call("start_spell_cast")
+		return
+	if not _cast_anim_on:
+		return
+	_cast_anim_on = false
+	if ok and p.has_method("stop_spell_cast"):
+		p.call("stop_spell_cast")
 
 
 func _on_spell_chosen(id: String) -> void:
