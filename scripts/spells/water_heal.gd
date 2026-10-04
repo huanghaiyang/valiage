@@ -103,6 +103,7 @@ var _drop_ground := 0.0                     ## 玩家局部的地面高度
 var _drop_sweep := 0.0                      ## 0 = 只从头顶出，1 = 全身
 var _drops_on := false
 var _hold_t := 0.0                          ## 成型后已经覆盖了多久（对比 hold_time）
+var _warm_helix: Array = []                 ## 预热好的两条水带网格（避免施法瞬间建网格）
 var _center_world := Vector3.ZERO
 var _feet_world := 0.0
 var _height_world := 1.8
@@ -127,6 +128,29 @@ func _load_sheet() -> void:
 
 func setup(player: Node3D, staff: Node3D) -> void:
 	_player = player
+	# ★ 提前算好角色曲面：本法术是在**选中时**实例化并 setup 的，
+	#   所以这时候就把"遍历顶点算体表"这件重活干完，施法瞬间直接取用 ——
+	#   否则按下施法的那一帧会卡一下（遍历上万顶点 + 建网格）。
+	#   用 call_deferred：不要卡在 setup 调用者的当前帧里。
+	call_deferred("_warmup")
+
+
+## 预热：曲面表 + 两条螺旋水带网格，全部在进入游戏阶段算好
+func _warmup() -> void:
+	if _player == null or not is_instance_valid(_player):
+		return
+	if not _mesh_prev.is_empty():
+		return                                  # 已经热了
+	var meshes: Array[MeshInstance3D] = []
+	_gather_meshes(_player, meshes)
+	if meshes.is_empty():
+		return
+	for mi in meshes:
+		_mesh_prev.append({"mi": mi, "prev": mi.material_overlay})
+	_update_body_box()                          # 顺带 _build_profile()
+	_build_surface_profile()                    # 贵：扫顶点（这一步放到启动期）
+	# 网格也先建好（形状只取决于曲面表 + 身高，与位置无关）
+	_warm_helix = [_make_helix(0.0), _make_helix(0.5)]
 
 
 # ---------------------------------------------------------------- 对外
@@ -163,6 +187,17 @@ func stop_cast() -> void:
 
 func is_casting() -> bool:
 	return _state != ST_OFF
+
+
+## 施法动作要保留到什么时候：一次性法术在**成型期间**要求保持施法动作
+## （= 施法时间 1.70s），保证动作至少能完整走一遍；成型后交还给玩家控制。
+## 施法器会每帧问这个（见 spell_caster.gd 的 _update_cast_anim 调用处）。
+func wants_cast_anim() -> bool:
+	if _state == ST_RISE:
+		return true
+	if _state == ST_VEIL:
+		return _state_t < veil_time
+	return false
 
 
 func ran_out_of_mana() -> bool:
@@ -303,15 +338,22 @@ func _apply_film() -> void:
 	if _player == null or not is_instance_valid(_player):
 		return
 	if _mesh_prev.is_empty():
+		# 冷启动兜底：没预热过就现取网格
 		var meshes: Array[MeshInstance3D] = []
 		_gather_meshes(_player, meshes)
 		for mi in meshes:
 			_mesh_prev.append({"mi": mi, "prev": mi.material_overlay})
-			mi.material_overlay = _mat
+	# ★ 贴膜必须**每次都做**：预热已经填好了 _mesh_prev，若把贴膜放在
+	#   "仅在 _mesh_prev 为空时"的分支里，预热之后水膜就永远贴不上了（实测踩过）。
+	for d in _mesh_prev:
+		var mi2 = d["mi"]
+		if mi2 != null and is_instance_valid(mi2):
+			(mi2 as MeshInstance3D).material_overlay = _mat
 	_update_body_box()
-	# ★ 必须**先算真实曲面表、再建水带**：否则第一帧的水带会用 AABB 兜底（方方正正且偏大），
-	#   要等到下一次定时刷新才贴到真实曲面上（实测踩过：水带一开始是方包络的样子）。
-	_build_surface_profile()
+	# ★ 必须**先有真实曲面表、再建水带**（否则第一帧会用 AABB 兜底：方方正正且偏大）。
+	#   正常情况下表已在 _warmup() 算好；这里只做冷启动兜底。
+	if _surf.is_empty():
+		_build_surface_profile()
 	# 两条**实体**螺旋水带（错开半圈 -> 交错缠绕）
 	if _stream_mat == null:
 		_stream_mat = _make_stream_mat()
@@ -704,7 +746,11 @@ func _rebuild_streams() -> void:
 		if node == null or not is_instance_valid(node):
 			continue
 		node.position = local
-		node.mesh = _make_helix(0.0 if i == 0 else 0.5)   # 两股错开半圈 -> 交错缠绕
+		# 预热过就直接用现成网格（施法瞬间不再建网格 -> 不会卡）
+		if _warm_helix.size() == 2 and _warm_helix[i] != null:
+			node.mesh = _warm_helix[i]
+		else:
+			node.mesh = _make_helix(0.0 if i == 0 else 0.5)   # 冷启动兜底
 
 
 func _free_streams() -> void:

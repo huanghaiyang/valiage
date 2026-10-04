@@ -100,8 +100,14 @@ func _process(delta: float) -> void:
 	#   姿势更稳，观感也更像在硬撑。
 	var casting := _holding and not selected.is_empty() \
 			and jet != null and is_instance_valid(jet)
-	# 施法动作：和视觉同寿（按住则持续、松手则收回）
-	_update_cast_anim(casting)
+	# ★ 施法动作：按住施放时跟着按住；**一次性法术**则由法术自己要求保持 ——
+	#   否则松手那一瞬 stop_spell_cast() 就把动作切断了
+	#   （症状：一次性法术的施法动作没完整执行一次）。
+	var anim_on := casting
+	if not anim_on and jet != null and is_instance_valid(jet) \
+			and jet.has_method("wants_cast_anim"):
+		anim_on = bool(jet.call("wants_cast_anim"))
+	_update_cast_anim(anim_on)
 	if jet != null and is_instance_valid(jet):
 		if casting:
 			jet.call("start_cast")

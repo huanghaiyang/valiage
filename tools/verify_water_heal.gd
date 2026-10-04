@@ -105,12 +105,22 @@ func _process(_d: float) -> bool:
 	var spell: Node3D = (load("res://scripts/spells/water_heal.gd") as GDScript).new()
 	get_root().add_child(spell)
 	spell.call("setup", player, null)
+	spell.call("_warmup")                  # 测试里没有 idle 帧，手动触发预热
+	_ck("进入游戏（选中法术）时曲面已算好，无需等到施法",
+			int(spell.get("_surface_verts")) > 0
+			and (spell.get("_warm_helix") as Array).size() == 2,
+			"采样顶点 %d，预热网格 %d 条" % [int(spell.get("_surface_verts")),
+					(spell.get("_warm_helix") as Array).size()])
+
 
 	# ---- 3. 施法：水膜铺在角色网格上（不是球体）----
 	var mana = get_root().get_node_or_null("Mana")
 	if mana != null:
 		mana.call("refill")
 	spell.call("start_cast")
+	# 施法动作：成型期间必须要求保持动作（一次性法术否则会被松手切断）
+	_ck("成型期间要求保持施法动作（wants_cast_anim）", bool(spell.call("wants_cast_anim")),
+			"state=%d" % int(spell.get("_state")))
 	var mat = spell.get("_mat")
 	_ck("水膜材质已创建", mat != null)
 	_ck("水膜铺在**角色自己的网格**上（不是另造的球体）",
@@ -278,13 +288,17 @@ func _process(_d: float) -> bool:
 		# 只看"刚开始下落"的水珠：重力只改 y，水平偏移还是生成时的值；
 		# 下落越少，用当前高度查到的体表距离就越接近生成时的值。
 		var vel: Vector3 = vels_all[i]
+		# 只看"刚生成、几乎还没落下"的水珠：它的当前高度才≈生成高度
+		# （最早生成的水珠这会儿可能已经掉了一米多，不能拿它判断"从哪开始"）
+		if vel.y > -1.0:
+			if hh > body_h * 0.6:
+				near_top += 1
 		# 排除顶端退化区（帽尖附近曲面半径变化极快，用"当前高度"查表会明显偏）
 		if vel.y > -1.0 and hh < body_h * 0.9:
 			var expect: float = float(spell.call("_surface_dist", hh, off.normalized())) + 0.01
 			if absf(off.length() - expect) > 0.06:
 				bad_gap += 1
-			if hh > body_h * 0.6:
-				near_top += 1
+			pass
 	_ck("水珠生成点在**体表外约 1cm**（用真实曲面表核对）", live > 0 and bad_gap == 0,
 			"存活 %d，偏差超限 %d 个" % [live, bad_gap])
 	_ck("水珠**从头顶开始**往下（起步时出现在上半身）", near_top > 0 and live > 0,
