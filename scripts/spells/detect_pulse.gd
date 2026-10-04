@@ -77,17 +77,19 @@ const SCREEN_OUTLINE_SHADER := "res://assets/shaders/detect_screen_outline.gdsha
 @export var screen_sample_px := 1.0        ## 邻域采样偏移（像素）= 线宽（1.0 ≈ 1px 细线）
 @export var screen_depth_threshold := 2.2  ## 视深度梯度阈值（米）：实测 0.6 会把草也描出来，2.2 只剩大物体
 ## 只描"被探测到的物体"所占屏幕区域 —— 花草没有碰撞体、探测不到，于是不会被描。
-## ★ 目前**默认关闭**：这条"遮罩边界画线"的路我还没调通（见 _ensure_mask_pass 里记的两个坑），
-##   开着会导致**一条轮廓线都画不出来**。关掉时走的是"主画面深度突变"那条路，
-##   也就是用户评价过"效果还可以"的版本（代价：草会被一起描）。
-##   等遮罩调通、并用 measurements 确认过遮罩内容之后再打开。
+## ★★ 目前默认**关闭**：遮罩通道（SubViewport + cull_mask）还没拿到干净的物体图，
+##    开着会导致**一条轮廓线都画不出来**。关掉时走"主画面深度突变"那条路，
+##    也就是评价过"效果还可以"的版本（代价：草会被一起描）。
+##    已确认的测量事实记录在 _ensure_mask_pass() 的注释里，别重复踩。
 @export var mask_by_objects := false
 ## 波纹是否**跟随角色移动**（true = 圆心每帧跟到角色脚下）
 @export var follow_caster := true
 
-## 遮罩用的渲染层（第 20 位）。被探测到的网格临时加上这一层，
-## 遮罩相机只渲染这一层；主相机 cull_mask 全开，所以物体在主画面照常显示。
-const MASK_LAYER := 1 << 19
+## 遮罩用的渲染层。
+## ★★ 用**低位**（第 8 位），不要用 1<<19 那种最高位：实测用 1<<19 时，
+##    网格的 layers 确实置位了、遮罩相机的 cull_mask 也是同一位（AND 非零），
+##    但子视口里**看不到任何物体**（遮罩一片背景色）—— 高位在渲染端疑似不被支持。
+const MASK_LAYER := 1 << 7
 
 # ---- 地面波纹：细线环 + 波前亮带 + 噪声扭曲 ----
 @export var wave_color := Color(0.35, 0.90, 1.0)
@@ -321,8 +323,10 @@ func _detect(radius: float, center: Vector3, max_r: float, pulse: Dictionary) ->
 			continue
 		if not _in_screen_margin(box):
 			continue
-		# 记录世界包围盒：屏幕描边靠它做三维判定，把物体前后方的草排除掉
-		if screen_outline and mask_by_objects:
+		# 记录世界包围盒：屏幕描边靠它把"物体体积之外"的东西（草、地形）排除掉。
+		# ★ 不要挂到 mask_by_objects 上：遮罩通道目前是关的，而 AABB 判定正是
+		#   遮罩关闭时压草的主力。挂错了会导致过滤器完全不生效（实测 box_count = 0）。
+		if screen_outline:
 			_add_box(box)
 		_outline(visual, now, pulse)
 
@@ -360,14 +364,13 @@ func _ensure_mask_pass() -> bool:
 	var size := vp.get_visible_rect().size if vp != null else Vector2(1280.0, 720.0)
 	var sv := SubViewport.new()
 	sv.name = "DetectMask"
-	# ★★ 必须是**纯黑不透明**背景，不能用透明背景。
-	#   踩过两次，方向正好相反：
-	#     · 背景留透明：Godot 里**不透明几何体不写 alpha**，于是整张图 alpha 全 0、
-	#       RGB 也被清零 —— 遮罩全黑，"是否在遮罩内"恒为假，**一条线都画不出来**。
-	#     · environment = null（沿用共享世界的天空）：背景被画成天空 -> 遮罩几乎全覆盖
-	#       -> 草照样被描。
-	#   纯黑不透明则是：背景恰好为 0，物体受光后必然大于 0，判定干净。
-	sv.transparent_bg = false
+	# ★★ 背景必须**透明**，而且**不要给遮罩相机设自定义 Environment**。
+	#   这两条是量出来的，别再"想当然地修"：
+	#     · environment = null + transparent_bg = true   -> 遮罩 RGB 有内容 34% ✅ 物体在遮罩里
+	#     · 给它一个自定义 Environment（BG_CLEAR_COLOR 之类）-> 遮罩最大亮度 0.0 ❌ 什么都没渲染
+	#   透明背景是必须的：这样没物体的地方 RGB 才恰好为 0，和物体像素区分得开。
+	#   （注意不透明几何体不写 alpha，所以判定只能看 RGB，不能看 alpha。）
+	sv.transparent_bg = true
 	sv.size = Vector2i(maxi(1, int(size.x)), maxi(1, int(size.y)))
 	sv.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	sv.disable_3d = false
@@ -376,23 +379,19 @@ func _ensure_mask_pass() -> bool:
 	#   **一条轮廓线都画不出来**。保持正常渲染即可 —— 物体受光后虽有明暗，
 	#   但亮度都远高于着色器里 0.002 的判定阈值。
 	add_child(sv)
-	# ★ 必须共用主场景的 World3D，否则这个子视口里什么都没有
+	# ★★★ 根因就在这两行（量出来的：不这么写时 world_3d 是 null，子视口什么都渲染不出来，
+	#     遮罩最大亮度恒为 0.0 -> 一条轮廓线都没有）。
+	#   Godot 里子视口**不会自动继承**父视口的 3D 世界，必须显式共享；
+	#   而共享的正确姿势是**先 own_world_3d = true、再赋 world_3d**：
+	#   只赋 world_3d 而在 own_world_3d = false 时是不生效的。
+	sv.own_world_3d = true
 	sv.world_3d = world
 	var cam := Camera3D.new()
 	cam.name = "MaskCam"
 	cam.cull_mask = MASK_LAYER          # 只渲染被探测到的物体
-	# ★★ 这里**必须给一个自己的 Environment**，不能留 null。
-	#   整个遮罩子视口共用主场景的 World3D（否则它里面什么都没有），
-	#   而 environment = null 的意思是"沿用共享世界的环境" —— 于是遮罩图里会画出
-	#   **天空背景**，整张图几乎全不是黑的，遮罩等于白做（草照样被描）。
-	#   关键字是 background_color 的 **alpha = 1（不透明）**：不透明几何体不写 alpha，
-	#   背景若透明，整张图会变成全黑。
-	var menv := Environment.new()
-	menv.background_mode = Environment.BG_CLEAR_COLOR
-	menv.background_color = Color(0.0, 0.0, 0.0, 1.0)
-	menv.ambient_light_source = Environment.AMBIENT_SOURCE_DISABLED
-	menv.tonemap_mode = Environment.TONE_MAPPER_LINEAR
-	cam.environment = menv
+	# ★★ 这里**不要设 cam.environment**（保持 null = 沿用共享世界的环境）。
+	#   量过：给遮罩相机一个自定义 Environment 会把整张遮罩渲成全黑（最大亮度 0.0），
+	#   一条轮廓线都画不出来。共享世界环境下，物体有光照、亮度正常，够判定用了。
 	sv.add_child(cam)
 	cam.current = true
 	# ★ 保险：主相机必须能看见遮罩层，否则被探测到的物体会**从主画面消失**

@@ -129,6 +129,43 @@ void fragment() {
 
 	// 物体遮罩与 AABB 过滤都已不再需要：上面直接用遮罩边界画线，
 	// 草与地形压根不在遮罩里，无需再"过滤掉它们"。
+	// （下面这段三维判定在**没有遮罩**时才是主力，见 box_count 的注释。）
+	if (box_count > 0) {
+		float inside = 0.0;
+		for (int s = 0; s < 5; s++) {
+			vec2 uv = SCREEN_UV;
+			if (s == 1) {
+				uv -= vec2(off.x, 0.0);
+			} else if (s == 2) {
+				uv += vec2(off.x, 0.0);
+			} else if (s == 3) {
+				uv -= vec2(0.0, off.y);
+			} else if (s == 4) {
+				uv += vec2(0.0, off.y);
+			}
+			float sd = textureLod(depth_tex, uv, 0.0).r;
+			// 注意：INV_PROJECTION_MATRIX / INV_VIEW_MATRIX 只能内联在 fragment 里用
+			// （Godot 限制：放进用户函数会报 Unknown identifier）
+			vec4 vpos = INV_PROJECTION_MATRIX * vec4(uv * 2.0 - 1.0, sd, 1.0);
+			vec3 wp = (INV_VIEW_MATRIX * vec4(vpos.xyz / vpos.w, 1.0)).xyz;
+			for (int i = 0; i < 16; i++) {
+				if (i >= box_count) {
+					break;
+				}
+				vec3 lo = box_min[i].xyz - vec3(box_pad);
+				vec3 hi = box_max[i].xyz + vec3(box_pad);
+				if (wp.x >= lo.x && wp.x <= hi.x && wp.y >= lo.y && wp.y <= hi.y
+						&& wp.z >= lo.z && wp.z <= hi.z) {
+					inside = 1.0;
+					break;
+				}
+			}
+			if (inside > 0.5) {
+				break;
+			}
+		}
+		a *= inside;
+	}
 
 	ALBEDO = line_color;
 	ALPHA = clamp(a * line_alpha, 0.0, 1.0);

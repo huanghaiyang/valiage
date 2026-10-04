@@ -248,7 +248,7 @@ func _run(caster: Node) -> void:
 	var mcam = jet.get("_mask_cam")
 	var mask_ok: bool = mvp != null and is_instance_valid(mvp) \
 			and mcam != null and is_instance_valid(mcam) \
-			and (mcam as Camera3D).cull_mask == (1 << 19)
+			and (mcam as Camera3D).cull_mask == (1 << 7)
 	_ck("物体遮罩：子视口 + 只渲染遮罩层的相机已就绪", mask_ok)
 	var layered := 0
 	var od2: Dictionary = jet.get("_outlined")
@@ -256,7 +256,7 @@ func _run(caster: Node) -> void:
 		for item in ((od2[k] as Dictionary).get("meshes", []) as Array):
 			var mi = item.get("mi")
 			if mi != null and is_instance_valid(mi) \
-					and ((mi as MeshInstance3D).layers & (1 << 19)) != 0:
+					and ((mi as MeshInstance3D).layers & (1 << 7)) != 0:
 				layered += 1
 	_ck("被探测到的网格已挂上遮罩层（花草没有碰撞体，不会进来）", layered > 0,
 			"挂上 %d 个网格" % layered)
