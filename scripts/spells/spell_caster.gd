@@ -24,6 +24,7 @@ const SPELLS := {
 	"detect_pulse": preload("res://scripts/spells/detect_pulse.gd"),
 	"flame_scorch": preload("res://scripts/spells/flame_scorch.gd"),
 	"gold_body": preload("res://scripts/spells/gold_body.gd"),
+	"water_heal": preload("res://scripts/spells/water_heal.gd"),
 }
 
 
