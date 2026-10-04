@@ -19,9 +19,11 @@ const NOISE_TEX := "res://assets/textures/法术特效/Noise1_tiled.png"
 const SHARD_TEX := "res://assets/textures/法术特效/kenney/particle-pack/star_04.png"
 
 @export var mana_per_sec := 30.0      ## 每秒耗蓝
-@export var gather_time := 0.75       ## 碎片汇聚时长
+## 碎片汇聚时长。0.75 -> 0.55 = **成型速度快约 30%**（原值偏慢）
+@export var gather_time := 0.55
 @export var shatter_time := 0.9       ## 碎裂发散时长
-@export var shard_amount := 48        ## 碎片数量
+## 碎片数量。48 -> 96：汇聚与散开时的光点数量**翻倍**（原来看着太稀）
+@export var shard_amount := 96
 @export var gather_radius := 2.6      ## 碎片生成半径（米）
 @export var aura_gain := 1.12         ## 罩壳相对角色高度的比例
 @export var aura_body := 0.05         ## 罩壳的实心感（接近 0 = 只留边缘发光的一层壳）
@@ -53,6 +55,17 @@ func _ready() -> void:
 
 func setup(player: Node3D, staff: Node3D) -> void:
 	_player = player
+
+
+## ★ 被直接释放（换法术、场景退出）时也必须把薄膜摘掉。
+##   只在"碎裂走完"时还原是不够的：换法术会让这个节点直接被 queue_free，
+##   那时角色身上会**永久留着一层金膜**（实测踩过：上一个测试实例释放后金膜还在）。
+func _exit_tree() -> void:
+	for d in _mesh_prev:
+		var mi = d["mi"]
+		if mi != null and is_instance_valid(mi):
+			(mi as MeshInstance3D).material_overlay = d["prev"]
+	_mesh_prev.clear()
 
 
 # ---------------------------------------------------------------- 对外
@@ -177,6 +190,7 @@ func _build_shards() -> void:
 
 	var quad := QuadMesh.new()
 	quad.size = Vector2(0.20, 0.20)
+	quad.surface_set_material(0, draw)     # 同时设到网格表面：粒子的绘制通道用的是网格材质
 
 	var p := GPUParticles3D.new()
 	p.name = "GoldShards"
@@ -188,6 +202,9 @@ func _build_shards() -> void:
 	p.process_material = _shard_mat
 	p.draw_pass_1 = quad
 	p.material_override = draw
+	# 注意：**没有** emission_shape 可用 —— 用自定义 particles 着色器时，
+	# 生成位置完全由着色器 start() 里的 TRANSFORM[3] 决定（GPUParticles3D 上
+	# 也没有 EMISSION_SHAPE_* 这个枚举，那是 ParticleProcessMaterial 的东西）。
 	p.emitting = false
 	# ★ 碎片在半径 2.6 米处生成，默认可见包围盒太小会被整体剔除
 	p.visibility_aabb = AABB(Vector3(-4, -4, -4), Vector3(8, 8, 8))

@@ -54,7 +54,7 @@ func _process(_d: float) -> bool:
 	get_root().add_child(spell)
 	spell.call("setup", player, null)
 	var shards = spell.get("_shards")
-	_ck("碎片粒子系统已装配", shards != null and int(shards.get("amount")) == 48,
+	_ck("碎片粒子系统已装配", shards != null and int(shards.get("amount")) == 96,
 			"amount=%s" % str(shards.get("amount")) if shards != null else "无")
 	_ck("初始未施法且不发射", not bool(spell.call("is_casting"))
 			and shards != null and not bool(shards.get("emitting")))
