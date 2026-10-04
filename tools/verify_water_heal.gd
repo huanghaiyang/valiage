@@ -61,6 +61,25 @@ func _process(_d: float) -> bool:
 			"键1000 = '%s'" % String(assigned.get(1000, "")))
 	# ★ 结构断言：每个术法的格号必须落在该圈的格子数之内，否则轮盘永远选不到它
 	#   （第一圈只有 6 格，之前把新法术放在键 6 上就踩了这个坑）
+	# ---- 1b. 数值表（data/spell_sheet.json）----
+	var sheet := load("res://scripts/spells/spell_sheet.gd")
+	_ck("数值表可读取且含 water_heal", sheet.has("water_heal"))
+	_ck("流水治疗：单次耗蓝 = 20", absf(sheet.f("water_heal", "mana_cost", -1.0) - 20.0) < 0.001,
+			"%.2f" % sheet.f("water_heal", "mana_cost", -1.0))
+	_ck("流水治疗：施法时间(成型) = 1.70s", absf(sheet.f("water_heal", "cast_time", -1.0) - 1.7) < 0.001,
+			"缠绕 %.2f + 成膜 %.2f" % [sheet.f("water_heal", "cast_climb", 0.0),
+					sheet.f("water_heal", "cast_veil", 0.0)])
+	_ck("流水治疗：薄膜覆盖 = 7.0s", absf(sheet.f("water_heal", "duration", -1.0) - 7.0) < 0.001,
+			"%.2f" % sheet.f("water_heal", "duration", -1.0))
+	_ck("流水治疗：整体效果时间 = 9.40s", absf(sheet.f("water_heal", "total_time", -1.0) - 9.4) < 0.001,
+			"%.2f" % sheet.f("water_heal", "total_time", -1.0))
+	_ck("数值表内部自洽（分段之和 = 合计）", (sheet.call("validate", "water_heal") as Array).is_empty(),
+			"%s" % str(sheet.call("validate", "water_heal")))
+	var all_rows := true
+	for k in spells.keys():
+		if not sheet.has(String(k)):
+			all_rows = false
+	_ck("每个已注册法术都在表里预留了行", all_rows, "已注册 %d 个" % spells.size())
 	var counts: Array = load("res://scripts/spells/spell_wheel.gd").get_script_constant_map()["RING_COUNTS"]
 	var bad := []
 	for k in assigned.keys():
@@ -159,12 +178,18 @@ func _process(_d: float) -> bool:
 	var m0 := float(mana.get("current")) if mana != null else 0.0
 	_pump(spell, 1.0)
 	var m1 := float(mana.get("current")) if mana != null else 0.0
-	_ck("成膜后持续耗蓝", m1 < m0, "%.1f -> %.1f" % [m0, m1])
+	_ck("一次性：成型期间**不再逐秒扣蓝**", absf(m1 - m0) < 0.001, "%.1f -> %.1f" % [m0, m1])
 
 	# ---- 6. 停手 -> 淡出 -> 还原 ----
+	# ★ 一次性法术：松手**不中断**
 	spell.call("stop_cast")
-	_pump(spell, 0.1)
-	_ck("停手后进入淡出", int(spell.get("_state")) == 3, "state=%d" % int(spell.get("_state")))
+	_pump(spell, 0.3)
+	_ck("一次性：松手不中断（仍在成膜/覆盖阶段）", int(spell.get("_state")) == 2,
+			"state=%d" % int(spell.get("_state")))
+	spell.set("hold_time", 0.1)           # 把覆盖时间调小，快速走完
+	_pump(spell, 0.3)
+	_ck("覆盖时间到点 -> 自动进入淡出", int(spell.get("_state")) == 3,
+			"state=%d" % int(spell.get("_state")))
 	# ★ 回归断言：成膜后水带已经淡到 0，进入淡出时**不能跳回亮**（否则会"隐藏后又冒一下"）
 	var tf: float = float(spell.get("_stream_mat").get_shader_parameter("fade"))
 	_ck("淡出时水带不会重新冒出来（从上一次的实际值继续降）", tf < 0.2,
@@ -174,22 +199,22 @@ func _process(_d: float) -> bool:
 	_ck("角色材质已还原（不留永久水膜）", body.material_overlay == null,
 			"overlay=%s" % str(body.material_overlay))
 
-	# ---- 7. 法力不足也走淡出 ----
+	# ---- 7. 一次性：蓝不够就放不出来 ----
 	if mana != null:
 		mana.call("refill")
+		mana.call("set", "current", 5.0)   # 不够 20
+	var before5 := float(mana.get("current")) if mana != null else 0.0
 	spell.call("start_cast")
-	_pump(spell, 1.9)                     # 走完上升+成膜
-	if mana != null:
-		mana.call("set", "current", 0.0)
-	spell.set("mana_per_sec", 999.0)
-	_pump(spell, 0.1)
-	_ck("法力不足时也淡出（不是硬切）",
-			int(spell.get("_state")) == 3 and bool(spell.call("ran_out_of_mana")),
-			"state=%d ran_out=%s" % [int(spell.get("_state")), str(spell.call("ran_out_of_mana"))])
+	_ck("蓝不够时放不出来（不进入效果）", int(spell.get("_state")) == 0,
+			"state=%d" % int(spell.get("_state")))
+	# 注意：Mana 有自然回蓝，所以用"没有被扣掉 20"判断，而不是分毫不差
+	_ck("蓝不够时不扣蓝（没有被扣掉 20）",
+			(float(mana.get("current")) if mana != null else 0.0) > before5 - 5.0,
+			"%.2f -> %.2f" % [before5, (float(mana.get("current")) if mana != null else 0.0)])
+	_ck("ran_out_of_mana 置位", bool(spell.call("ran_out_of_mana")))
 
 		# ---- 8. 只算一次 + 跟随角色（独立新实例，放在最后：会挪动角色）----
 	var s2: Node3D = (load("res://scripts/spells/water_heal.gd") as GDScript).new()
-	s2.set("mana_per_sec", 0.0)          # 上一段把蓝抽干了；否则它会立刻淡出并回收水带
 	get_root().add_child(s2)
 	if mana != null:
 		mana.call("refill")
@@ -211,6 +236,93 @@ func _process(_d: float) -> bool:
 	_ck("角色位移 + 弹跳 + 转身后，水带跟着一起动",
 			before_pos.distance_to(after_pos) > 1.0,
 			"移动了 %.2f 米" % before_pos.distance_to(after_pos))
+	# ---- 9. 水汽 + 水珠（自带一次全新施法；前面几段已经把状态跑乱了）----
+	if mana != null:
+		mana.call("refill")
+	spell.set("climb_time", 0.2)           # 快速进入成膜阶段
+	spell.call("start_cast")
+	var guard := 0
+	while int(spell.get("_state")) == 1 and guard < 300:
+		spell.call("_process", DT)         # 刚跨进成膜那一帧，水珠才生成
+		guard += 1
+	spell.call("_process", DT)             # 再走一帧：成膜分支才会生成水珠、开水汽
+	for f in range(30):                    # 再放 0.5s：开局是错开的，等一部分水珠先出来
+		spell.call("_process", DT)
+	_ck("成膜阶段水汽已开启", spell.get("_mist") != null
+			and bool((spell.get("_mist") as GPUParticles3D).emitting))
+	var dn = spell.get("_drops_node")
+	_ck("水珠已装配（MultiMesh）", dn != null
+			and (dn as MultiMeshInstance3D).multimesh.instance_count == 48,
+			"实例数 %s" % str((dn as MultiMeshInstance3D).multimesh.instance_count if dn != null else "无"))
+	# ★ 水珠生成点必须在**体表外 drop_gap(1cm)**：用曲面表核对
+	var pmat = spell.get("_mat")
+	var bad_gap := 0
+	var near_top := 0
+	var live := 0
+	var vels_all: PackedVector3Array = spell.get("_drop_vel")
+	var feet_y: float = float(pmat.get_shader_parameter("feet_y"))
+	var body_h: float = float(pmat.get_shader_parameter("body_h"))
+	var drops: PackedVector3Array = spell.get("_drop_pos")
+	var alive: PackedByteArray = spell.get("_drop_alive")
+	for i in range(48):
+		if alive[i] == 0:                  # 只统计真正存活的（默认位置是 (0,0,0)，别拿它当存活）
+			continue
+		var lp: Vector3 = drops[i]
+		live += 1
+		var world := player.global_transform * lp
+		var hh := world.y - feet_y
+		var off := Vector3(world.x - player.global_position.x, 0.0,
+				world.z - player.global_position.z)
+		if off.length() < 0.001:
+			continue
+		# 只看"刚开始下落"的水珠：重力只改 y，水平偏移还是生成时的值；
+		# 下落越少，用当前高度查到的体表距离就越接近生成时的值。
+		var vel: Vector3 = vels_all[i]
+		# 排除顶端退化区（帽尖附近曲面半径变化极快，用"当前高度"查表会明显偏）
+		if vel.y > -1.0 and hh < body_h * 0.9:
+			var expect: float = float(spell.call("_surface_dist", hh, off.normalized())) + 0.01
+			if absf(off.length() - expect) > 0.06:
+				bad_gap += 1
+			if hh > body_h * 0.6:
+				near_top += 1
+	_ck("水珠生成点在**体表外约 1cm**（用真实曲面表核对）", live > 0 and bad_gap == 0,
+			"存活 %d，偏差超限 %d 个" % [live, bad_gap])
+	_ck("水珠**从头顶开始**往下（起步时出现在上半身）", near_top > 0 and live > 0,
+			"上半身 %d / 存活 %d（开局高度带从头顶逐步往下铺开）" % [near_top, live])
+	# 盯同一颗存活水珠（重生会换高度，不能拿索引 0 前后比）
+	var vels: PackedVector3Array = spell.get("_drop_vel")
+	var idx := -1
+	for i in range(48):
+		if alive[i] == 1 and vels_all[i].y < 0.0:
+			idx = i
+			break
+	_ck("水珠受重力作用（竖直速度朝下）", idx >= 0 and vels_all[idx].y < 0.0,
+			"vy=%.3f" % (vels_all[idx].y if idx >= 0 else 0.0))
+	var y0: float = drops[idx].y
+	_pump(spell, 0.05)
+	var y1: float = (spell.get("_drop_pos") as PackedVector3Array)[idx].y
+	var still: int = (spell.get("_drop_alive") as PackedByteArray)[idx]
+	_ck("水珠在往地面掉落", still == 0 or y1 < y0,
+			"%.3f -> %.3f（still=%d）" % [y0, y1, still])
+	# ---- 10. 回归：水珠不能"整批整齐下落" ----
+	# 同步的判定：统计每帧"落地"的水珠数。整批同步时会有一帧几十颗一起落地；
+	# 错开之后应当分摊到多帧，单帧最多只落地少数几颗。
+	var peak := 0
+	var landed_total := 0
+	var prev: PackedByteArray = (spell.get("_drop_alive") as PackedByteArray).duplicate()
+	for f in range(120):                   # 2 秒窗口
+		spell.call("_process", DT)
+		var now: PackedByteArray = spell.get("_drop_alive")
+		var n := 0
+		for i in range(48):
+			if prev[i] == 1 and now[i] == 0:
+				n += 1
+		if n > peak:
+			peak = n
+		landed_total += n
+		prev = now.duplicate()
+	_ck("水珠不是整批整齐下落（单帧落地数被错开）", peak <= 12 and landed_total > 0,
+			"2 秒内落地 %d 颗，单帧最多 %d 颗（整批同步时会接近 48）" % [landed_total, peak])
 	print("通过 %d  |  失败 %d" % [_pass, _fail])
 	quit(0 if _fail == 0 else 1)
 	return true

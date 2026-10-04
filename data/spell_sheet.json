@@ -1,0 +1,110 @@
+{
+  "_说明": "法术数值表。改这里就能调，不用动代码。",
+  "_字段": {
+    "name": "显示名",
+    "mana_cost": "单次耗蓝（一次性法术用）",
+    "mana_per_sec": "每秒耗蓝（持续施放的法术用）",
+    "one_shot": "true = 一次性（按一次放完，不用按住）；false = 持久施放",
+    "cast_climb": "施法时间·第 1 段：效果主体成型（流水=缠绕上升）",
+    "cast_veil": "施法时间·第 2 段：成型收尾（流水=汇聚成膜）",
+    "cast_time": "施法时间合计 = cast_climb + cast_veil（法术成型时间）",
+    "duration": "成型后的持续/覆盖时间",
+    "fade_time": "收尾淡出时间",
+    "total_time": "整体效果时间 = cast_time + duration + fade_time"
+  },
+
+  "spells": {
+    "water_heal": {
+      "name": "流水治疗",
+      "one_shot": true,
+      "mana_cost": 20,
+      "mana_per_sec": 0,
+      "cast_climb": 1.15,
+      "cast_veil": 0.55,
+      "cast_time": 1.7,
+      "duration": 7.0,
+      "fade_time": 0.7,
+      "total_time": 9.4,
+      "note": "一次性：单次耗蓝 20。成型 1.70s（水流缠绕 1.15 + 汇聚成膜 0.55）→ 薄膜覆盖身躯 7.0s → 淡出 0.7s，整体 9.40s"
+    },
+
+    "flame_jet": {
+      "name": "火焰喷射",
+      "one_shot": false,
+      "mana_cost": 0,
+      "mana_per_sec": 18,
+      "cast_climb": 0.0,
+      "cast_veil": 0.0,
+      "cast_time": 0.0,
+      "duration": 0.0,
+      "fade_time": 0.0,
+      "total_time": 0.0,
+      "note": "现状未改：持续按住施放，逐秒耗蓝。此表位置预留"
+    },
+    "fire_tornado": {
+      "name": "火焰编织",
+      "one_shot": false,
+      "mana_cost": 0,
+      "mana_per_sec": 0,
+      "cast_climb": 0.0,
+      "cast_veil": 0.0,
+      "cast_time": 0.0,
+      "duration": 0.0,
+      "fade_time": 0.0,
+      "total_time": 0.0,
+      "note": "现状未改。此表位置预留"
+    },
+    "blue_tornado": {
+      "name": "蓝色龙卷风",
+      "one_shot": false,
+      "mana_cost": 0,
+      "mana_per_sec": 0,
+      "cast_climb": 0.0,
+      "cast_veil": 0.0,
+      "cast_time": 0.0,
+      "duration": 0.0,
+      "fade_time": 0.0,
+      "total_time": 0.0,
+      "note": "现状未改。此表位置预留"
+    },
+    "detect_pulse": {
+      "name": "物体探测",
+      "one_shot": false,
+      "mana_cost": 0,
+      "mana_per_sec": 0,
+      "cast_climb": 0.0,
+      "cast_veil": 0.0,
+      "cast_time": 0.0,
+      "duration": 0.0,
+      "fade_time": 0.0,
+      "total_time": 0.0,
+      "note": "现状未改。此表位置预留"
+    },
+    "flame_scorch": {
+      "name": "火焰灼烧",
+      "one_shot": false,
+      "mana_cost": 0,
+      "mana_per_sec": 26,
+      "cast_climb": 0.35,
+      "cast_veil": 0.0,
+      "cast_time": 0.35,
+      "duration": 0.0,
+      "fade_time": 1.2,
+      "total_time": 1.55,
+      "note": "现状未改（ignite 0.35 / afterburn 1.2）。此表位置预留"
+    },
+    "gold_body": {
+      "name": "金色守护",
+      "one_shot": false,
+      "mana_cost": 0,
+      "mana_per_sec": 30,
+      "cast_climb": 0.55,
+      "cast_veil": 0.0,
+      "cast_time": 0.55,
+      "duration": 0.0,
+      "fade_time": 0.9,
+      "total_time": 1.45,
+      "note": "现状未改（gather 0.55 / shatter 0.9）。此表位置预留"
+    }
+  }
+}

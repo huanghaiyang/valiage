@@ -19,11 +19,16 @@ extends Node3D
 const VEIL_SHADER := "res://assets/shaders/water_veil.gdshader"
 const STREAM_SHADER := "res://assets/shaders/water_stream.gdshader"
 const NOISE_TEX := "res://assets/textures/法术特效/T_VFX_Noise_9.PNG"
+const SHEET := preload("res://scripts/spells/spell_sheet.gd")
+const SHEET_ID := "water_heal"
 
-@export var mana_per_sec := 24.0
-@export var climb_time := 1.15        ## 两股流水从脚底爬到头顶的时间
-@export var veil_time := 0.55         ## 汇聚成膜的时间
-@export var fade_time := 0.7          ## 停手后的淡出时间
+# ★ 数值全部来自 data/spell_sheet.json（改表即可，不用改代码）。
+#   下面的默认值只是表缺失时的兜底。
+@export var mana_cost := 20.0         ## 一次性单次耗蓝（表: mana_cost）
+@export var hold_time := 7.0          ## 薄膜覆盖阶段的持续时间（表: duration）
+@export var climb_time := 1.15        ## 水流缠绕上升（表: cast_climb）
+@export var veil_time := 0.55         ## 汇聚成膜（表: cast_veil）
+@export var fade_time := 0.7          ## 淡出（表: fade_time）
 @export var turns := 2.2              ## 缠绕圈数
 @export var texture_scroll := 0.55    ## 流动速度
 
@@ -42,6 +47,24 @@ const NOISE_TEX := "res://assets/textures/法术特效/T_VFX_Noise_9.PNG"
 ##   会让水带突然外弹（就是"闪一下"的来源之一）。算一次既省 CPU 也没有抖动。
 @export var surface_h_bins := 48
 @export var surface_a_bins := 48
+
+# ---- 水汽（成膜阶段身体周围飘散的雾气）----
+@export var mist_amount := 28
+@export var mist_lifetime := 2.2
+
+# ---- 水珠（成膜阶段从头顶往下掉落）----
+@export var drop_count := 48
+## 水珠生成点距**身体表面**的距离（米）。需求：1cm
+@export var drop_gap := 0.01
+@export var drop_initial_speed := 0.4     ## 向下初速
+@export var drop_gravity := 9.8
+## 发射高度带从头顶扩展到全身所用的时间（"从头上开始往下"）
+@export var drop_sweep_time := 1.6
+## ★ 每颗水珠落地后随机等待多久才重生（关键：不给随机延迟的话，整批水珠会
+##   **同一帧生成 -> 同一帧落地 -> 同一帧重生**，掉成一"帘"，就是"几次整齐下落"的来源）
+@export var drop_respawn_spread := 0.55
+## ★ 开局错开时间：第一滴出现后的这段时间内，48 颗陆续开始（避免开场一整帘同时落）
+@export var drop_start_spread := 1.6
 
 # 0 = 关 / 1 = 上升 / 2 = 成膜与维持 / 3 = 淡出
 const ST_OFF := 0
@@ -68,6 +91,18 @@ var _sa := 0
 var _surface_verts := 0
 var _surface_builds := 0                    ## 曲面表构建次数（自检：应为 1）
 var _tube_fade0 := 0.0                      ## 进入淡出时水带的不透明度（淡出从这里往下降）
+
+# 水汽 / 水珠
+var _mist: GPUParticles3D = null
+var _drops_node: MultiMeshInstance3D = null
+var _drop_pos := PackedVector3Array()       ## 玩家局部坐标
+var _drop_vel := PackedVector3Array()
+var _drop_alive := PackedByteArray()
+var _drop_delay := PackedFloat32Array()     ## 每颗的**独立随机**重生延迟（错开时间用）
+var _drop_ground := 0.0                     ## 玩家局部的地面高度
+var _drop_sweep := 0.0                      ## 0 = 只从头顶出，1 = 全身
+var _drops_on := false
+var _hold_t := 0.0                          ## 成型后已经覆盖了多久（对比 hold_time）
 var _center_world := Vector3.ZERO
 var _feet_world := 0.0
 var _height_world := 1.8
@@ -75,6 +110,19 @@ var _height_world := 1.8
 
 func _ready() -> void:
 	set_process(true)
+	_load_sheet()
+
+
+## 从数值表读取本术法的参数（表缺失则保留兜底默认值）
+func _load_sheet() -> void:
+	if not SHEET.has(SHEET_ID):
+		push_warning("[WaterHeal] 数值表里没有 %s" % SHEET_ID)
+		return
+	mana_cost = SHEET.f(SHEET_ID, "mana_cost", mana_cost)
+	climb_time = SHEET.f(SHEET_ID, "cast_climb", climb_time)
+	veil_time = SHEET.f(SHEET_ID, "cast_veil", veil_time)
+	hold_time = SHEET.f(SHEET_ID, "duration", hold_time)
+	fade_time = SHEET.f(SHEET_ID, "fade_time", fade_time)
 
 
 func setup(player: Node3D, staff: Node3D) -> void:
@@ -82,25 +130,39 @@ func setup(player: Node3D, staff: Node3D) -> void:
 
 
 # ---------------------------------------------------------------- 对外
+## 一次性施法：按一次就放完（不用按住）。蓝在**发动瞬间**一次性扣。
 func start_cast() -> void:
+	if _state != ST_OFF and _state != ST_FADE:
+		return
+	_ran_out = false
+	if mana_cost > 0.0:
+		# ★ 必须先自己判断够不够：Mana.try_spend() 在余额不足时**会把蓝扣到 0** 再返回 false
+		#   （实测 5 -> 0），等于"放不出来还把蓝清空"。
+		if float(Mana.get("current")) < mana_cost:
+			_ran_out = true
+			return
+		if not Mana.try_spend(mana_cost):
+			_ran_out = true
+			return
 	casting = true
-	if _state == ST_OFF or _state == ST_FADE:
-		_apply_film()
-		_state = ST_RISE
-		_state_t = 0.0
-		_setp("climb", 0.0)
-		_setp("veil", 0.0)
-		# ★ 体表那套螺旋亮带**全程关掉**：缠绕上升阶段由实体水带负责；
-		#   两套同时画 = 同一股水画两遍，切换时一个淡出一个淡入就会闪。
-		_setp("stream_fade", 0.0)
+	_hold_t = 0.0
+	_apply_film()
+	_state = ST_RISE
+	_state_t = 0.0
+	_setp("climb", 0.0)
+	_setp("veil", 0.0)
+	# ★ 体表那套螺旋亮带**全程关掉**：缠绕上升阶段由实体水带负责；
+	#   两套同时画 = 同一股水画两遍，切换时一个淡出一个淡入就会闪。
+	_setp("stream_fade", 0.0)
 
 
+## 一次性法术：松手**不停**，由自身时长控制（施法时间 + 覆盖时间 + 淡出）
 func stop_cast() -> void:
-	casting = false
+	pass
 
 
 func is_casting() -> bool:
-	return casting
+	return _state != ST_OFF
 
 
 func ran_out_of_mana() -> bool:
@@ -147,16 +209,20 @@ func _process(delta: float) -> void:
 				_stream_mat.set_shader_parameter("climb", 1.0)
 				# 实体水带与体表水膜做**匀速交叉淡出**，避免同时最亮造成闪
 				_stream_mat.set_shader_parameter("fade", 1.0 - k2)
+			# ★ 水膜覆盖阶段：水汽 + 从头顶往下掉落的水珠
+			_start_mist(true)
+			_drops_on = true
+			_update_drops(delta)
+			# 成型完成后开始计算覆盖时间（一次性，不再扣蓝）；到点自动淡出
+			if k2 >= 1.0:
+				_hold_t += delta
+				if _hold_t >= hold_time:
+					_to_fade()
 			if k2 >= 1.0:
 				_setp("veil", 1.0)
 				_setp("stream_fade", 0.0)
-				if Mana.spend_rate(delta, mana_per_sec):
-					_ran_out = false
-				else:
-					_ran_out = true
-					_to_fade()
-				if not casting:
-					_to_fade()
+				# ★ 一次性法术：**没有**逐秒扣蓝，也**不因松手而中断**
+				#   （蓝已在发动瞬间一次性扣完；时长由 表:duration 控制）
 		ST_FADE:
 			var k3 := clampf(_state_t / maxf(fade_time, 0.01), 0.0, 1.0)
 			_setp("veil", 1.0 - k3)
@@ -164,6 +230,9 @@ func _process(delta: float) -> void:
 			if _stream_mat != null:
 				# 从进入淡出时的实际值继续降（成膜后 = 0，所以不会再冒出来）
 				_stream_mat.set_shader_parameter("fade", _tube_fade0 * (1.0 - k3))
+			_start_mist(false)                # 水汽停
+			_drops_on = false                 # 水珠不再重生，让空中的落完
+			_update_drops(delta)
 			if k3 >= 1.0:
 				_cleanup()
 
@@ -197,11 +266,24 @@ func _restore() -> void:
 			(mi as MeshInstance3D).material_overlay = d["prev"]
 	_mesh_prev.clear()
 	_free_streams()          # 实体水带也要一起回收
+	if _mist != null and is_instance_valid(_mist):
+		_mist.queue_free()
+		_mist = null
+	if _drops_node != null and is_instance_valid(_drops_node):
+		_drops_node.queue_free()
+		_drops_node = null
+	_drops_on = false
 
 
 func _setp(param: String, v: float) -> void:
 	if _mat != null:
 		_mat.set_shader_parameter(param, v)
+
+
+## 水汽开关
+func _start_mist(on: bool) -> void:
+	if _mist != null and is_instance_valid(_mist):
+		_mist.emitting = on
 
 
 # ---------------------------------------------------------------- 装配
@@ -244,6 +326,11 @@ func _apply_film() -> void:
 			_player.add_child(node)
 			_streams.append(node)
 		_rebuild_streams()
+	_build_mist()
+	_build_drops()
+	_start_mist(false)
+	_drops_on = false
+	_drop_sweep = 0.0
 
 
 ## 实时算角色的世界包围盒 -> 中心(xz)/脚底/身高，喂给着色器
@@ -625,3 +712,149 @@ func _free_streams() -> void:
 		if n != null and is_instance_valid(n):
 			n.queue_free()
 	_streams.clear()
+
+
+# ---------------------------------------------------------------- 水汽 与 水珠
+## 水汽：贴在身体周围缓慢上升的淡蓝雾气（成膜阶段）
+func _build_mist() -> void:
+	if _mist != null and is_instance_valid(_mist):
+		return
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = maxf(_height_world * 0.5, 0.3)
+	pm.direction = Vector3(0, 1, 0)
+	pm.spread = 40.0
+	pm.initial_velocity_min = 0.06
+	pm.initial_velocity_max = 0.26
+	pm.gravity = Vector3(0, 0.20, 0)          # 水汽缓缓往上飘
+	pm.scale_min = 0.35
+	pm.scale_max = 0.95
+	var grad := Gradient.new()
+	grad.set_color(0, Color(0.70, 0.92, 1.0, 0.0))
+	grad.set_color(1, Color(0.80, 0.95, 1.0, 0.0))
+	grad.add_point(0.22, Color(0.72, 0.93, 1.0, 0.26))
+	grad.add_point(0.70, Color(0.82, 0.96, 1.0, 0.16))
+	var gt := GradientTexture1D.new()
+	gt.gradient = grad
+	pm.color_ramp = gt
+
+	var draw := StandardMaterial3D.new()
+	draw.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	draw.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	draw.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	draw.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	draw.vertex_color_use_as_albedo = true
+	draw.disable_receive_shadows = true
+	var tex := load(NOISE_TEX) as Texture2D
+	if tex != null:
+		draw.albedo_texture = tex
+	draw.albedo_color = Color(0.78, 0.93, 1.0, 0.55)
+	var quad := QuadMesh.new()
+	quad.size = Vector2(1.1, 1.1)
+	quad.surface_set_material(0, draw)
+
+	var p := GPUParticles3D.new()
+	p.name = "WaterMist"
+	p.amount = mist_amount
+	p.lifetime = mist_lifetime
+	p.local_coords = true                     # 跟着角色
+	p.process_material = pm
+	p.draw_pass_1 = quad
+	p.material_override = draw
+	p.visibility_aabb = AABB(Vector3(-3, -3, -3), Vector3(6, 6, 6))
+	p.emitting = false
+	_player.add_child(p)
+	p.position = Vector3(0, _height_world * 0.45, 0)
+	_mist = p
+
+
+## 水珠：MultiMesh（数量少、要精确控制落点，所以用 GDScript 驱动而不是粒子着色器）
+func _build_drops() -> void:
+	if _drops_node != null and is_instance_valid(_drops_node):
+		return
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	mat.albedo_color = Color(0.78, 0.95, 1.0, 0.9)
+	mat.disable_receive_shadows = true
+	var q := QuadMesh.new()
+	q.size = Vector2(0.035, 0.055)
+	q.surface_set_material(0, mat)
+
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.instance_count = drop_count
+	mm.mesh = q
+	mm.visible_instance_count = drop_count
+
+	var node := MultiMeshInstance3D.new()
+	node.name = "WaterDrops"
+	node.multimesh = mm
+	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_player.add_child(node)                   # 挂在角色下 -> 位移/弹跳/转身自动跟随
+	_drops_node = node
+
+	_drop_pos.resize(drop_count)
+	_drop_vel.resize(drop_count)
+	_drop_alive.resize(drop_count)
+	_drop_delay.resize(drop_count)
+	for i in range(drop_count):
+		_drop_alive[i] = 0
+		# ★ 开局就错开：否则 48 颗同一帧出现、掉成一帘（"整齐下落"）
+		_drop_delay[i] = randf() * drop_start_spread
+	_drop_ground = _feet_world - _player.global_position.y
+
+
+## 生成一颗水珠：位置 = 体表外 drop_gap（1cm）；高度按 sweep 从头顶往下铺开
+func _spawn_drop(i: int) -> void:
+	if _player == null or not is_instance_valid(_player):
+		return
+	# ★ "从头上开始往下"：发射高度带的下沿随 drop_sweep 从头顶(1.0)降到脚底(0.0)
+	var lo := 1.0 - clampf(_drop_sweep, 0.0, 1.0)
+	var hh := lerpf(lo, 1.0, randf()) * _height_world
+	var a := randf() * TAU
+	var dir := Vector3(cos(a), 0.0, sin(a))
+	# ★ 体表外 1cm：直接查真实曲面表，再沿方向外推 drop_gap
+	var r := _surface_dist(hh, dir) + drop_gap
+	var world := Vector3(_center_world.x, _feet_world + hh, _center_world.z) + dir * r
+	_drop_pos[i] = _player.global_transform.affine_inverse() * world
+	_drop_vel[i] = Vector3(0.0, -drop_initial_speed, 0.0)
+	_drop_alive[i] = 1
+
+
+func _update_drops(delta: float) -> void:
+	if _drops_node == null or not is_instance_valid(_drops_node):
+		return
+	var mm := _drops_node.multimesh
+	if mm == null:
+		return
+	_drop_sweep = minf(_drop_sweep + delta / maxf(drop_sweep_time, 0.05), 1.0)
+	_drop_ground = _feet_world - _player.global_position.y
+	for i in range(drop_count):
+		if _drop_alive[i] == 0:
+			# 只在成膜阶段持续重生；淡出阶段就让剩在空中的落完。
+			# ★ 必须等**各自的随机延迟**走完才重生 —— 这样水珠是零落滴下，
+			#   而不是整批同一帧一起掉（那是"整齐下落"的根因）。
+			if _drops_on:
+				_drop_delay[i] -= delta
+				if _drop_delay[i] <= 0.0:
+					_spawn_drop(i)
+			if _drop_alive[i] == 0:
+				mm.set_instance_transform(i, Transform3D(Basis(), Vector3(0, -999, 0)))
+				continue
+		var v := _drop_vel[i]
+		v.y -= drop_gravity * delta
+		_drop_vel[i] = v
+		var p := _drop_pos[i] + v * delta
+		_drop_pos[i] = p
+		if p.y <= _drop_ground:
+			_drop_alive[i] = 0                # 落到地面 -> 消失（等随机延迟后重生）
+			_drop_delay[i] = randf() * drop_respawn_spread
+			mm.set_instance_transform(i, Transform3D(Basis(), Vector3(0, -999, 0)))
+			continue
+		# 下落越快，水滴拉得越长
+		var stretch := clampf(1.0 + absf(v.y) * 0.06, 1.0, 2.2)
+		var b := Basis().scaled(Vector3(1.0, stretch, 1.0))
+		mm.set_instance_transform(i, Transform3D(b, p))
