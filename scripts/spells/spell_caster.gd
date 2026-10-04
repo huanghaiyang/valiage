@@ -23,6 +23,7 @@ const SPELLS := {
 	"blue_tornado": preload("res://scripts/spells/blue_tornado.gd"),
 	"detect_pulse": preload("res://scripts/spells/detect_pulse.gd"),
 	"flame_scorch": preload("res://scripts/spells/flame_scorch.gd"),
+	"gold_body": preload("res://scripts/spells/gold_body.gd"),
 }
 
 
