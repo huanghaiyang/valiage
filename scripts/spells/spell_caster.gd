@@ -5,7 +5,8 @@ extends Node
 ## 挂上当前选中的术法视觉，并弹出法术圆盘。
 ##
 ## 操作：
-##   E          -> 唤出 / 收起 法术圆盘
+##   Q          -> 唤出 / 收起 法术圆盘（InputMap 动作 spell_wheel；没有该动作才退回读 E）
+##   E          -> 交给 main.gd 做场景交互（_try_interact），**法术这边不再占用 E**
 ##   左键点圆盘 -> 选中术法 -> 圆盘关闭
 ##   按住左键   -> 持续施放（火焰喷射朝前方喷、火焰编织在身前竖起火柱），魔法值耗尽自动停
 ##
@@ -20,6 +21,7 @@ const SPELLS := {
 	"flame_jet": preload("res://scripts/spells/flame_jet_particles.gd"),
 	"fire_tornado": preload("res://scripts/spells/fire_tornado_particles.gd"),
 	"blue_tornado": preload("res://scripts/spells/blue_tornado.gd"),
+	"detect_pulse": preload("res://scripts/spells/detect_pulse.gd"),
 }
 
 
