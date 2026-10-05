@@ -9,6 +9,8 @@ const MARGIN := 14.0
 ## 小地图视野半径（米）：以玩家为中心，屏幕边到中心的实际距离
 @export var minimap_radius := 36.0
 
+const MapWeatherOverlay := preload("res://scripts/ui/map_weather_overlay.gd")
+
 const ARROW_RATIO := 0.08      # 玩家箭头半径相对地图尺寸比例（缩小）
 
 ## 坐标文本/地标的重绘间隔（秒）。0.066 ≈ 15Hz。
@@ -26,6 +28,7 @@ var cam: Camera3D
 var arrow: ArrowOverlay
 var landmarks: LandmarkOverlay
 var coord_label: Label
+var weather_overlay: Control          ## 小地图右上角：天气图标 + 风向标
 
 var big_root: Control
 var big_view: Control
@@ -34,6 +37,7 @@ var big_cam: Camera3D
 var big_arrow: ArrowOverlay
 var big_landmarks: LandmarkOverlay
 var big_coord: Label
+var big_weather: Control               ## 大地图右上角：天气图标 + 风向标（大号）
 
 func setup(main_node: Node3D) -> void:
 	main = main_node
@@ -113,6 +117,17 @@ func _build_ui() -> void:
 	arrow.offset_right = MARGIN + MAP_SIZE
 	arrow.offset_bottom = -MARGIN
 	add_child(arrow)
+
+	# ---- 天气图标 + 风向标（小地图内右上角） ----
+	weather_overlay = MapWeatherOverlay.new()
+	weather_overlay.name = "MapWeather"
+	weather_overlay.compact = true
+	weather_overlay.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	weather_overlay.offset_right = -MARGIN - 6.0
+	weather_overlay.offset_top = -MAP_SIZE - MARGIN + 6.0
+	weather_overlay.offset_bottom = -MAP_SIZE - MARGIN + 44.0
+	weather_overlay.offset_left = weather_overlay.offset_right - 96.0
+	add_child(weather_overlay)
 
 	# ---- 坐标显示（小地图上方） ----
 	coord_label = Label.new()
@@ -212,6 +227,17 @@ func _build_big_map() -> void:
 	big_arrow.offset_bottom = MAP_BIG_SIZE * 0.5
 	big_root.add_child(big_arrow)
 
+	# ---- 大地图天气图标 + 风向标（右上角，大号） ----
+	big_weather = MapWeatherOverlay.new()
+	big_weather.name = "BigMapWeather"
+	big_weather.compact = false
+	big_weather.set_anchors_preset(Control.PRESET_CENTER)
+	big_weather.offset_right = MAP_BIG_SIZE * 0.5 - 14.0
+	big_weather.offset_left = big_weather.offset_right - 150.0
+	big_weather.offset_top = -MAP_BIG_SIZE * 0.5 + 14.0
+	big_weather.offset_bottom = big_weather.offset_top + 76.0
+	big_root.add_child(big_weather)
+
 	# ---- 大地图坐标（地图上方） ----
 	big_coord = Label.new()
 	big_coord.name = "BigCoords"
@@ -266,6 +292,16 @@ func _process(delta: float) -> void:
 	if landmarks != null:
 		landmarks.set_map_yaw(cam_yaw)
 	coord_label.text = "X %d · Z %d · 海拔 %.1f" % [int(p.x), int(p.z), p.y]
+	# ---- 天气图标 + 风向标（小图跟随地图旋转，大地图正北朝上）----
+	var w := get_node_or_null("/root/Weather")
+	if w != null:
+		var k: int = int(w.get("current"))
+		var dir: Vector2 = w.get("wind_dir") if w.get("wind_dir") is Vector2 else Vector2(1.0, 0.0)
+		var power := float(w.get("wind"))
+		if weather_overlay != null:
+			weather_overlay.update_weather(k, dir, power, cam_yaw)
+		if big_weather != null and big_weather.visible:
+			big_weather.update_weather(k, dir, power, 0.0)
 	if big_root.visible:
 		big_arrow.update_arrow(p.x, p.z, yaw)
 		big_coord.text = "大地图 · X %d · Z %d · 海拔 %.1f" % [int(p.x), int(p.z), p.y]
