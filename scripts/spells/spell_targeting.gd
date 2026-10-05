@@ -1308,7 +1308,12 @@ func _update_screen_pass() -> void:
 	_sp_mat.set_shader_parameter("shape_mode", 0 if sector else 1)
 	_sp_mat.set_shader_parameter("inner_m", sector_inner_m if sector else 0.0)
 	# ★ 高度过滤锚在**角色脚下**（绝不能锚圆心：圆心会被鼠标抬到围栏顶上，实测 3.02m）
-	_sp_mat.set_shader_parameter("ground_y", _player.global_position.y if _player != null else _center.y)
+	# ★ 高度过滤锚点取"角色脚下"与"范围所在地面"里**较低**的那个：
+	#   只锚脚下时，若范围落在陡下坡（低于脚下 1.5m 以上）会把地面切掉（问题二复现）。
+	var gy: float = _center.y
+	if _player != null and is_instance_valid(_player):
+		gy = minf(_player.global_position.y, _center.y)
+	_sp_mat.set_shader_parameter("ground_y", gy)
 	_sp_mat.set_shader_parameter("floor_margin", screen_floor_margin)
 	_sp_mat.set_shader_parameter("fill_strength", screen_fill_strength if sector else screen_fill_strength_circle)
 	_sp_mat.set_shader_parameter("edge_strength", screen_edge_strength)
