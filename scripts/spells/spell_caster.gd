@@ -53,6 +53,11 @@ var _cast_press_blocked := false
 ## 施法动作是否已经打开（对应 player 侧的施法动画状态）。只在开关切换时通知 player，
 ## 避免每帧重复 play() 把施法剪辑重置回第一帧。
 var _cast_anim_on := false
+## 通用施法区域选择器（懒创建；哪个法术声明 has_targeting() 就用它）
+const Targeting := preload("res://scripts/spells/spell_targeting.gd")
+var _targeting: Node3D = null
+## 刚放完法术 -> 等鼠标抬起再让圆圈重新出现，否则会立刻又冒出来
+var _target_wait_release := false
 
 
 func _ready() -> void:
@@ -91,9 +96,14 @@ func _process(delta: float) -> void:
 		_cast_armed = not _cast_press_blocked     # 按下那一瞬是否在 UI 上（_input 里已判定）
 	elif not down:
 		_cast_armed = true                       # 真正抬起 -> 重新上膛
+	var just_pressed := down and not _cast_down_prev
 	_cast_down_prev = down
 	_holding = down and _cast_armed and not _ui_blocks_cast()
 	_ensure_jet()          # 选中变化 -> 换视觉
+	# ★ 通用选点：法术声明 has_targeting() 时先给它显示施法区域圆圈，
+	#   鼠标按下才把 (中心, 半径) 交给法术（一次性），不走"按住施法"那套。
+	if _update_targeting(down, just_pressed):
+		return
 	# 是否真的在施法：选了法术 + 按住 + 没被 UI 挡住 + 视觉节点有效。
 	# ★ 刻意**不看蓝量**：蓝耗尽时视觉自己会停（各视觉的 ran_out_of_mana），
 	#   但动画若跟着蓝量一起抖，会在回蓝阈值上来回闪。手上保持"我在施法"的
@@ -255,6 +265,47 @@ func _update_cast_anim(casting: bool) -> void:
 	_cast_anim_on = false
 	if ok and p.has_method("stop_spell_cast"):
 		p.call("stop_spell_cast")
+
+
+## 通用选点：返回 true 表示这一帧由选点器接管（不走"按住施法"）
+func _update_targeting(down: bool, just_pressed: bool) -> bool:
+	var has_t := jet != null and is_instance_valid(jet) \
+			and jet.has_method("has_targeting") and bool(jet.call("has_targeting"))
+	if not has_t:
+		if _targeting != null and _targeting.is_active():
+			_targeting.end()
+		return false
+	if _targeting == null:
+		_targeting = Targeting.new()
+		_targeting.name = "SpellTargeting"
+		get_tree().root.add_child(_targeting)
+		_targeting.call("setup", _player, null)
+		if jet.has_method("targeting_config"):
+			_targeting.call("configure", jet.call("targeting_config"))
+	# 刚放完法术：等鼠标抬起 **且法术演完** 再允许重新显示圆圈，
+	# 否则圆圈会立刻又冒出来（用户："施放技能后圈圈应该消失"）
+	if _target_wait_release:
+		var still_casting := jet.has_method("is_casting") and bool(jet.call("is_casting"))
+		if not down and not still_casting:
+			_target_wait_release = false
+		_update_cast_anim(jet.has_method("wants_cast_anim")
+				and bool(jet.call("wants_cast_anim")))
+		return true
+	if not _targeting.is_active():
+		_targeting.call("begin")
+	# 选点期间保持施法姿势
+	_update_cast_anim(true)
+	# ★ 必须带 _cast_armed：它表示"按下那一瞬没落在 UI 上"。
+	#   漏了它的话，**点圆盘选法术的那一下点击**会被当成在世界区按下 -> 圈还没落下
+	#   法术就自动放了（用户实测症状）。
+	if just_pressed and _cast_armed and not _ui_blocks_cast():
+		var c: Vector3 = _targeting.call("center")
+		var r: float = _targeting.call("radius")
+		if jet.has_method("cast_at"):
+			jet.call("cast_at", c, r)
+		_targeting.call("end")
+		_target_wait_release = true
+	return true
 
 
 func _on_spell_chosen(id: String) -> void:

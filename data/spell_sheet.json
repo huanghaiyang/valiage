@@ -82,16 +82,27 @@
     },
     "flame_scorch": {
       "name": "火焰灼烧",
-      "one_shot": false,
-      "mana_cost": 0,
-      "mana_per_sec": 26,
+      "one_shot": true,
+      "mana_cost": 30,
+      "mana_per_sec": 0,
       "cast_climb": 0.35,
       "cast_veil": 0.0,
       "cast_time": 0.35,
-      "duration": 0.0,
+      "duration": 8.0,
       "fade_time": 1.2,
-      "total_time": 1.55,
-      "note": "现状未改（ignite 0.35 / afterburn 1.2）。此表位置预留"
+      "total_time": 9.55,
+      "note": "一次性范围法术：单次耗蓝 30。点燃 0.35s -> 灼烧 8.0s（圈内每秒扣血 10）-> 余烬 1.2s（**不再扣血**）。整体 9.55s",
+      "targeting": {
+        "_说明": "通用施法区域选择器参数（其他法术可直接复用这一段）",
+        "enabled": true,
+        "diameter_min": 5.0,
+        "diameter_max": 10.0,
+        "range_min": 1.0,
+        "range_max": 12.0,
+        "wheel_step": 0.4,
+        "texture": "res://assets/textures/法术特效/kenney/particle-pack/circle_02.png",
+        "damage_per_sec": 10.0
+      }
     },
     "gold_body": {
       "name": "金色守护",

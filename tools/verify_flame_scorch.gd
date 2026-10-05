@@ -1,10 +1,17 @@
 extends SceneTree
-## 火焰灼烧 自检：注册 / 特效装配 / 三阶段状态机 / 耗蓝。用完可保留。
+## 火焰灼烧 自检（新版：一次性范围法术）
+## 覆盖：配置表数值 / 选点接口 / 圈内生火 / 单次扣蓝 / 8 秒灼烧扣血 10每秒 / 余烬不扣血
 
 var _done := false
 var _pass := 0
 var _fail := 0
 const DT := 1.0 / 60.0
+
+
+class DummyEnemy extends Node3D:
+	var hp := 10000
+	func take_damage(n: int) -> void:
+		hp -= n
 
 
 func _ck(label: String, ok: bool, extra: String = "") -> void:
@@ -17,8 +24,7 @@ func _ck(label: String, ok: bool, extra: String = "") -> void:
 
 
 func _pump(node: Node, seconds: float) -> void:
-	var n := int(seconds / DT)
-	for i in n:
+	for i in int(seconds / DT):
 		node.call("_process", DT)
 
 
@@ -26,86 +32,156 @@ func _process(_d: float) -> bool:
 	if _done:
 		return true
 	_done = true
-	print("=========== 火焰灼烧 自检 ===========")
+	print("=========== 火焰灼烧 自检（一次性范围）===========")
 
-	# ---- 1. 注册 ----
-	var caster_script: GDScript = load("res://scripts/spells/spell_caster.gd")
-	var wheel_script: GDScript = load("res://scripts/spells/spell_wheel.gd")
-	var spells: Dictionary = caster_script.get_script_constant_map()["SPELLS"]
-	_ck("已在 spell_caster.SPELLS 注册", spells.has("flame_scorch"))
-	var names: Dictionary = wheel_script.get_script_constant_map()["SPELL_NAMES"]
-	_ck("术法名 = 火焰灼烧", String(names.get("flame_scorch", "")) == "火焰灼烧",
-			"实际 '%s'" % String(names.get("flame_scorch", "")))
-	var assigned: Dictionary = wheel_script.get_script_constant_map()["ASSIGNED"]
-	_ck("已占轮盘槽位 4", String(assigned.get(4, "")) == "flame_scorch",
-			"槽位4 = '%s'" % String(assigned.get(4, "")))
+	# ---- 1. 配置表 ----
+	var sheet := load("res://scripts/spells/spell_sheet.gd")
+	_ck("配置表读取正常", sheet.has("flame_scorch"))
+	_ck("改成了**一次性**法术", sheet.b("flame_scorch", "one_shot", false))
+	_ck("单次耗蓝 = 30", absf(sheet.f("flame_scorch", "mana_cost", -1.0) - 30.0) < 0.001,
+			"%.2f" % sheet.f("flame_scorch", "mana_cost", -1.0))
+	_ck("灼烧持续 = 8.0s", absf(sheet.f("flame_scorch", "duration", -1.0) - 8.0) < 0.001,
+			"%.2f" % sheet.f("flame_scorch", "duration", -1.0))
+	_ck("余烬淡出 = 1.2s", absf(sheet.f("flame_scorch", "fade_time", -1.0) - 1.2) < 0.001)
+	var tg: Dictionary = sheet.get_spell("flame_scorch").get("targeting", {})
+	_ck("选点器已启用", bool(tg.get("enabled", false)))
+	_ck("直径范围 5~10 米", absf(float(tg.get("diameter_min", 0)) - 5.0) < 0.001
+			and absf(float(tg.get("diameter_max", 0)) - 10.0) < 0.001,
+			"%.1f ~ %.1f" % [float(tg.get("diameter_min", 0)), float(tg.get("diameter_max", 0))])
+	_ck("施法距离 1~12 米", absf(float(tg.get("range_min", 0)) - 1.0) < 0.001
+			and absf(float(tg.get("range_max", 0)) - 12.0) < 0.001,
+			"%.1f ~ %.1f" % [float(tg.get("range_min", 0)), float(tg.get("range_max", 0))])
+	_ck("每秒扣血 = 10", absf(float(tg.get("damage_per_sec", 0)) - 10.0) < 0.001)
+	_ck("选点纹理指向 circle_02.png", String(tg.get("texture", "")).ends_with("circle_02.png"),
+			String(tg.get("texture", "")))
+	_ck("数值表自洽", (sheet.call("validate", "flame_scorch") as Array).is_empty(),
+			"%s" % str(sheet.call("validate", "flame_scorch")))
 
-	# ---- 2. 装配 ----
-	var spell: Node3D = (load("res://scripts/spells/flame_scorch.gd") as GDScript).new()
-	_ck("法术脚本能实例化", spell != null)
-	if spell == null:
-		quit(1)
-		return true
+	# ---- 2. 法术装配 ----
 	var player := Node3D.new()
-	player.name = "TestPlayer"
 	get_root().add_child(player)
-	spell.name = "FlameScorch"
-	get_root().add_child(spell)          # add_child 触发 _ready
-	var staff := Node3D.new()
-	get_root().add_child(staff)
-	spell.call("setup", player, staff)
+	player.global_position = Vector3(0, 0, 0)
+	var player_body := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(0.5, 1.8, 0.4)
+	player_body.mesh = bm
+	player_body.position = Vector3(0, 0.9, 0)
+	player.add_child(player_body)
 
-	var fire = spell.get("_fire")
-	var meshes: Array = []
-	if fire != null:
-		_gather(fire, meshes)
-	_ck("火焰特效已装配（16 张焰卡）", meshes.size() == 16, "实际 %d" % meshes.size())
-	_ck("默认不可见", fire != null and not (fire as Node3D).visible)
-	_ck("初始未施法", not bool(spell.call("is_casting")))
+	var spell: Node3D = (load("res://scripts/spells/flame_scorch.gd") as GDScript).new()
+	get_root().add_child(spell)
+	spell.call("setup", player, null)
+	_ck("声明了 has_targeting()（施法器会据此挂选点器）", bool(spell.call("has_targeting")))
+	_ck("targeting_config() 能取到表里的选点段",
+			not (spell.call("targeting_config") as Dictionary).is_empty())
 
-	# ---- 3. 状态机：点燃 -> 燃烧 ----
+	# ---- 3. 圈内施法 ----
 	var mana = get_root().get_node_or_null("Mana")
 	if mana != null:
 		mana.call("refill")
-	spell.call("start_cast")
-	_ck("start_cast 后立刻可见", fire != null and (fire as Node3D).visible)
-	_pump(spell, 0.5)
-	_ck("点燃完成 -> 进入燃烧", int(spell.get("_state")) == 2,
-			"state=%d grow=%.2f" % [int(spell.get("_state")), float(fire.get("grow"))])
-	_ck("燃烧阶段火焰接近满尺寸", float(fire.get("grow")) > 0.9,
-			"grow=%.2f" % float(fire.get("grow")))
-	_ck("特效根节点缩放固定为 1（熄灭时不缩放根，避免向中心靠拢）",
-			absf((fire as Node3D).scale.x - 1.0) < 0.001,
-			"root.scale=%.3f" % (fire as Node3D).scale.x)
-	_ck("施法中", bool(spell.call("is_casting")))
-
-	var m0 := float(mana.get("current")) if mana != null else 0.0
-	_pump(spell, 1.0)
+	var before := float(mana.get("current")) if mana != null else 0.0
+	var center := Vector3(6.0, 0.0, 0.0)
+	var radius := 3.0
+	spell.call("cast_at", center, radius)
 	var m1 := float(mana.get("current")) if mana != null else 0.0
-	_ck("燃烧期间持续耗蓝", m1 < m0, "%.1f -> %.1f" % [m0, m1])
+	_ck("单次扣蓝 30（一次性，不逐秒扣）", absf((before - m1) - 30.0) < 1.5,
+			"%.1f -> %.1f" % [before, m1])
+	_ck("进入点燃阶段", int(spell.get("_state")) == 1, "state=%d" % int(spell.get("_state")))
+	var patches: Array = spell.get("_patches")
+	var used := int(spell.get("_used"))
+	_ck("圈内生成了火焰簇", used >= 6 and patches.size() >= used, "簇数 %d" % used)
+	var inside := 0
+	var visible_cnt := 0
+	for i in range(used):
+		var f := patches[i] as Node3D
+		var p := f.global_position
+		if Vector2(p.x - center.x, p.z - center.z).length() <= radius + 0.01:
+			inside += 1
+		if f.visible:
+			visible_cnt += 1
+	_ck("所有火焰簇都落在**圈定范围内**", inside == used, "%d / %d" % [inside, used])
+	# ★ 回归：火焰**自身占地**也不能溢出圈外（用户实测：火生成超出了圈）
+	var over := 0
+	var fp := float(spell.get("patch_footprint")) * (patches[0] as Node3D).scale.x
+	for i in range(used):
+		var p2 := (patches[i] as Node3D).global_position
+		var dist := Vector2(p2.x - center.x, p2.z - center.z).length()
+		if dist + fp > radius + 0.02:
+			over += 1
+	_ck("火焰连自身占地也不溢出圈外", over == 0,
+			"溢出 %d 簇（火半径 %.2f，圈半径 %.2f）" % [over, fp, radius])
+	_ck("火焰簇可见", visible_cnt == used, "%d / %d" % [visible_cnt, used])
+	# ★ 回归：焰卡不能有"上下抖动"（曾经每张卡 ±5cm 随机相位摆动 -> 整片火在抖）
+	var fx := patches[0] as Node3D
+	var items: Array = fx.get("_items")
+	var drift := 0.0
+	if items.size() > 0:
+		for t in range(30):
+			fx.call("_process", DT)
+			for it in items:
+				var n := it["node"] as Node3D
+				drift = maxf(drift, absf(n.position.y - float((it["base_pos"] as Vector3).y)))
+	_ck("焰卡没有上下抖动（位置固定在 base_pos）", items.size() > 0 and drift < 0.0005,
+			"最大偏移 %.5f 米（有旧代码时会到 0.05）" % drift)
+	# ★ 回归：每张卡的**贴图流速**必须不同，否则整片火按同一节奏窜（"过于有节奏感"）
+	var speeds := []
+	for it3 in items:
+		var mm3 := it3["mat"] as ShaderMaterial
+		if mm3 != null:
+			speeds.append(float(mm3.get_shader_parameter("scroll_scale")))
+	var smin := 99.0
+	var smax := -99.0
+	for s in speeds:
+		smin = minf(smin, s)
+		smax = maxf(smax, s)
+	_ck("每张焰卡的贴图流速各不相同（打破整齐节奏）",
+			speeds.size() > 4 and (smax - smin) > 0.25,
+			"%d 张卡，流速 %.2f ~ %.2f（差值 %.2f）" % [speeds.size(), smin, smax, smax - smin])
 
-	# ---- 4. 停手 -> 余烬 -> 熄灭 ----
-	spell.call("stop_cast")
-	_pump(spell, 0.1)
-	_ck("停手后进入余烬（不是立刻消失）", int(spell.get("_state")) == 3,
+	# ---- 4. 灼烧阶段扣血 ----
+	_pump(spell, 0.4)
+	_ck("点燃结束 -> 进入灼烧", int(spell.get("_state")) == 2, "state=%d" % int(spell.get("_state")))
+	var enemy := DummyEnemy.new()
+	enemy.add_to_group("enemies")
+	get_root().add_child(enemy)
+	enemy.global_position = center
+	var hp0: int = enemy.hp
+	_pump(spell, 1.0)
+	var dealt: int = hp0 - enemy.hp
+	_ck("圈内敌人每秒扣血约 10", absf(float(dealt) - 10.0) <= 2.0, "1 秒扣了 %d" % dealt)
+	enemy.global_position = center + Vector3(radius + 3.0, 0.0, 0.0)
+	var hp1: int = enemy.hp
+	_pump(spell, 1.0)
+	_ck("圈外敌人不扣血", enemy.hp == hp1, "%d -> %d" % [hp1, enemy.hp])
+
+	# ---- 5. 8 秒后进入余烬，且**余烬不扣血** ----
+	enemy.global_position = center
+	# 注意：前面扣血测试已经烧了约 2.1 秒，这里只能再推 6.2 秒
+	# （推到 8s 是"进入余烬"，推到 9.2s 之后就熄灭了 —— 别推过头）
+	_pump(spell, 6.2)
+	_ck("灼烧 8 秒后进入余烬阶段", int(spell.get("_state")) == 3,
 			"state=%d" % int(spell.get("_state")))
+	var hp2: int = enemy.hp
 	_pump(spell, 0.6)
-	var mid := float(fire.get("grow"))
-	_pump(spell, 1.2)
-	_ck("余烬期间逐渐缩灭", mid < 0.9 and int(spell.get("_state")) == 0,
-			"中途 grow=%.2f -> state=%d" % [mid, int(spell.get("_state"))])
-	_ck("熄灭后不可见", fire != null and not (fire as Node3D).visible)
+	_ck("★ 余烬（消失）阶段**不扣血**", enemy.hp == hp2, "%d -> %d" % [hp2, enemy.hp])
+	_pump(spell, 1.0)
+	_ck("余烬结束 -> 熄灭", int(spell.get("_state")) == 0, "state=%d" % int(spell.get("_state")))
+	var still_visible := 0
+	for i in range(used):
+		if (patches[i] as Node3D).visible:
+			still_visible += 1
+	_ck("熄灭后火焰全部隐藏", still_visible == 0, "仍可见 %d" % still_visible)
+
+	# ---- 6. 松手不中断（一次性） ----
+	if mana != null:
+		mana.call("refill")
+	spell.call("cast_at", center, 2.5)
+	_pump(spell, 0.5)
+	spell.call("stop_cast")
+	_pump(spell, 0.3)
+	_ck("一次性：松手不中断（仍在灼烧）", int(spell.get("_state")) == 2,
+			"state=%d" % int(spell.get("_state")))
 
 	print("通过 %d  |  失败 %d" % [_pass, _fail])
 	quit(0 if _fail == 0 else 1)
 	return true
-
-
-func _gather(n: Node, out: Array) -> void:
-	for c in n.get_children():
-		if c.name == "CoreGlow":      # 核心辉光不是焰卡
-			continue
-		if c is MeshInstance3D:
-			out.append(c)
-		else:
-			_gather(c, out)

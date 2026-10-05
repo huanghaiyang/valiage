@@ -35,6 +35,11 @@ uniform vec4 col_edge : source_color = vec4(0.36, 0.008, 0.0, 1.0);
 
 /// 火苗向上窜的速度
 uniform float scroll_speed : hint_range(0.0, 4.0) = 1.15;
+/// ★ 每张卡的滚动**倍率**（由 fire_burst 逐卡随机 0.7~1.4）。
+///   只给 phase 不同是不够的：相位只错开"起始位置"，**频率仍完全一致**，
+///   整片火会按同一个节奏一起窜，看起来很机械（用户实测反馈）。
+///   让频率也各不相同，火焰才有"各自燃烧"的杂沓感。
+uniform float scroll_scale : hint_range(0.3, 2.0) = 1.0;
 /// 噪声扭曲幅度（火苗左右扭动）
 uniform float noise_amt : hint_range(0.0, 0.6) = 0.16;
 /// 侵蚀阈值：越大火焰越"瘦"（0.12 = 保留更多火肉，密度更高）
@@ -74,11 +79,19 @@ void vertex() {
 
 void fragment() {
 	// ① 向上滚动（采样器默认 repeat，不需要 fract，避免接缝）
+	//   ★ 符号说明（这里踩过坑）：采样坐标要**减去**时间才叫"往上走"。
+	//     uv.y = v_uv.y - TIME*s  ->  纹理特征出现在 v_uv.y = t + TIME*s，随时间变大。
+	//     而 v_uv.y 正比于高度，所以特征是在**往上升**。
+	//     原先写成 `uv.y += TIME*s`，特征随时间出现在更小的 v_uv.y -> **往下走**，
+	//     观感就是"火焰向下燃烧"（用户实测反馈），而且和下面 ② 里本来是向上走的
+	//     噪声方向相反、互相打架。
 	vec2 uv = v_uv;
-	uv.y += TIME * scroll_speed + phase;
+	uv.y -= TIME * scroll_speed * scroll_scale + phase;
 
-	// ② 噪声扰动：越靠上扭得越厉害
-	float n = texture(noise_tex, vec2(uv.x * 1.7, uv.y * 0.7 - TIME * 0.35)).r;
+	// ② 噪声扰动：越靠上扭得越厉害。噪声的流速也跟着本卡的 scroll_scale 走，
+	//   否则噪声与火纹频率不一致，同一张卡会显得"两层皮"。
+	float n = texture(noise_tex, vec2(uv.x * 1.7,
+			uv.y * 0.7 - TIME * 0.35 * scroll_scale)).r;
 	uv.x += (n - 0.5) * noise_amt * (1.3 - v_uv.y);
 
 	float m = texture(fire_tex, uv).r;

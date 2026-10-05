@@ -181,6 +181,9 @@ func _make_fire_material() -> ShaderMaterial:
 	if nt != null:
 		m.set_shader_parameter("noise_tex", nt)
 	m.set_shader_parameter("brightness", brightness)
+	# ★ 逐卡随机的滚动倍率：否则所有焰卡的贴图流速完全一样，
+	#   整片火会按同一节奏一起窜（"过于有节奏感"）。相位只错开起始，不解决频率。
+	m.set_shader_parameter("scroll_scale", randf_range(0.7, 1.4))
 	return m
 
 
@@ -206,9 +209,12 @@ func _process(delta: float) -> void:
 
 		# 2) 左右摇摆
 		node.rotation.z = sin(_t * 1.9 + phase * 1.4) * sway_gain
-		# 3) 轻微上下浮动
-		var bp: Vector3 = it["base_pos"]
-		node.position.y = bp.y + sin(_t * 1.3 + phase * 0.8) * 0.05
+		# 3) ★ 这里原本还有一段"上下浮动"：
+		#      node.position.y = bp.y + sin(_t * 1.3 + phase * 0.8) * 0.05
+		#    每张卡 ±5cm 上下平移，而且 phase 是**每张卡随机**的 -> 16 张各自不同步地弹，
+		#    看起来是一整片火焰在"抖动"（用户实测反馈："火焰生成时有向上抖动的效果"）。
+		#    火焰的动感应该来自**纵向伸缩(第 1 条) + 左右摇摆(第 2 条)**，
+		#    而不是整体上下平移 —— 所以这里删掉，位置保持 base_pos 不动。
 
 		# 4) 亮度闪烁（每张焰卡频率不同，整体就像火焰在跳动）
 		var mat := it["mat"] as ShaderMaterial
