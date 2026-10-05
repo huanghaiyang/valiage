@@ -1,4 +1,4 @@
-﻿extends Node3D
+extends Node3D
 ## 通用法术施法区域选择器（不绑定任何具体法术）
 ##
 ## 用法（法术侧只需两件事）：
@@ -51,6 +51,12 @@ var wheel_step := 0.4
 ## ---- 扇形模式（火焰推进）----
 ## mode = "sector"：圆心**锁在主角**，中轴跟随鼠标，滚轮改**张角**而不是半径。
 var sector := false
+## ★ 问题三定位用：把选点器的鼠标/圆心/半径打进 Output（默认开，定位完改 false）
+const DEBUG_LOG_PREVIEW := true
+var _dbg_hit_name := "(未命中)"
+var _dbg_hit_pos := Vector3.ZERO
+var _dbg_t := -1.0
+
 ## 诊断：打印每次 configure 生效的模式、以及滚轮改的到底是什么
 @export var debug_targeting := true
 var angle_min := 45.0
@@ -375,6 +381,18 @@ func _process(_delta: float) -> void:
 			# 物体表面叠加：跟着重建一起刷新（球查询比逐顶点打射线便宜得多）
 			if sector:
 				_refresh_surface()
+	if DEBUG_LOG_PREVIEW and _player != null and is_instance_valid(_player):
+		var now_l := Time.get_ticks_msec() * 0.001
+		if now_l - _dbg_t >= 0.25:
+			_dbg_t = now_l
+			var vp2 := get_viewport()
+			var mp := vp2.get_mouse_position() if vp2 != null else Vector2.ZERO
+			var pp := _player.global_position
+			print("[选点] %s 鼠标=(%.0f,%.0f)px 命中=%s@(%.2f,%.2f,%.2f) 圆心=(%.2f,%.2f,%.2f) 半径=%.2f 角色=(%.2f,%.2f,%.2f) 圆心高于角色=%.2fm 张角=%.0f°"
+					% ["圆盘" if not sector else "扇形", mp.x, mp.y, _dbg_hit_name,
+					_dbg_hit_pos.x, _dbg_hit_pos.y, _dbg_hit_pos.z,
+					_center.x, _center.y, _center.z, _radius,
+					pp.x, pp.y, pp.z, _center.y - pp.y, rad_to_deg(half_angle()) * 2.0])
 
 
 ## 扇形：**圆心锁在主角脚下**，中轴指向鼠标（水平方向），半径由张角插值算出
@@ -460,6 +478,10 @@ func _update_center_from_mouse() -> void:
 		if not hit.is_empty():
 			pos = hit["position"]
 			ok = true
+			if DEBUG_LOG_PREVIEW:
+				var col = hit.get("collider")
+				_dbg_hit_name = String((col as Node).name) if col is Node else "(无)"
+				_dbg_hit_pos = hit["position"]
 	if not ok:
 		# 没打到地形：与"主角脚下的水平面"求交
 		if absf(dir.y) < 0.0001:
