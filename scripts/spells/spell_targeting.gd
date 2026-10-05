@@ -1,4 +1,4 @@
-extends Node3D
+﻿extends Node3D
 ## 通用法术施法区域选择器（不绑定任何具体法术）
 ##
 ## 用法（法术侧只需两件事）：
@@ -1208,8 +1208,12 @@ const SCREEN_SHADER := "res://assets/shaders/spell_sector_screen.gdshader"
 ##   另：terrain_only_sampling = true 用来复现"采样只打地形层"的旧 bug（诊断，默认 false）。
 @export var use_screen_pass := true
 ## 世界位置低于"脚下 + 这个值"不画（防止把角色脚下/地下也刷白）
-@export var screen_floor_margin := 2.0   # 允许画到脚下 2m 以下（地面就在脚下高度，正值会全挡掉）
+## 已废弃：不再按高度过滤（保留字段只为兼容旧场景文件）
+@export var screen_floor_margin := 1000.0
+## 扇形填充（推进）：扫到的面都铺一层白
 @export var screen_fill_strength := 0.55
+## ★ 圆环填充（火焰灼烧）：**要的是圈不是实心盘** -> 只留极淡的一层，靠外弧亮带成形
+@export var screen_fill_strength_circle := 0.10
 @export var screen_edge_strength := 2.2
 var _sp_quad: MeshInstance3D = null
 var _sp_mat: ShaderMaterial = null
@@ -1274,6 +1278,6 @@ func _update_screen_pass() -> void:
 	_sp_mat.set_shader_parameter("shape_mode", 0 if sector else 1)
 	_sp_mat.set_shader_parameter("inner_m", sector_inner_m if sector else 0.0)
 	_sp_mat.set_shader_parameter("floor_margin", screen_floor_margin)
-	_sp_mat.set_shader_parameter("fill_strength", screen_fill_strength)
+	_sp_mat.set_shader_parameter("fill_strength", screen_fill_strength if sector else screen_fill_strength_circle)
 	_sp_mat.set_shader_parameter("edge_strength", screen_edge_strength)
 	_sp_quad.visible = true

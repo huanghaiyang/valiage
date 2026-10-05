@@ -58,7 +58,10 @@ void fragment() {
 	float inner_ok = smoothstep(inner_r - 0.006, inner_r + 0.006, r);
 	float outer_ok = 1.0 - smoothstep(0.985, 1.0, r);
 	// 低于地面一点点的不画（否则角色脚下/地下会被刷白）；天空因 r 远超 1 自然被排除
-	float above = step(sector_center.y - floor_margin, wp.y);
+	// ★ 不再做高度过滤：深度重建出来的本来就是"看得见的表面"，不需要过滤。
+	//   之前按"圆心.y - floor_margin"过滤，导致：鼠标打到围栏上（圆心被抬高）时
+	//   地面全被滤掉、只剩高墓碑变白；站在坡上时低处地面也被切掉（用户实测）。
+	float above = 1.0;
 
 	float rim = smoothstep(0.86, 1.0, r) * outer_ok;
 	float a = inside * inner_ok * outer_ok * (fill_strength + rim_strength * rim);
