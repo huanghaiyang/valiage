@@ -269,6 +269,10 @@ func end() -> void:
 	set_process(false)
 	set_process_input(false)
 	_restore_surface()               # ★ 选点结束：物体表面的扇形叠加必须摘干净
+	# ★ 全屏面挂在**相机**下面（不是本节点的子节点），所以 visible = false 关不掉它 ——
+	#   必须在结束/退出时显式隐藏，否则技能放出去之后白色扇形还留在屏幕上（用户报的 bug）。
+	_hide_screen_pass()
+	_hide_decal()
 
 
 func is_active() -> bool:
@@ -349,9 +353,14 @@ func _process(_delta: float) -> void:
 		# ★ 圆盘模式：只让圆盘可见（扇形节点隐藏）。
 		#   扇形是独立材质 -> 不会再出现"圆圈被扇形的角度裁掉"那种污染（实测踩过）。
 		if _disc != null:
-			_disc.visible = true
+			_disc.visible = not use_screen_pass      # 圆盘同样走屏幕空间覆盖
 		if _sector_disc != null:
 			_sector_disc.visible = false
+		_update_screen_pass()                        # ★ 圆环（火焰灼烧）与扇形共用同一套
+		if _decal != null and is_instance_valid(_decal):
+			_decal.visible = false       # 圆盘模式不显示扇形贴花
+		if _sp_quad != null and is_instance_valid(_sp_quad):
+			_sp_quad.visible = false
 		_restore_surface()           # 切回圆盘：把物体表面的扇形叠加摘干净
 		_update_center_from_mouse()
 	if _dirty:
@@ -391,9 +400,15 @@ func _update_sector() -> void:
 	# ★ 扇形参数写到**独立的扇形材质**上（圆盘材质完全不碰 -> 不会被污染）
 	#   每帧都写：滚轮改张角时中心/中轴都没变，写在条件里就不会实时生效（实测）
 	if _sector_disc != null:
-		_sector_disc.visible = true
+		_sector_disc.visible = not (use_decal or use_screen_pass)   # 有贴花/屏幕覆盖时不用贴合网格
 	if _disc != null:
 		_disc.visible = false
+	# ★ 屏幕空间覆盖：逐像素判定 -> "扫到就变白"（不管是什么物体、多大）
+	_update_screen_pass()
+	if not use_screen_pass:
+		_update_decal()
+	if _decal != null and is_instance_valid(_decal) and use_screen_pass:
+		_decal.visible = false
 	if _sector_mat != null:
 		_sector_mat.set_shader_parameter("axis", new_axis)
 		_sector_mat.set_shader_parameter("half_angle", half_angle())
@@ -503,6 +518,8 @@ func _build_sector() -> void:
 ##   · 扇形（火焰推进）：要**铺到物体表面上** —— 更宽松的法线阈值 + 更大的抬升上限 +
 ##     松得多的坡度限幅，让扇面翻到石头/箱子顶上；仍会削掉极端尖刺。
 func _rebuild_mesh() -> void:
+	if use_screen_pass:
+		return          # 屏幕空间覆盖模式下不需要贴合网格（扇形/圆盘都走全屏面）
 	if _disc == null:
 		return
 	# 只在自己这一套模式下才采高分辨率：圆盘模式仍按 RINGS 采（不额外打射线）
@@ -512,7 +529,7 @@ func _rebuild_mesh() -> void:
 	var y0 := _center.y
 	_disc.mesh = _build_area_mesh(_smooth_heights(
 			_extract_rows(raw, y0, ground_normal_min, stride), y0), RINGS)
-	if _sector_disc != null:
+	if _sector_disc != null and not use_decal:
 		# 扇形用**全部**环（stride=1），圆盘只用它的偶数子集（stride）
 		var sec_rows := _smooth_heights(
 				_extract_rows(raw, y0, sector_normal_min, 1, true, prop_cover_m), y0,
@@ -934,7 +951,7 @@ func _update_surface_params() -> void:
 ## ★ 挂/还原全部交给**公共模块** SurfaceOverlay（和【物体探测】共用同一份实现）：
 ##   这里只负责"算出该挂哪些网格 + 参数"。
 func _refresh_surface() -> void:
-	if not surface_scan or not sector:
+	if not surface_scan or not sector or use_decal or use_screen_pass:
 		return
 	# 重建可能每帧都在调 -> 这里自己限流（球查询 + 包围盒判定比打射线便宜，但没必要每帧）
 	var now_s := Time.get_ticks_msec() * 0.001
@@ -1074,3 +1091,178 @@ func _restore_surface() -> void:
 
 func _exit_tree() -> void:
 	_restore_surface()
+	_hide_screen_pass()
+	_hide_decal()
+	# 相机下的全屏面是本节点创建的，退出时一并回收，别留在相机上
+	if _sp_quad != null and is_instance_valid(_sp_quad):
+		_sp_quad.queue_free()
+		_sp_quad = null
+
+# ================================================================ 投影贴花（Decal）路线
+## ★ Godot 4 的 Decal 节点：盒体沿本地 -Y 投影，**盒内的所有表面**（地形 / 墓碑 / 立面 /
+##   碎块拼的底座）都会按世界坐标取到同一张贴图 -> 天然贴合、无需逐物体挂载、
+##   也没有高度场的弦切割/裙边/台阶缝（这些正是前面十几轮反复的根源）。
+##   形状做成一张**运行时生成**的扇形贴图（角度变化时才重画）。
+@export var use_decal := true
+## 贴图里扇形的填充/边线透明度（贴花最终亮度还受 albedo_mix / emission 影响）
+@export var decal_fill_alpha := 0.35
+@export var decal_edge_alpha := 0.95
+@export var decal_emission := 0.6
+## 贴花盒的高度与中心抬升（盒要罩住地面与物体，向下投影）
+@export var decal_height_m := 3.0
+@export var decal_lift_m := 1.2
+var _decal: Decal = null
+var _decal_tex: ImageTexture = null
+var _decal_half := -1.0
+var _decal_inner := -1.0
+
+
+func _ensure_decal() -> void:
+	if _decal != null and is_instance_valid(_decal):
+		return
+	_decal = Decal.new()
+	_decal.name = "SectorDecal"
+	add_child(_decal)
+	_decal.cull_mask = 0xFFFFFFFF
+	_decal.albedo_mix = 0.7
+	_decal.upper_fade = 0.55      # 上部淡出：草尖 / 高物体顶部自然过渡，减少白雾
+	_decal.lower_fade = 0.25
+	_decal.distance_fade_enabled = false
+	_decal.emission_energy = decal_emission
+	_decal.visible = false
+
+
+## 扇形贴图：纹理 +U 对齐本地 +X（= 扇形轴），V 对齐本地 +Z；半径按 r<=1 归一化。
+## 只有**半角/内圈**变化时才需要重画（转滚轮时），每帧只写 position/rotation/size。
+func _make_sector_texture(half: float, inner: float) -> ImageTexture:
+	var n := 384
+	# ★ Godot 4.4+ 已废弃 Image.create()，用 create_empty()（旧版回退）。
+	#   这一步失败会导致 texture_albedo = null -> Decal 退化成"用 modulate 铺满整个盒体"，
+	#   表现就是一整块方块白（实测踩过）。
+	var img: Image = null
+	if ClassDB.class_has_method("Image", "create_empty", true):
+		img = Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
+	else:
+		img = Image.create(n, n, false, Image.FORMAT_RGBA8)
+	if img == null:
+		push_warning("[选点器] 扇形贴图创建失败（Image 为空），贴花不显示")
+		return null
+	for y in range(n):
+		var v := (float(y) + 0.5) / float(n) * 2.0 - 1.0
+		for x in range(n):
+			var u := (float(x) + 0.5) / float(n) * 2.0 - 1.0
+			var rr := sqrt(u * u + v * v)
+			var a := 0.0
+			if rr <= 1.0:
+				var ang := absf(atan2(v, u))
+				if ang <= half and rr >= inner:
+					a = decal_fill_alpha
+					var e := exp(-pow((ang - half) / 0.018, 2.0))
+					var in_rim := 1.0 - smoothstep(0.86, 1.0, rr)
+					a = maxf(a, e * decal_edge_alpha * in_rim)
+					a = maxf(a, (1.0 - in_rim) * decal_edge_alpha * 0.8)
+			img.set_pixel(x, y, Color(1.0, 1.0, 1.0, clampf(a, 0.0, 1.0)))
+	return ImageTexture.create_from_image(img)
+
+
+func _update_decal() -> void:
+	if not use_decal or not sector:
+		if _decal != null and is_instance_valid(_decal):
+			_decal.visible = false
+		return
+	_ensure_decal()
+	var half := half_angle()
+	var inner := clampf(sector_inner_m / maxf(_radius, 0.01), 0.0, 0.9)
+	if absf(half - _decal_half) > 0.001 or absf(inner - _decal_inner) > 0.001:
+		_decal_half = half
+		_decal_inner = inner
+		_decal_tex = _make_sector_texture(half, inner)
+		if _decal_tex == null:
+			_decal.visible = false       # ★ 没有贴图就绝不上屏：否则会变成一整块方块白
+			return
+		_decal.texture_albedo = _decal_tex
+		_decal.texture_emission = _decal_tex
+	_decal.emission_energy = decal_emission
+	_decal.size = Vector3(_radius * 2.0, decal_height_m, _radius * 2.0)
+	_decal.position = _center + Vector3.UP * decal_lift_m
+	_decal.rotation.y = -_axis      # 贴图 +U 对齐扇形轴（角度按 atan2(z, x) 计）
+	_decal.visible = true
+
+# ================================================================ 屏幕空间覆盖（扇形"扫到就变白"）
+## ★ 用户要求：扇形扫到的地方就变白，**不管它是什么物体、不管多大**，
+##   可以是整个物体也可以只是一部分 —— 这句话本身就要求**逐像素判定**，
+##   而不是"给物体挂材质"（Decal/overlay 都是 opt-in，天然做不到）。
+##   做法：相机前一个全屏面 -> 片元用深度纹理重建世界坐标 -> 落在扇形内就上白。
+##   探测波已有同族实现（遮罩子视口 + 相机下全屏面），这里沿用同一套结构。
+const SCREEN_SHADER := "res://assets/shaders/spell_sector_screen.gdshader"
+@export var use_screen_pass := true
+## 世界位置低于"脚下 + 这个值"不画（防止把角色脚下/地下也刷白）
+@export var screen_floor_margin := 2.0   # 允许画到脚下 2m 以下（地面就在脚下高度，正值会全挡掉）
+@export var screen_fill_strength := 0.55
+@export var screen_edge_strength := 2.2
+var _sp_quad: MeshInstance3D = null
+var _sp_mat: ShaderMaterial = null
+
+
+func _ensure_screen_pass() -> bool:
+	if _sp_quad != null and is_instance_valid(_sp_quad):
+		return true
+	var vp := get_viewport()
+	var cam := vp.get_camera_3d() if vp != null else null
+	if cam == null:
+		return false
+	var sh := load(SCREEN_SHADER) as Shader
+	if sh == null:
+		push_warning("[选点器] 缺少 spell_sector_screen.gdshader，屏幕空间扇形不可用")
+		return false
+	_sp_mat = ShaderMaterial.new()
+	_sp_mat.shader = sh
+	# ★ 排在透明队列最后：否则草/粒子等后画的东西会盖在白色之上，
+	#   出现"白色区域里还夹着没变白的草"（用户实测图二）。
+	_sp_mat.render_priority = 127
+	_sp_quad = MeshInstance3D.new()
+	_sp_quad.name = "SectorScreenPass"
+	var q := QuadMesh.new()
+	q.size = Vector2(4.0, 4.0)          # 相机前 1m 处足够覆盖视野（同探测波的做法）
+	_sp_quad.mesh = q
+	_sp_quad.material_override = _sp_mat
+	_sp_quad.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_sp_quad.extra_cull_margin = 16384.0
+	_sp_quad.position = Vector3(0.0, 0.0, -1.0)
+	cam.add_child(_sp_quad)
+	_sp_quad.visible = false
+	return true
+
+
+## 隐藏屏幕空间全屏面（技能放出 / 切回圆盘 / 节点退出时都必须调）
+func _hide_screen_pass() -> void:
+	if _sp_quad != null and is_instance_valid(_sp_quad):
+		_sp_quad.visible = false
+
+
+func _hide_decal() -> void:
+	if _decal != null and is_instance_valid(_decal):
+		_decal.visible = false
+
+
+func _update_screen_pass() -> void:
+	if not use_screen_pass:
+		if _sp_quad != null and is_instance_valid(_sp_quad):
+			_sp_quad.visible = false
+		return
+	if not _ensure_screen_pass():
+		return
+	var vp := get_viewport()
+	var cam := vp.get_camera_3d() if vp != null else null
+	if cam == null or _sp_mat == null:
+		return
+	_sp_mat.set_shader_parameter("sector_center", _center)
+	_sp_mat.set_shader_parameter("axis", _axis)
+	_sp_mat.set_shader_parameter("half_angle", half_angle())
+	_sp_mat.set_shader_parameter("radius", _radius)
+	_sp_mat.set_shader_parameter("shape_mode", 0 if sector else 1)
+	_sp_mat.set_shader_parameter("inner_m", sector_inner_m if sector else 0.0)
+	_sp_mat.set_shader_parameter("floor_margin", screen_floor_margin)
+	_sp_mat.set_shader_parameter("fill_strength", screen_fill_strength)
+	_sp_mat.set_shader_parameter("edge_strength", screen_edge_strength)
+	_sp_quad.visible = true
