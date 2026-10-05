@@ -54,14 +54,18 @@ var sector := false
 ## ★ 问题三定位用：把选点器的鼠标/圆心/半径打进 Output（默认开，定位完改 false）
 const DEBUG_LOG_PREVIEW := true
 var _dbg_hit_name := "(未命中)"
+var _dbg_decision := "(未判定)"
 var _dbg_hit_pos := Vector3.ZERO
 var _dbg_t := -1.0
 
 ## 诊断：打印每次 configure 生效的模式、以及滚轮改的到底是什么
-## 已废弃（保留字段只为兼容旧场景文件）：曾经用"高度差"判断障碍并越过它，
-## 那个思路是错的 —— 透过围栏可能打到地面、也可能打到后面的另一个物体，
-## 用高度分不清。现在一律以鼠标射线命中点为圆心。
+## 已废弃：曾用"命中点比地形高多少"来区分地面/物体 —— 高度判定不妥，
+## 现改为按**碰撞层**判定（地形层 = 地面）。保留字段仅为兼容旧场景文件。
 @export var aim_ignore_m := 0.4
+
+## ★ 方案 C：选点射线**忽略的层**（默认排除 layer 4 —— 导入模型的碰撞盒常比可见网格
+##   大一圈，打在它上面会得到"空气命中"、导致误判）。bit = 层号 - 1，故 layer 4 = 1<<3。
+@export var ray_ignore_layer_mask := 1 << 3
 
 @export var debug_targeting := true
 var angle_min := 45.0
@@ -279,6 +283,8 @@ func end() -> void:
 	visible = false
 	set_process(false)
 	set_process_input(false)
+	if DEBUG_LOG_PREVIEW:
+		log_preview_snapshot("施放/结束")
 	_restore_surface()               # ★ 选点结束：物体表面的扇形叠加必须摘干净
 	# ★ 全屏面挂在**相机**下面（不是本节点的子节点），所以 visible = false 关不掉它 ——
 	#   必须在结束/退出时显式隐藏，否则技能放出去之后白色扇形还留在屏幕上（用户报的 bug）。
@@ -386,20 +392,6 @@ func _process(_delta: float) -> void:
 			# 物体表面叠加：跟着重建一起刷新（球查询比逐顶点打射线便宜得多）
 			if sector:
 				_refresh_surface()
-	if DEBUG_LOG_PREVIEW and _player != null and is_instance_valid(_player):
-		var now_l := Time.get_ticks_msec() * 0.001
-		if now_l - _dbg_t >= 0.25:
-			_dbg_t = now_l
-			var vp2 := get_viewport()
-			var mp := vp2.get_mouse_position() if vp2 != null else Vector2.ZERO
-			var pp := _player.global_position
-			print("[选点] %s 鼠标=(%.0f,%.0f)px 命中=%s@(%.2f,%.2f,%.2f) 圆心=(%.2f,%.2f,%.2f) 半径=%.2f 角色=(%.2f,%.2f,%.2f) 圆心高于角色=%.2fm 张角=%.0f°"
-					% ["圆盘" if not sector else "扇形", mp.x, mp.y, _dbg_hit_name,
-					_dbg_hit_pos.x, _dbg_hit_pos.y, _dbg_hit_pos.z,
-					_center.x, _center.y, _center.z, _radius,
-					pp.x, pp.y, pp.z, _center.y - pp.y, rad_to_deg(half_angle()) * 2.0])
-
-
 ## 扇形：**圆心锁在主角脚下**，中轴指向鼠标（水平方向），半径由张角插值算出
 func _update_sector() -> void:
 	if _player == null or not is_instance_valid(_player):
@@ -477,7 +469,8 @@ func _update_center_from_mouse() -> void:
 	if world != null:
 		var far := from + dir * 400.0
 		var q := PhysicsRayQueryParameters3D.create(from, far)
-		q.collision_mask = 0xFFFFFFFF
+		# ★ 方案 C：排除"看不见的碰撞盒"所在层（layer 4 = bit3），射线才落在真实物体/地形上
+		q.collision_mask = 0xFFFFFFFF & ~ray_ignore_layer_mask
 		q.exclude = [_player.get_rid()] if _player is CollisionObject3D else []
 		var hit := world.direct_space_state.intersect_ray(q)
 		if not hit.is_empty():
@@ -490,28 +483,53 @@ func _update_center_from_mouse() -> void:
 			#   之前的"高度判定 + 周围射线投票"是错的思路 —— 透过围栏可能打到地面，
 			#   也可能打到围栏后面的另一个物体；用高度根本分不清（用户指出）。
 			#   所以这里只用命中点本身（XZ），y 再落到该处地面（仅为了日志与调试可读）。
-			# ★★ 用户建议的做法（更直观，也是"地面选点"的标准做法）：
-			#   相机->鼠标 只用来定 **XZ**；再从该 XZ **垂直向下**打一条射线，
-			#   命中"鼠标下方的第一层表面"（地面/矮台）作为圆心。
-			#   于是鼠标指着围栏、墓碑上半部时，圈自然落在它下方的地面上，
-			#   完全不需要"猜是不是障碍"（那套高度启发式已删）。
-			var down_from := Vector3(pos.x, pos.y + 25.0, pos.z)
-			var down_to := Vector3(pos.x, pos.y - 60.0, pos.z)
-			var qd := PhysicsRayQueryParameters3D.create(down_from, down_to)
-			qd.collision_mask = 0xFFFFFFFF
-			qd.exclude = [_player.get_rid()] if _player is CollisionObject3D else []
-			var hd := world.direct_space_state.intersect_ray(qd)
-			if not hd.is_empty():
-				pos = hd["position"]          # 鼠标下方的表面（优先于"地形高度"）
-			else:
-				var gh3 := _terrain_visual_height(pos.x, pos.z)
-				if not is_nan(gh3):
-					pos.y = gh3
-				elif _player != null and is_instance_valid(_player):
-					pos.y = _player.global_position.y
+			# ★★ 判定"鼠标点上是什么"——**语义判定**，不靠屏幕偏移、不靠高度：
+			#   · 命中**地形层**（layer 2）            -> 地面
+			#   · 命中体被**显式标记**为地面（组 ground / 名字含 ground、floor、路面、
+			#     石板、道路、台阶）                  -> 地面（贴地道具这样标进来即可）
+			#   · 其它                                  -> 物体 -> 垂直下落到其下方地面
+			#   为什么不做"多打几根偏移射线投票"：屏幕像素偏移在世界里的大小随距离/俯角
+			#   剧变（近处几像素=几厘米、远处=几米），不是可控的采样半径（用户指出）。
+			# ★ 方案 C（用户定）：**射线直接排除 layer 4**（导入模型那些"看不见的
+			#   碰撞盒"所在的层）——它们比可见网格大一圈，是"打到空气/误判"的根源。
+			#   排除后射线直接落在真实障碍或地形上，判定简单可靠、也不再卡。
+			#   判定规则：地形层 / ground 组 -> 地面（指哪画哪）；其它 -> 物体（垂直落地）。
+			var tl_hit := _terrain_layer()
+			var hit_col = hit.get("collider")
+			var on_ground := true
+			if hit_col is CollisionObject3D:
+				on_ground = tl_hit != 0 \
+						and (((hit_col as CollisionObject3D).collision_layer & tl_hit) != 0)
+			if not on_ground and hit_col is Node:
+				on_ground = _is_ground_like(hit_col as Node)
+			_dbg_decision = "物体 -> 垂直落地" if not on_ground else "地面 -> 指哪画哪"
+			var gh3 := _terrain_visual_height(pos.x, pos.z)
+			if not on_ground:
+				# 物体：垂直向下（起点从命中点稍微下移，跳过物体自身的顶面/侧面）
+				var qd := PhysicsRayQueryParameters3D.create(
+						Vector3(pos.x, pos.y - 0.3, pos.z), Vector3(pos.x, gh3 - 40.0, pos.z))
+				# ★ 只打**地形层**：否则会先撞到下面的另一个物体（或看不见的碰撞盒），
+				#   圆心就落到不知道什么东西上（用户指出：这样的结果不可靠）。
+				qd.collision_mask = tl_hit if tl_hit != 0 else 0xFFFFFFFF
+				qd.exclude = [_player.get_rid()] if _player is CollisionObject3D else []
+				var hd := world.direct_space_state.intersect_ray(qd)
+				if not hd.is_empty():
+					pos = hd["position"]
+				else:
+					pos = Vector3(pos.x, gh3, pos.z)
+			elif not is_nan(gh3):
+				pos.y = gh3                        # 地面：XZ 不动，只把 y 归到地面
 			if DEBUG_LOG_PREVIEW:
+				# ★ 把"鼠标点上到底是什么"记全：节点名 / 类名 / 碰撞层 / 是否在 ground 组 / 路径
 				var col = hit.get("collider")
-				_dbg_hit_name = String((col as Node).name) if col is Node else "(无)"
+				if col is Node:
+					var cn := col as Node
+					var clay := (cn as CollisionObject3D).collision_layer if cn is CollisionObject3D else 0
+					_dbg_hit_name = "%s 「%s」layer=%d 组=%s ｜ %s" % [cn.name, cn.get_class(), clay,
+							"ground" if cn.is_in_group(GROUND_GROUP) else "-",
+							String(cn.get_path()).substr(0, 90)]
+				else:
+					_dbg_hit_name = "(无节点) " + str(col)
 				_dbg_hit_pos = hit["position"]
 	if not ok:
 		# 没打到地形：与"主角脚下的水平面"求交
@@ -1341,3 +1359,43 @@ func _update_screen_pass() -> void:
 	_sp_mat.set_shader_parameter("fill_strength", screen_fill_strength if sector else screen_fill_strength_circle)
 	_sp_mat.set_shader_parameter("edge_strength", screen_edge_strength)
 	_sp_quad.visible = true
+
+
+## ★ "看着/标着是地面"的判定：地形层之外，还承认**显式标记**过的贴地道具。
+##   标记方式任选其一（比任何高度/像素启发式都可靠，且由场景作者决定）：
+##     · 把碰撞体或其父节点加入组 "ground"
+##     · 名字里含下列关键词之一
+const GROUND_GROUP := "ground"
+const GROUND_NAME_HINTS := ["ground", "floor", "road", "path", "路面", "石板", "道路", "台阶", "地板"]
+
+
+func _is_ground_like(n: Node) -> bool:
+	var cur: Node = n
+	var depth := 0
+	while cur != null and depth < 4:
+		if cur.is_in_group(GROUND_GROUP):
+			return true
+		var nm := String(cur.name).to_lower()
+		for h in GROUND_NAME_HINTS:
+			if nm.contains(h):
+				return true
+		cur = cur.get_parent()
+		depth += 1
+	return false
+
+
+## ★ 打一次"鼠标点上是什么 + 圈落在哪"的快照。
+##   只在**技能施放/结束选点**时调用（用户要求：不要每帧刷屏）。
+func log_preview_snapshot(tag := "施放") -> void:
+	if _player == null or not is_instance_valid(_player):
+		return
+	var pp := _player.global_position
+	var vp := get_viewport()
+	var mp := vp.get_mouse_position() if vp != null else Vector2.ZERO
+	print("[选点·%s] %s 鼠标=(%.0f,%.0f)px 地形层=%d 判定=%s"
+			% [tag, "圆盘" if not sector else "扇形", mp.x, mp.y, _terrain_layer(), _dbg_decision])
+	print("        命中=%s @(%.2f,%.2f,%.2f)"
+			% [_dbg_hit_name, _dbg_hit_pos.x, _dbg_hit_pos.y, _dbg_hit_pos.z])
+	print("        圆心=(%.2f,%.2f,%.2f) 半径=%.2f 角色=(%.2f,%.2f,%.2f) 圆心高于角色=%.2fm 张角=%.0f°"
+			% [_center.x, _center.y, _center.z, _radius,
+			pp.x, pp.y, pp.z, _center.y - pp.y, rad_to_deg(half_angle()) * 2.0])
