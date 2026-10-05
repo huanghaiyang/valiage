@@ -104,6 +104,35 @@
         "damage_per_sec": 10.0
       }
     },
+    "flame_advance": {
+      "name": "火焰推进",
+      "one_shot": true,
+      "mana_cost": 30,
+      "mana_per_sec": 0,
+      "cast_climb": 0.35,
+      "cast_veil": 0.0,
+      "cast_time": 0.35,
+      "duration": 8.0,
+      "fade_time": 1.2,
+      "total_time": 9.55,
+      "note": "一次性扇形法术：单次耗蓝 30。扇形以**角色为中心**、鼠标为中轴；滚轮改张角 45°~80°（45° 半径 10m / 80° 半径 6m，线性插值）。施法后火焰从角色向扇形最远处**波浪推进**（45° 用 1.0s、80° 用 0.6s），每簇火自生成起持续 8.0s（**最早生成的先消失**），余烬 1.2s 不扣血。花草树木复用【火焰灼烧】的全部效果。",
+      "targeting": {
+        "_说明": "扇形模式（mode=sector）：圆心锁在主角，中轴跟随鼠标，滚轮改张角而不是半径",
+        "enabled": true,
+        "mode": "sector",
+        "angle_min": 45.0,
+        "angle_max": 80.0,
+        "wheel_step_deg": 5.0,
+        "radius_at_min": 10.0,
+        "radius_at_max": 6.0,
+        "advance_time_at_min": 1.0,
+        "advance_time_at_max": 0.6,
+        "range_min": 1.0,
+        "range_max": 12.0,
+        "texture": "res://assets/textures/法术特效/kenney/particle-pack/circle_02.png",
+        "damage_per_sec": 10.0
+      }
+    },
     "gold_body": {
       "name": "金色守护",
       "one_shot": false,

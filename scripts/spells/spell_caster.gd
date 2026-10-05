@@ -23,6 +23,7 @@ const SPELLS := {
 	"blue_tornado": preload("res://scripts/spells/blue_tornado.gd"),
 	"detect_pulse": preload("res://scripts/spells/detect_pulse.gd"),
 	"flame_scorch": preload("res://scripts/spells/flame_scorch.gd"),
+	"flame_advance": preload("res://scripts/spells/flame_advance.gd"),
 	"gold_body": preload("res://scripts/spells/gold_body.gd"),
 	"water_heal": preload("res://scripts/spells/water_heal.gd"),
 }
@@ -56,6 +57,8 @@ var _cast_anim_on := false
 ## 通用施法区域选择器（懒创建；哪个法术声明 has_targeting() 就用它）
 const Targeting := preload("res://scripts/spells/spell_targeting.gd")
 var _targeting: Node3D = null
+## 上一次下发给选点器的配置签名 —— 切换法术（圆盘 <-> 扇形）时靠它触发重新 configure
+var _targeting_cfg_sig := ""
 ## 刚放完法术 -> 等鼠标抬起再让圆圈重新出现，否则会立刻又冒出来
 var _target_wait_release := false
 
@@ -280,8 +283,17 @@ func _update_targeting(down: bool, just_pressed: bool) -> bool:
 		_targeting.name = "SpellTargeting"
 		get_tree().root.add_child(_targeting)
 		_targeting.call("setup", _player, null)
-		if jet.has_method("targeting_config"):
-			_targeting.call("configure", jet.call("targeting_config"))
+		_targeting_cfg_sig = ""
+	# ★ 每次切换法术都要**重新下发选点配置**：原来只在创建选点器时配置一次，
+	#   于是从"火焰灼烧"(圆盘) 切到"火焰推进"(扇形) 时选点器还留着圆盘配置
+	#   -> sector=false -> 圆心跟鼠标、半径按圆盘算 -> 扇形退化成鼠标处的圆盘火
+	#   （用户实测反馈"最终效果不是扇形"）。
+	if jet.has_method("targeting_config"):
+		var cfg: Dictionary = jet.call("targeting_config")
+		var sig := str(cfg)
+		if sig != _targeting_cfg_sig:
+			_targeting_cfg_sig = sig
+			_targeting.call("configure", cfg)
 	# 刚放完法术：等鼠标抬起 **且法术演完** 再允许重新显示圆圈，
 	# 否则圆圈会立刻又冒出来（用户："施放技能后圈圈应该消失"）
 	if _target_wait_release:
@@ -301,7 +313,17 @@ func _update_targeting(down: bool, just_pressed: bool) -> bool:
 	if just_pressed and _cast_armed and not _ui_blocks_cast():
 		var c: Vector3 = _targeting.call("center")
 		var r: float = _targeting.call("radius")
-		if jet.has_method("cast_at"):
+		# ★ 扇形法术（火焰推进）还要"中轴 + 半角"，用 cast_sector 分派；
+		#   没有它的法术仍走 cast_at（向后兼容）。
+		if jet.has_method("cast_sector"):
+			var ax := 0.0
+			var ha := 0.0
+			if _targeting.has_method("axis"):
+				ax = float(_targeting.call("axis"))
+			if _targeting.has_method("half_angle"):
+				ha = float(_targeting.call("half_angle"))
+			jet.call("cast_sector", c, r, ax, ha)
+		elif jet.has_method("cast_at"):
 			jet.call("cast_at", c, r)
 		_targeting.call("end")
 		_target_wait_release = true

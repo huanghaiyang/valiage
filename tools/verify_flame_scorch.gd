@@ -348,6 +348,58 @@ func _process(_d: float) -> bool:
 	var wind_node2 := get_root().get_node_or_null("Wind")
 	_ck("★ 火焰能从 Wind 读到当前风向", wind_node2 != null and wind_node2.get("cur_dir") is Vector2,
 			"cur_dir=%s" % str(wind_node2.get("cur_dir") if wind_node2 != null else "无"))
+	# ================================================================
+	# ★★★ 红线：火焰推进做的改动**不得影响火焰灼烧**（用户明确要求）
+	# ================================================================
+	# ① 火焰灼烧没有扇形接口 -> 施法器走原来的 cast_at（不会误走 cast_sector）
+	_ck("★ 火焰灼烧**没有** cast_sector（不会误入扇形分支）", not spell.has_method("cast_sector"))
+	# ② 下发它自己的配置后，选点器必须停在**圆盘模式**
+	var tgt: Node3D = (load("res://scripts/spells/spell_targeting.gd") as GDScript).new()
+	get_root().add_child(tgt)
+	tgt.call("configure", spell.call("targeting_config"))
+	_ck("★ 火焰灼烧下选点器为圆盘模式（sector=false）", not bool(tgt.get("sector")))
+	# ③ 逐实例筛选：基类版必须是"圆内全部"（扇形子类才收窄）
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_custom_data = true
+	mm.instance_count = 6
+	var bm2 := BoxMesh.new()
+	bm2.size = Vector3(0.2, 0.2, 0.2)
+	mm.mesh = bm2
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	get_root().add_child(mmi)
+	spell.set("_center", Vector3.ZERO)
+	spell.set("_radius", 5.0)
+	var ids: Array = spell.call("_burn_instance_indices", mmi)
+	_ck("★ 火焰灼烧的实例筛选 = 圆内全部（不按角度收窄）", ids.size() == 6,
+			"命中 %d/6 个实例" % ids.size())
+	# ④ 每实例延迟：基类**不给**（控制器退回随机错开 = 原行为）
+	_ck("★ 火焰灼烧不给逐实例延迟（沿用原来的随机错开）",
+			(spell.call("_burn_instance_delays", mmi) as Array).is_empty())
+	# ⑤ 布点仍是**铺满圆盘**：点燃后火焰簇应当分布在圆心**两侧**（不是扇形那种单向）
+	var disc: Node3D = (load("res://scripts/spells/flame_scorch.gd") as GDScript).new()
+	get_root().add_child(disc)
+	disc.call("set", "debug_vegetation", false)
+	disc.call("cast_at", Vector3(0.0, 0.0, 0.0), 5.0)
+	var left := 0
+	var right := 0
+	var outside := 0
+	for f in (disc.get("_patches") as Array):
+		var fn := f as Node3D
+		if fn == null or not is_instance_valid(fn) or not fn.visible:
+			continue
+		if fn.global_position.x < -0.2:
+			left += 1
+		elif fn.global_position.x > 0.2:
+			right += 1
+		if Vector2(fn.global_position.x, fn.global_position.z).length() > 5.2:
+			outside += 1
+	_ck("★ 火焰灼烧仍**铺满圆盘**（圆心两侧都有火，不是扇形单向）",
+			left > 0 and right > 0, "左侧 %d 簇 / 右侧 %d 簇" % [left, right])
+	_ck("火焰灼烧的火焰簇仍在半径内", outside == 0, "越界 %d 簇" % outside)
+	tgt.queue_free()
+	disc.queue_free()
 	print("通过 %d  |  失败 %d" % [_pass, _fail])
 	quit(0 if _fail == 0 else 1)
 	return true

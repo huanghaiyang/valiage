@@ -143,6 +143,58 @@ func _collect(n: Node) -> void:
 		_collect(c)
 
 
+# ---------------------------------------------------------------- 焰卡朝向（边界圈专用）
+## ★ 把这一簇火的**每张焰卡**的大面朝向指定的**世界方向**（水平分量）。
+##
+## 【为什么必须逐卡写】_collect() 里每张卡的 yaw 是**随机**的（random_yaw，见其注释），
+##   随机之后父节点（特效根）转多少都决定不了"大面朝哪"。
+##   所以「火焰推进」的边界圈不能用"给特效根一个 yaw"来做朝向 —— 必须逐卡写。
+##
+## 【大面法线 = 本地 ±X】模型几何实测：16 个焰卡网格**全部**是 X 方向最薄
+##   （AABB 约 0.03 × 0.38 × 0.25，见 check_flame_cards.gd），薄片的大面法线
+##   就是本地 X 轴。绕 Y 把本地 X 转到方向 u 的角度 = atan2(-u.z, u.x)。
+##   u = 目标方向在**卡的父空间**里的水平分量（父节点可能带地面倾斜）。
+##
+## jitter_deg：逐卡在目标方向两侧的**对称**抖动（度）。
+##   0 = 全部完全对齐（一堵整齐的墙）；小角度（如 10°）时，簇的**面积加权大面**
+##   仍然精确朝向目标（左右抖动相互抵消），同时保证从侧面看不会整片侧过去。
+##
+## ★ 默认行为不变：不调用本接口时，焰卡就是 _collect 里那套随机朝向。
+##   「火焰灼烧」从不调用它 -> 观感与改动前完全一致。
+func face_cards_to(world_dir: Vector3, jitter_deg: float = 0.0) -> void:
+	var d := Vector3(world_dir.x, 0.0, world_dir.z)
+	if d.length_squared() < 1e-8:
+		return
+	d = d.normalized()
+	var jit := deg_to_rad(maxf(jitter_deg, 0.0))
+	for it in _items:
+		var node := it["node"] as Node3D
+		if node == null or not is_instance_valid(node):
+			continue
+		var par := node.get_parent() as Node3D
+		var pb: Basis = par.global_transform.basis.orthonormalized() if par != null else Basis.IDENTITY
+		var u: Vector3 = pb.inverse() * d
+		u.y = 0.0
+		if u.length_squared() < 1e-8:
+			continue
+		u = u.normalized()
+		var yaw := atan2(-u.z, u.x)
+		if jit > 0.0:
+			yaw += randf_range(-jit, jit)
+		node.rotation.y = yaw
+
+
+## ★ 把这一簇火的每张焰卡还原成**随机朝向**（= _collect 里 random_yaw 的行为）。
+##   「火焰推进」的内部填充用它：池子会被多次施法复用，某簇上一次可能是边界圈
+##   （已被 face_cards_to 写成整齐朝向），这一次回到内部必须重新随机，
+##   否则内部会出现一整片方向一致的薄片（又薄又平、没有体积感）。
+func randomize_cards() -> void:
+	for it in _items:
+		var node := it["node"] as Node3D
+		if node != null and is_instance_valid(node):
+			node.rotation.y = randf() * TAU
+
+
 ## 网格在**父节点空间**中的包围盒最低点（把网格自身的旋转/缩放算进去）
 func _parent_bottom(mi: MeshInstance3D) -> float:
 	var aabb := mi.mesh.get_aabb()

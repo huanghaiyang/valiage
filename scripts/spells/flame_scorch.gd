@@ -373,33 +373,57 @@ func _ensure_glow_pool(n: int) -> void:
 
 
 ## 点燃圈内的花草树木：每株一个燃烧控制器，逐株错开点燃（错开才像"火在蔓延"）
+## ★ 取"这一片 MultiMesh 里要烧的实例下标"。
+##   基类：圆内的全部实例。**扇形子类覆盖它**，把范围收紧成扇区内 ——
+##   不覆盖的话扇形法术的逐实例燃烧还是按整圆筛，地面焦痕会是一圈圆（实测症状）。
+func _burn_instance_indices(mmi: MultiMeshInstance3D) -> Array:
+	var ids: Array = []
+	for h in _mm_scan_circle(mmi, _center, _radius):
+		ids.append(int(h["i"]))
+	return ids
+
+
 func _ignite_vegetation() -> void:
 	var targets := _find_vegetation()
 	var i := 0
 	for t in targets:
-		var b: Node3D = FOLIAGE_BURN.new()
-		b.name = "FoliageBurn%d" % i
-		var host := get_parent()
-		if host == null:
-			host = get_tree().root
-		host.add_child(b)
-		# ★ 逐实例燃烧要"只烧圈内实例"，所以把圆心/半径交给它
-		b.set("burn_center", _center)
-		b.set("burn_radius", _radius)
-		# ★ 把"块内实例表"直接交给控制器：整次施法**只做一次**块扫描，
-		#   控制器不再全量遍历（先按块、再查块内）。
-		if t is MultiMeshInstance3D:
-			var hits2 := _mm_scan_circle(t as MultiMeshInstance3D, _center, _radius)
-			var ids: Array = []
-			for h in hits2:
-				ids.append(int(h["i"]))
-			b.set("preset_mm", t)
-			b.set("preset_indices", ids)
-		if bool(b.call("burn_node", t, float(i) * 0.12)):
-			_burns.append(b)
-		else:
-			b.queue_free()
+		if t is Node3D:
+			_ignite_one(t, i)
 		i += 1
+
+
+## ★ 点燃一株植被（基类/子类共用）。
+##   子类（火焰推进）**推迟到波前到达时**才调它 —— 否则远处的草在火到之前就黑了。
+func _ignite_one(t: Node3D, i: int) -> void:
+	var b: Node3D = FOLIAGE_BURN.new()
+	b.name = "FoliageBurn%d" % i
+	var host := get_parent()
+	if host == null:
+		host = get_tree().root
+	host.add_child(b)
+	# ★ 逐实例燃烧要"只烧圈内实例"，所以把圆心/半径交给它
+	b.set("burn_center", _center)
+	b.set("burn_radius", _radius)
+	# ★ 把"块内实例表"直接交给控制器：整次施法**只做一次**块扫描，
+	#   控制器不再全量遍历（先按块、再查块内）。
+	#   ★ 用 _burn_instance_indices()：扇形子类会覆盖它，把"圆内"进一步收成"扇区内"
+	#     （不覆盖的话扇形法术会把整圈草都烧黑 —— 实测症状）。
+	if t is MultiMeshInstance3D:
+		b.set("preset_mm", t)
+		b.set("preset_indices", _burn_instance_indices(t as MultiMeshInstance3D))
+		# ★ 每实例的延迟：扇形子类按"离角色的距离"给 -> 火焰推进的波前
+		var delays := _burn_instance_delays(t as MultiMeshInstance3D)
+		if not delays.is_empty():
+			b.set("preset_delays", delays)
+	if bool(b.call("burn_node", t, float(i) * 0.12)):
+		_burns.append(b)
+	else:
+		b.queue_free()
+
+
+## 每实例的点燃延迟（秒）。基类不给 -> 控制器用随机错开。
+func _burn_instance_delays(mmi: MultiMeshInstance3D) -> Array:
+	return []
 
 
 ## 找圈内可烧的植被：优先组 "burnable"，没有分组时退回名字提示（见 VEG_HINTS 注释）

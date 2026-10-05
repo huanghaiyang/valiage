@@ -75,7 +75,10 @@ var burn_center := Vector3.ZERO
 var burn_radius := 0.0
 ## ★ 法术已经用"先按块、再查块内"算好的实例表（省掉控制器再全量扫一遍）
 var preset_mm: MultiMeshInstance3D = null
-var preset_indices: Array = []   ## 「改材质内建 burn」这条路用的**材质副本**（每个被烧物体独立一份）
+var preset_indices: Array = []
+## ★ 每实例的**点燃延迟**（秒，与 preset_indices 一一对应）。空 = 用随机错开。
+##   火焰推进靠它让草按"离角色的距离"依次烧起来（波前），而不是整片一起黑。
+var preset_delays: Array = []
 var _t := 0.0
 var _done := false
 var _phase := 0.0
@@ -402,9 +405,14 @@ func _start_multimesh_burn() -> bool:
 		# ★ 优先用法术算好的"块内实例表"（先按块、再查块内；整次施法只扫一次）
 		var use_preset: bool = preset_mm == mmi and not preset_indices.is_empty()
 		if use_preset:
-			for i in preset_indices:
-				_mm_burn.append({"mmi": mmi, "i": int(i), "phase": _rng.randf() * TAU,
-						"delay": _rng.randf() * 0.6, "done": false})
+			for k in range(preset_indices.size()):
+				var i: int = int(preset_indices[k])
+				# ★ 有 preset_delays 就按它（火焰推进：按离角色的距离 -> 波前）；
+				#   没有就用随机错开（火焰灼烧原本的行为）。
+				var dl: float = float(preset_delays[k]) if k < preset_delays.size() \
+						else _rng.randf() * 0.6
+				_mm_burn.append({"mmi": mmi, "i": i, "phase": _rng.randf() * TAU,
+						"delay": dl, "done": false})
 			continue
 		# 兜底：没传表时才自己遍历（没有块索引，属于退化路径）
 		var cnt := mmi.multimesh.instance_count
