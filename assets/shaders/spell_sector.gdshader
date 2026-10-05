@@ -1,4 +1,4 @@
-shader_type spatial;
+﻿shader_type spatial;
 // 扇形施法区域（火焰推进专用）—— **独立于圆盘那一套**，不复用 spell_area.gdshader。
 //
 // 【为什么单独一份】选点器的圆盘材质是全局复用一份的，之前把扇形做进同一个着色器、
@@ -49,7 +49,7 @@ void fragment() {
 	float edge = exp(-pow((ad - half_angle) / 0.028, 2.0));
 
 	float a = inside * inner_ok * outer_ok * (fill_strength + rim_strength * rim);
-	a += edge * edge_strength * inner_ok;        // 边线也要跟着内圈留白
+	a += edge * edge_strength * inner_ok * outer_ok;   // 边线也要跟着内圈留白 + 半径收边
 	ALBEDO = mix(vec3(0.92, 0.95, 1.0), vec3(1.0), clamp(edge + rim * 0.6, 0.0, 1.0));
 	ALPHA = clamp(a * tint.a, 0.0, 2.0);
 }

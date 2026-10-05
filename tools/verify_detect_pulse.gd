@@ -22,6 +22,17 @@ var _done := false
 var _deadline := 0
 
 
+## ★ 兼容两种结构：`meshes` 里现在直接放 MeshInstance3D（公共模块接管后不再需要
+##   逐网格的 prev_* 字典），旧写法是 {"mi": 网格,...}。两种都读得出来，
+##   这样以后再动内部结构也不会把自检绊倒（用户反馈过自检太脆）。
+func _mesh_of(item: Variant) -> MeshInstance3D:
+	if item is MeshInstance3D:
+		return item as MeshInstance3D
+	if item is Dictionary:
+		return (item as Dictionary).get("mi") as MeshInstance3D
+	return null
+
+
 func _ck(name: String, cond: bool, detail: String = "") -> void:
 	if cond:
 		_pass += 1
@@ -174,10 +185,9 @@ func _run(caster: Node) -> void:
 	var replaced_material := false
 	for k in outlined.keys():
 		for item in ((outlined[k] as Dictionary).get("meshes", []) as Array):
-			var mi = item.get("mi")
-			if mi == null or not is_instance_valid(mi):
+			var mesh := _mesh_of(item)
+			if mesh == null or not is_instance_valid(mesh):
 				continue
-			var mesh := mi as MeshInstance3D
 			if mesh.material_overlay is ShaderMaterial:
 				has_overlay = true
 	_ck("描边以叠加材质实现（不替换物体原材质）", has_overlay)
@@ -254,9 +264,8 @@ func _run(caster: Node) -> void:
 	var od2: Dictionary = jet.get("_outlined")
 	for k in od2.keys():
 		for item in ((od2[k] as Dictionary).get("meshes", []) as Array):
-			var mi = item.get("mi")
-			if mi != null and is_instance_valid(mi) \
-					and ((mi as MeshInstance3D).layers & (1 << 7)) != 0:
+			var m2 := _mesh_of(item)
+			if m2 != null and is_instance_valid(m2) and (m2.layers & (1 << 7)) != 0:
 				layered += 1
 	_ck("被探测到的网格已挂上遮罩层（花草没有碰撞体，不会进来）", layered > 0,
 			"挂上 %d 个网格" % layered)

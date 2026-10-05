@@ -44,6 +44,9 @@ extends Node3D
 ##   就是水波那种震荡感。同理不用实体圆环（管子粗、地形上会被埋）。
 
 const SpellAim := preload("res://scripts/spells/spell_aim.gd")
+## ★ 公共模块：物体表面绘制（material_overlay 挂/还原 + 球查询找物体）。
+##   扇形选点器（火焰推进）用的是同一份 —— 用户要求"别各写一份"。
+const SurfaceOverlay := preload("res://scripts/spells/surface_overlay.gd")
 ## 地面波纹：按径向距离画一圈圈**细线**（正圆 + 衰减震荡），不用实体圆环
 const RIPPLE_SHADER := "res://assets/shaders/detect_ripple.gdshader"
 ## 描边：视图空间外扩的剪影线，内部按深度丢弃（物体外观不受影响）
@@ -150,6 +153,8 @@ var casting := false
 var _aim := SpellAim.new()
 var _player: Node3D = null
 var _pulses: Array = []                    ## 在飞的波纹：{center, r, max_r, ripple}
+## ★ 公共模块实例：挂/还原材质 + 找物体（扇形选点器共用同一份实现）
+var _surface := SurfaceOverlay.new()
 var _outlined: Dictionary = {}             ## 实例 id -> {node, meshes:[{mi, prev}], until}
 var _ran_out := false
 var _cooldown := 0.0
@@ -311,41 +316,18 @@ func _detect(radius: float, center: Vector3, max_r: float, pulse: Dictionary) ->
 	if space == null:
 		return
 
-	var shape := SphereShape3D.new()
-	shape.radius = maxf(0.05, radius)
-	var params := PhysicsShapeQueryParameters3D.new()
-	params.shape = shape
-	# 球心略微抬高：以角色脚下为中心的话，一半球体在地下，浪费且容易吃到地形
-	params.transform = Transform3D(Basis(), center + Vector3.UP * 0.5)
-	params.collision_mask = _mask()
-	params.collide_with_bodies = true
-	params.collide_with_areas = false
-	# ★ 不要写 params.max_results —— PhysicsShapeQueryParameters3D **没有这个属性**
-	#   （实测：会直接 "Invalid assignment of property 'max_results'"，并把游戏停在
-	#   调试断点上）。max_results 只是 intersect_shape() 的**第二个实参**。
+	# ★ 找物体（球查询 + 碰撞体->可视节点解析 + 包围盒）交给**公共模块**，
+	#   扇形选点器用的是同一份实现 —— 两边不再各写一遍。
+	#   球心略微抬高：以角色脚下为中心的话，一半球体在地下，浪费且容易吃到地形。
 	var exclude: Array[RID] = []
 	if _player is CollisionObject3D:
 		exclude.append((_player as CollisionObject3D).get_rid())
-	params.exclude = exclude
-
-	var hits := space.intersect_shape(params, max_results)
 	var now := _now()
-	for h in hits:
-		var collider: Object = h.get("collider")
-		var node := collider as Node
-		if node == null:
-			continue
-		# 解析出真正持有网格的节点，并用**几何包围盒**（而不是容器节点的
-		# global_position）来判屏幕位置与"是否在地形之上"。
-		# ★ 外部导入的容器原点常在 (0,0,0)、几何体是偏移的 —— 拿容器的
-		#   global_position 做屏幕判定会把所有物体都判到屏幕外（实测踩过：
-		#   波纹半径都涨到 31 米了，outlined 仍是 0）。
-		var visual := _resolve_visual(node)
-		if visual == null:
-			continue
-		var box := _visual_aabb(visual)
-		if box.size.length_squared() <= 0.0:
-			continue
+	for h in SurfaceOverlay.collect_meshes(world, center, maxf(0.05, radius),
+			_mask(), exclude, Callable(), max_results):
+		var node := h["node"] as Node
+		var visual := h["visual"] as Node
+		var box: AABB = h["box"]
 		if not _is_detectable(node, visual, center, box):
 			continue
 		if not _in_screen_margin(box):
@@ -453,38 +435,17 @@ func _sync_mask_camera() -> void:
 			_mask_vp.size = want
 
 
-## 一组网格的世界包围盒并集
+## 一组网格的世界包围盒并集（转发到公共模块）
 func _visual_aabb(visual: Node) -> AABB:
-	var box := AABB()
-	var first := true
-	for mi in _visible_meshes(visual):
-		var m := mi as MeshInstance3D
-		var b: AABB = m.global_transform * m.get_aabb()
-		box = b if first else box.merge(b)
-		first = false
-	return box
+	return SurfaceOverlay.visual_aabb(visual)
 
 
-## 碰撞体 -> 真正持有网格的节点。
-##
-## ★★ 必须**向上找**：本项目的碰撞体与网格常常是**兄弟**，不是父子。
-##    实测（玩家 12 米内唯一的那批碰撞体）：
-##        /root/Main/墓地遗迹/ROOT/tripo_part_0/StaticBody3D    <- 只有 CollisionShape3D
-##        /root/Main/墓地遗迹/ROOT/tripo_part_0/<MeshInstance3D> <- 网格在兄弟上
-##    第一版只查"碰撞体自己的子节点"，于是每个物体都判成"没有可见网格"，
-##    结果 outlined 恒为 0 —— 波纹在跑，却什么都描不出来。
-##    向上最多爬 3 层，取最近的那个有可见网格的祖先。
+## 碰撞体 -> 真正持有网格的节点（转发到公共模块）。
+## ★★ 本项目的碰撞体与网格常常是**兄弟**：必须**向上找**（最多 3 层）。
+##    只查"碰撞体自己的子节点"的话每个物体都会判成"没有可见网格"，
+##    结果 outlined 恒为 0 —— 波纹在跑，却什么都描不出来（探测波实测踩过）。
 func _resolve_visual(node: Node) -> Node:
-	if not _visible_meshes(node).is_empty():
-		return node
-	var cur := node.get_parent()
-	var depth := 0
-	while cur != null and depth < 3:
-		if not _visible_meshes(cur).is_empty():
-			return cur
-		cur = cur.get_parent()
-		depth += 1
-	return null
+	return SurfaceOverlay.resolve_visual(node)
 
 
 ## 哪些东西不描轮廓
@@ -699,22 +660,16 @@ func _outline(visual: Node, now: float, pulse: Dictionary) -> void:
 	var entry: Dictionary = _outlined.get(id, {})
 	if entry.is_empty():
 		var meshes: Array = []
-		for mi in _visible_meshes(visual):
-			var mesh := mi as MeshInstance3D
-			meshes.append({
-				"mi": mesh,
-				"prev_overlay": mesh.material_overlay,
-				"prev_transparency": mesh.transparency,
-				"prev_layers": mesh.layers,
-			})
+		for mi in SurfaceOverlay.visible_meshes(visual):
+			meshes.append(mi as MeshInstance3D)
 		if meshes.is_empty():
 			return
 		if screen_outline:
 			# 屏幕空间模式：**只把网格挂到遮罩层**，材质一点不动。
 			# 遮罩图里就只剩"被探测到的物体"，花草（没有碰撞体、探测不到）自然不在其中。
 			if mask_by_objects:
-				for item in meshes:
-					(item["mi"] as MeshInstance3D).layers |= MASK_LAYER
+				for mesh in meshes:
+					_surface.mark_layers(mesh, MASK_LAYER)
 			entry = {"node": visual, "meshes": meshes, "pulse": pulse}
 		else:
 			var hull := _make_outline_material()
@@ -725,13 +680,11 @@ func _outline(visual: Node, now: float, pulse: Dictionary) -> void:
 			if surface_scan:
 				scan = _make_scan_material()
 				hull.next_pass = scan
-			for item in meshes:
-				var mesh := item["mi"] as MeshInstance3D
+			for mesh in meshes:
 				# ★ 只加 overlay，**不动物体自己的材质**：物体保持原样，只在外缘多一圈线。
 				#   内部由深度测试自然挡掉（不再手工查深度纹理，那会丢掉靠镜头那侧的边线）。
-				mesh.material_overlay = hull
-				if ghost > 0.0:
-					mesh.transparency = clampf(ghost, 0.0, 1.0)
+				#   挂/还原（含透明度、可见层）由公共模块统一负责。
+				_surface.attach(mesh, hull, ghost)
 			entry = {"node": visual, "meshes": meshes, "mat": hull, "scan": scan, "pulse": pulse}
 		_outlined[id] = entry
 	# ★ 真·多圈：同一个物体每帧会被**多个**脉冲命中（球查询覆盖整个圆盘内）。
@@ -891,15 +844,11 @@ func _expire_outlines() -> void:
 
 
 func _clear_entry(entry: Dictionary) -> void:
+	# ★ 还原（overlay / 透明度 / 可见层）统一交给公共模块
 	for item in (entry.get("meshes", []) as Array):
-		var mi = item.get("mi")
-		if mi != null and is_instance_valid(mi):
-			var mesh := mi as MeshInstance3D
-			mesh.material_overlay = item.get("prev_overlay")
-			mesh.transparency = float(item.get("prev_transparency", 0.0))
-			# 遮罩层必须摘掉：留着的话物体每帧都会被多渲染一次（白白多一份开销）
-			if mask_by_objects and item.has("prev_layers"):
-				mesh.layers = int(item["prev_layers"])
+		var mesh := item as MeshInstance3D
+		if mesh != null and is_instance_valid(mesh):
+			_surface.detach(mesh.get_instance_id())
 	entry["meshes"] = []
 
 
@@ -944,15 +893,7 @@ func _mask() -> int:
 
 
 func _visible_meshes(node: Node) -> Array:
-	var out: Array = []
-	var stack: Array = [node]
-	while not stack.is_empty():
-		var n: Node = stack.pop_back()
-		if n is MeshInstance3D and (n as MeshInstance3D).visible:
-			out.append(n)
-		for c in n.get_children():
-			stack.append(c)
-	return out
+	return SurfaceOverlay.visible_meshes(node)
 
 
 ## 描边材质（作为 material_overlay 逐个物体叠加；草不在探测集合里，天然不会被描）

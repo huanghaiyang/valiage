@@ -1,4 +1,4 @@
-extends Node3D
+﻿extends Node3D
 ## 通用法术施法区域选择器（不绑定任何具体法术）
 ##
 ## 用法（法术侧只需两件事）：
@@ -25,8 +25,22 @@ const AREA_SHADER := "res://assets/shaders/spell_area.gdshader"
 ##   圆盘材质是全局复用一份的，之前把两种形状做进同一个着色器会互相污染状态
 ##   （切回圆盘时圆圈被扇形的角度裁掉 -> 圆圈看不见）。独立就没有这个问题。
 const SECTOR_SHADER := "res://assets/shaders/spell_sector.gdshader"
+## ★ 扇形**物体表面叠加**用的着色器（复用【物体探测】探测波那套做法）
+const SURFACE_SHADER := "res://assets/shaders/spell_sector_surface.gdshader"
+## ★ 物体表面绘制的公共模块（和【物体探测】的描边/表面扫描带**共用同一份实现**）
+const SurfaceOverlay := preload("res://scripts/spells/surface_overlay.gd")
+## ★★ 临时 A/B 实验开关（定位"物体上为什么没白"，验完就删）：
+##   true = 物体上挂【物体探测】自己的**表面扫描带**着色器（已知好用）。
+##          墓碑上出现亮带 -> 挂载链路没问题，问题在我的扇面着色器；
+##          仍然什么都没有 -> 问题在挂载写法，改成"逐物体材质 + next_pass"。
+const DEBUG_MOUNT_SCAN_SHADER := false   ## 实验版已撤：物体恢复用本项目的扇形着色器
 const SEGMENTS := 64          ## 圆周分段
-const RINGS := 6              ## 径向分段（越大贴合越细）
+const RINGS := 6              ## 圆盘径向分段（越大贴合越细）
+## ★ 扇形径向分段：比圆盘密一倍（12 = 2×RINGS，**必须是 RINGS 的整数倍**：
+##  扇形采样时圆盘的环正好是它的偶数子集 -> 一份采样喂两张网格，圆盘不多打射线）。
+##  为什么要更密：坡度限幅下"一级最多爬 step 米"，环太稀时一块 1.6m 的石头只压到
+##  一个环上 -> 扇面最高只能爬一个 step（实测 1.02m，石头顶 1.6m 盖不住）。
+const SECTOR_RINGS := 12
 
 ## ---- 以下全部可由配置表覆盖 ----
 var diameter_min := 5.0
@@ -66,6 +80,83 @@ var ground_normal_min := 0.6
 ## ★ 相邻顶点允许的最大落差（米）。坡形靠它保住，尖刺靠它削平。
 var slope_step := 0.22
 var slope_passes := 4
+
+## ★★ 扇形网格单独一套"贴哪"的参数（用户实测反馈：
+##    "扇形选择器，没有在物体表面显示，只对地形有效"）。
+##    圆盘那套是**有意**保持低位的（只认能站的地面 + 强平滑 -> 被物体挡住的部分
+##    交给深度测试自然切断，见上面 ground_normal_min 的说明），所以**不去动圆盘**，
+##    扇形自己一套参数：它得翻到石头/箱子顶上去，玩家才能看清整个扇面。
+## 法线朝上程度 >= 这个值才算"表面"（0.35 ≈ 69° 以内的坡）；竖直面（墙/树干）不算。
+var sector_normal_min := 0.35
+## 扇形相对"圆心（角色脚下）高度"最多抬高多少米 —— 高墙/大树不该被扇面糊上去
+var sector_lift_m := 6.0
+## 扇形允许向下多少米（台阶、沟）
+var sector_drop_m := 6.0
+## 扇形的坡度限幅（米/级）与迭代次数。
+## ★ 这里必须**允许台阶**：坡限是"相邻环最多差多少"，而石头的顶面比旁边地面高
+##   1.6m —— 限到 0.9 时，压在石头上的那一环会被邻居拽下来，扇面只能在石头顶上
+##   鼓一个"包"，石头把中间那块挡掉（实测：只能盖住一圈边框）。
+##   2.5 的取法：1.6~2.5m 的石头/箱子/矮台**整块盖住**（每环最多抬 2.5m 够用），
+##   而孤立细杆（只压到一环）最多鼓 2.5m —— 不会变成无限尖刺（另有 sector_lift_m 上限）。
+var sector_slope_step := 2.5
+var sector_slope_passes := 0
+
+## ★ 扇形的**最小重建间隔**（秒）。扇形径向密一倍（12 级 = 832 根射线），
+##   真实地形实测单次重建 ~13ms；而选点器是"鼠标一动就重建"，每帧都建会吃掉
+##   大半个帧预算。28Hz 对地面指示器完全够用，平均到每帧反而比圆盘更便宜。
+##   圆盘**不加**这个限制（保持原来的每帧刷新，观感一点不变）。
+@export var sector_rebuild_interval := 0.035
+## ★ 扇形地面的**填充分量**（加色混合，所以这个值就是"白层有多不透明"）。
+##   为什么要调大：底下的深色泥土/湿土太深时，0.55 会让它透上来，看着像"中间没涂到"
+##   （用户实测）。1.3 -> 深色地面也饱和成白；想更透就调回 0.7~0.9。
+##   ★ 只影响扇形；圆盘（火焰灼烧）用的是另一份材质参数，观感不变。
+@export var sector_fill_strength := 0.55
+var _last_build := -1.0
+var _last_surface := -1.0
+## 物体表面叠加的最小刷新间隔（秒）：_rebuild_mesh 可能每帧被调
+@export var surface_refresh_interval := 0.05
+
+## ★ 地面贴合网格只打**地形层**（有 Terrain3D 时按类名找它的碰撞层；找不到就退回全层）。
+##   为什么：物体表面交给下面的"表面叠加"处理（那是探测波的做法，任何朝向都准），
+##   顶点高度场只用来铺地形 —— 不然物体立面会被拉出"裙边"、物体顶面还会被画两遍。
+var terrain_layer_cache := 0
+var _terrain_node: Node = null
+var _terrain_owner: Node = null        ## 项目自己的地形封装（有 get_height_at）
+## ★ 扇形"表面叠加"：给扇形范围内的**有碰撞体的物体**挂 material_overlay，
+##   形状在片元里按世界坐标算 -> 石头顶/墙面/树干任何朝向都能画出扇面。
+## ★ 贴合网格负责覆盖的**贴地物体高度上限**（米）：顶面不高于「脚下 + 这个值」的物体
+##   由网格贴住（路面/石板/石棺底座这类矮台），更高的（墓碑/墙/桶）交给物体表面叠加。
+##   ★ 这个值必须和 `_extract_rows` 的 prop_cap、以及叠加材质的「跳过贴地物体」阈值
+##     **一致**，否则会出现「两边都不管」的空档（用户实测：石棺底座没覆盖到）。
+@export var prop_cover_m := 0.6
+@export var surface_scan := true
+## 表面叠加查找物体用的碰撞层（默认全层；地形自己会被"是不是 Mesh 可视体"过滤掉）
+@export var surface_mask := 0xFFFFFFFF
+## ★ 物体表面**填充分量**（0 = 物体上只画边线/外弧，像【物体探测】的探测波亮带；
+##   0.55 = 和地面那份一样铺满）。
+##   为什么要能调：遗迹/墙面是**大面**，铺满时整块涂白、看着像"白斑"（用户实测反馈）；
+##   ★ 现在由着色器**按表面朝向**分配：朝上的面按这个值填满（和地面连成一片），
+##   立面保留 55%（墓碑/墙这类竖直面必须看得见，否则等于没涂 —— 用户实测）。
+@export var surface_fill_strength := 0.5
+## ★ 物体表面**边线强度**（两条边 + 外弧亮带；比地面稍强一点，物体上才看得清）
+@export var surface_edge_strength := 2.4
+## ★ 沿表面往上爬（搬自探测波 detect_scan 的 climb，那里默认 0.8，是它观感好的关键）：
+##   越高处扇形的"到达半径"越小 -> 边界顺着立面往上收，像扫描波「爬上墙」，
+##   而不是像投影一样平铺上去。0 = 关闭。
+@export var surface_climb := 0.4
+## ★ 掠射角增强（搬自探测波的 edge_boost）：从侧面看立面时更亮，轮廓才看得清。
+@export var surface_edge_boost := 0.6
+## ★ 相邻两环落差超过这个值（米）就在那里插一段**竖直裙边**，把地形台阶/突起处的
+##   立面盖住（高度场连出来的斜边会钻到地形下面 -> 那一条露在外面）。
+##   调小 = 更积极补面（也更容易在平缓起伏上多插面）；0 = 关闭。
+@export var riser_threshold_m := 0.25
+## 诊断开关：只打地形层采样（= 曾经把路面/石板这类"贴地物体"漏掉、扇面被切断的那个做法）。
+## 只给自检/出图复现对照用，游戏里保持 false。
+@export var terrain_only_sampling := false
+var _surface_mat: ShaderMaterial = null
+## ★ 挂/还原材质的活儿交给**公共模块**（【物体探测】的描边+扫描带用的是同一份）
+var _surface := SurfaceOverlay.new()
+var _overlaid: Dictionary = {}          ## 兼容旧调试脚本：直接读 _surface.entries
 
 var _player: Node3D = null
 var _cam: Camera3D = null
@@ -177,6 +268,7 @@ func end() -> void:
 	visible = false
 	set_process(false)
 	set_process_input(false)
+	_restore_surface()               # ★ 选点结束：物体表面的扇形叠加必须摘干净
 
 
 func is_active() -> bool:
@@ -260,10 +352,19 @@ func _process(_delta: float) -> void:
 			_disc.visible = true
 		if _sector_disc != null:
 			_sector_disc.visible = false
+		_restore_surface()           # 切回圆盘：把物体表面的扇形叠加摘干净
 		_update_center_from_mouse()
 	if _dirty:
-		_dirty = false
-		_rebuild_mesh()
+		# ★ 扇形：限流重建（见 sector_rebuild_interval）；圆盘 gap=0 = 每帧重建（原样）
+		var gap: float = sector_rebuild_interval if sector else 0.0
+		var now := Time.get_ticks_msec() * 0.001
+		if now - _last_build >= gap:
+			_dirty = false
+			_last_build = now
+			_rebuild_mesh()
+			# 物体表面叠加：跟着重建一起刷新（球查询比逐顶点打射线便宜得多）
+			if sector:
+				_refresh_surface()
 
 
 ## 扇形：**圆心锁在主角脚下**，中轴指向鼠标（水平方向），半径由张角插值算出
@@ -298,8 +399,20 @@ func _update_sector() -> void:
 		_sector_mat.set_shader_parameter("half_angle", half_angle())
 		_sector_mat.set_shader_parameter("inner",
 				clampf(sector_inner_m / maxf(_radius, 0.01), 0.0, 0.85))
-		_sector_mat.set_shader_parameter("fill_strength", 0.55)
+		_sector_mat.set_shader_parameter("fill_strength", sector_fill_strength)
 		_sector_mat.set_shader_parameter("edge_strength", 2.2)
+	# ★ 物体表面的扇面：每帧写一次参数（形状是 uniforms，改角度/半径立刻生效，不用重建）
+	if _surface_mat != null and not _overlaid.is_empty():
+		_surface_mat.set_shader_parameter("axis", new_axis)
+		_surface_mat.set_shader_parameter("half_angle", half_angle())
+		_surface_mat.set_shader_parameter("radius", _radius)
+		_surface_mat.set_shader_parameter("sector_center", _center)
+		_surface_mat.set_shader_parameter("inner_m", sector_inner_m)
+		_surface_mat.set_shader_parameter("fill_strength", surface_fill_strength)
+		_surface_mat.set_shader_parameter("edge_strength", surface_edge_strength)
+		_surface_mat.set_shader_parameter("rim_strength", surface_edge_strength * 0.7)
+		_surface_mat.set_shader_parameter("climb", surface_climb)
+		_surface_mat.set_shader_parameter("edge_boost", surface_edge_boost)
 	if p.distance_to(_center) > 0.01 or absf(new_axis - _axis) > 0.001:
 		_center = p
 		_axis = new_axis
@@ -384,26 +497,84 @@ func _build_sector() -> void:
 	_sector_disc = mi
 
 
-## 重建贴合地形的圆盘：采样高度 -> 限幅平滑 -> 建面
+## 重建两张贴合网格（**各用各的采样/平滑参数**）：
+##   · 圆盘（火焰灼烧那种圆）：只认能站的地面 + 强平滑 —— 保持低位，被物体挡住的部分
+##     由深度测试自然切断（用户之前明确要的观感，别动）。
+##   · 扇形（火焰推进）：要**铺到物体表面上** —— 更宽松的法线阈值 + 更大的抬升上限 +
+##     松得多的坡度限幅，让扇面翻到石头/箱子顶上；仍会削掉极端尖刺。
 func _rebuild_mesh() -> void:
 	if _disc == null:
 		return
-	var rows := _smooth_heights(_sample_heights(), _center.y)
+	# 只在自己这一套模式下才采高分辨率：圆盘模式仍按 RINGS 采（不额外打射线）
+	var hi: int = SECTOR_RINGS if sector else RINGS
+	var stride: int = maxi(hi / RINGS, 1)
+	var raw := _sample_heights(hi)        # ★ 只采一次，两个网格各自筛
+	var y0 := _center.y
+	_disc.mesh = _build_area_mesh(_smooth_heights(
+			_extract_rows(raw, y0, ground_normal_min, stride), y0), RINGS)
+	if _sector_disc != null:
+		# 扇形用**全部**环（stride=1），圆盘只用它的偶数子集（stride）
+		var sec_rows := _smooth_heights(
+				_extract_rows(raw, y0, sector_normal_min, 1, true, prop_cover_m), y0,
+				sector_lift_m, sector_drop_m, sector_slope_step, sector_slope_passes, false)
+		# ★ 落差大的地方插竖直裙边：高度场连出来的斜边会钻到地形下面，
+		#   台阶/突起处那一条就露在外面（用户实测："中间地面与突起处衔接地带没有覆盖到"）
+		_sector_disc.mesh = _build_skirt_mesh(
+				_rows_with_skirts(sec_rows, hi, riser_threshold_m), 0.05)
+	# ★★ 物体表面叠加**必须挂在这里**：选点器的形状由本函数决定，谁重建网格谁就负责
+	#    刷新物体表面。以前我只把它挂在 _process 的 _dirty 门后面 —— 那道门没开时
+	#    网格照建、物体却一直没挂上（用户实测："地面白了，石棺/墓碑还是没白"）。
+	#    探测波之所以没这个问题：它的挂载是 _detect() 的**直接结果**，没有第二道门。
+	if sector:
+		_refresh_surface()
+
+
+## 把采样结果按"表面阈值"抽成高度图（hit 且法线够朝上 -> 用命中高度；否则退回基准高度）
+## stride > 1 时按步长取环（圆盘从扇形的高分辨率采样里取自己的那几环）
+func _extract_rows(raw: Array, y0: float, min_up: float, stride := 1,
+		terrain_aware := false, prop_cap := 0.35) -> Array:
+	var out: Array = []
+	var ring := 0
+	while ring < raw.size():
+		var src: Array = raw[ring]
+		var row := PackedFloat32Array()
+		row.resize(SEGMENTS)
+		for s in range(SEGMENTS):
+			var e: Dictionary = src[s]
+			if not bool(e["hit"]) or float(e["ny"]) < min_up:
+				row[s] = y0
+			elif terrain_aware and not bool(e["terrain"]):
+				# ★ 兜底：拿不到地形高度数据时（合成自检等），物体命中按"贴地"处理
+				#   （限幅 ±prop_cap）。真实场景走不到这里 —— 见 _sample_heights 里
+				#   "不论命中什么都取该 XZ 的地形视觉高度"那一段。
+				row[s] = clampf(float(e["y"]), y0 - prop_cap, y0 + prop_cap)
+			else:
+				row[s] = float(e["y"])
+		out.append(row)
+		ring += maxi(stride, 1)
+	return out
+
+
+## 由高度图建三角面（顶点是**世界坐标**，节点本身不带变换）
+func _build_area_mesh(rows: Array, rings: int, lift := 0.02) -> ArrayMesh:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var uv_of = func(rr: float, ss: int) -> Vector2:
 		var a := float(ss) / float(SEGMENTS) * TAU
 		return Vector2(0.5 + cos(a) * 0.5 * rr, 0.5 + sin(a) * 0.5 * rr)
 	var pv = func(ring: int, s: int) -> Vector3:
-		var rr := float(ring) / float(RINGS)
+		var rr := float(ring) / float(maxi(rings, 1))
 		var a := float(s % SEGMENTS) / float(SEGMENTS) * TAU
 		var x := _center.x + cos(a) * _radius * rr
 		var z := _center.z + sin(a) * _radius * rr
 		# 抬高一点点，避免与地面 z-fighting
-		return Vector3(x, (rows[ring] as PackedFloat32Array)[s % SEGMENTS] + 0.02, z)
-	for ring in range(RINGS):
-		var rr0 := float(ring) / float(RINGS)
-		var rr1 := float(ring + 1) / float(RINGS)
+		return Vector3(x, (rows[ring] as PackedFloat32Array)[s % SEGMENTS] + lift, z)
+	for ring in range(rings):
+		# ★ UV 半径也必须按**本网格的级数**算（不是常量 RINGS）：扇形是 12 级，
+		#   写成 ring/RINGS 会让最外圈的 UV 半径到 1.83 —— 着色器按 UV 裁形状，
+		#   于是扇面只有内半截可见（实测踩过）。
+		var rr0 := float(ring) / float(maxi(rings, 1))
+		var rr1 := float(ring + 1) / float(maxi(rings, 1))
 		for s in range(SEGMENTS):
 			var s2 := (s + 1) % SEGMENTS
 			st.set_uv(uv_of.call(rr0, s))
@@ -418,9 +589,75 @@ func _rebuild_mesh() -> void:
 			st.add_vertex(pv.call(ring + 1, s2))
 			st.set_uv(uv_of.call(rr0, s2))
 			st.add_vertex(pv.call(ring, s2))
-	_disc.mesh = st.commit()
-	if _sector_disc != null:
-		_sector_disc.mesh = _disc.mesh     # 同一份贴合地形的网格，两个节点各画各的材质
+	return st.commit()
+
+
+## ★ 由"带半径的行"建三角面：rows = [{r: 0..1 归一化半径, h: PackedFloat32Array(SEGMENTS)}]
+##
+## 和 _build_area_mesh 的区别：半径是**每行自带**的，因此可以在同一个半径处放**两行**
+## 不同的高度 -> 形成**竖直裙边**。
+## 为什么需要它：高度场网格的顶点只能上下动，遇到**地形台阶/竖直落差**时，相邻两环之间
+## 只能连出一条斜边，斜边会钻到地形下面 -> 台阶那一条就露在外面没被涂到
+## （用户实测："中间地面与突起处衔接地带没有覆盖到"）。
+## 在落差处插入一段竖直面把台阶盖住即可。
+func _build_skirt_mesh(rows2: Array, lift: float) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var uv_of = func(rr: float, ss: int) -> Vector2:
+		var a := float(ss) / float(SEGMENTS) * TAU
+		return Vector2(0.5 + cos(a) * 0.5 * rr, 0.5 + sin(a) * 0.5 * rr)
+	var pv = func(j: int, s: int) -> Vector3:
+		var e: Dictionary = rows2[j]
+		var rr := clampf(float(e["r"]), 0.0, 1.0)
+		var hs: PackedFloat32Array = e["h"]
+		var a := float(s % SEGMENTS) / float(SEGMENTS) * TAU
+		return Vector3(_center.x + cos(a) * _radius * rr,
+				hs[s % SEGMENTS] + lift,
+				_center.z + sin(a) * _radius * rr)
+	for j in range(rows2.size() - 1):
+		var rr0 := clampf(float((rows2[j] as Dictionary)["r"]), 0.0, 1.0)
+		var rr1 := clampf(float((rows2[j + 1] as Dictionary)["r"]), 0.0, 1.0)
+		for s in range(SEGMENTS):
+			var s2 := (s + 1) % SEGMENTS
+			st.set_uv(uv_of.call(rr0, s))
+			st.add_vertex(pv.call(j, s))
+			st.set_uv(uv_of.call(rr1, s))
+			st.add_vertex(pv.call(j + 1, s))
+			st.set_uv(uv_of.call(rr1, s2))
+			st.add_vertex(pv.call(j + 1, s2))
+			st.set_uv(uv_of.call(rr0, s))
+			st.add_vertex(pv.call(j, s))
+			st.set_uv(uv_of.call(rr1, s2))
+			st.add_vertex(pv.call(j + 1, s2))
+			st.set_uv(uv_of.call(rr0, s2))
+			st.add_vertex(pv.call(j, s2))
+	return st.commit()
+
+
+## 把高度图转成"带半径的行"，并在**落差大的地方插入竖直裙边**。
+## rows 来自 _extract_rows（行数 = rings + 1，半径均匀分布）。
+func _rows_with_skirts(rows: Array, rings: int, threshold: float) -> Array:
+	var out: Array = []
+	var n := rows.size()
+	for i in range(n):
+		var rf := float(i) / float(maxi(rings, 1))
+		var cur: PackedFloat32Array = rows[i]
+		if i > 0 and threshold > 0.0:
+			var prev: PackedFloat32Array = rows[i - 1]
+			var jump := false
+			for s in range(SEGMENTS):
+				if absf(cur[s] - prev[s]) > threshold:
+					jump = true
+					break
+			if jump:
+				# 把上一圈的高度延伸到这一圈的半径处 -> 竖直面（台阶的立面）被盖住
+				var wall := PackedFloat32Array()
+				wall.resize(SEGMENTS)
+				for s in range(SEGMENTS):
+					wall[s] = prev[s]
+				out.append({"r": rf, "h": wall})
+		out.append({"r": rf, "h": cur})
+	return out
 
 
 ## 命中面算不算"能站的地面"（纯函数，便于自检）
@@ -431,41 +668,163 @@ func _is_ground(hit: Dictionary) -> bool:
 	return (hit["normal"] as Vector3).normalized().y >= ground_normal_min
 
 
-## 采样高度图：外层环逐顶点朝下打射线（内圈半径 0 = 圆心高度）
-func _sample_heights() -> Array:
+## 地形所在的碰撞层：**运行时按类名找**（含 terrain 的节点下第一个碰撞体）。
+## 与【物体探测】里的同名做法一致：不写死层号（改层了也不会静默失效）。
+func _terrain_layer() -> int:
+	if terrain_layer_cache != 0:
+		return terrain_layer_cache
+	var tree := get_tree()
+	if tree == null or tree.current_scene == null:
+		return 0
+	var stack: Array = [tree.current_scene]
+	while not stack.is_empty():
+		var n := stack.pop_back() as Node
+		if n == null:
+			continue
+		var nm := String(n.name).to_lower()
+		if String(n.get_class()).to_lower().contains("terrain") or nm.contains("terrain"):
+			_terrain_node = n
+			var found := _first_collision_layer(n)
+			if found != 0:
+				terrain_layer_cache = found
+				return found
+		for c in n.get_children():
+			stack.append(c)
+	return 0
+
+
+## ★ 地形的**视觉高度**。
+## 优先复用**项目自己的地形封装** `scripts/world/terrain.gd` 的 `get_height_at()`
+## （内部处理 Terrain3D 与非 Terrain3D 的降级，和 main.gd / camera_rig.gd 用的是同一套），
+## 找不到时才退回直接读 Terrain3D 的 `data.get_height`。
+##
+## 为什么不用射线高度：射线打在**碰撞体**上，Terrain3D 的碰撞与视觉地形有细微偏差，
+## 网格就会被视觉地形一片片戳穿（用户实测："扇形中间部分区域还是没有被涂白"，
+## 放大看边界是撕裂状）。用高度数据就完全对齐了。
+## 都拿不到时返回 NAN，调用方退回射线高度。
+func _terrain_visual_height(x: float, z: float) -> float:
+	# ① 项目的地形封装（duck-typing：有 get_height_at 就用它）
+	if _terrain_owner == null or not is_instance_valid(_terrain_owner):
+		_terrain_owner = _find_terrain_owner()
+	if _terrain_owner != null and _terrain_owner.has_method("get_height_at"):
+		return float(_terrain_owner.call("get_height_at", x, z))
+	# ② 退回 Terrain3D 自己的数据
+	var t := _terrain_node
+	if t == null or not is_instance_valid(t):
+		_terrain_layer()               # 顺便把 Terrain3D 节点找出来并缓存
+		t = _terrain_node
+	if t == null or not is_instance_valid(t):
+		return NAN
+	var d: Variant = t.get("data")
+	if d == null or not (d as Object).has_method("get_height"):
+		return NAN
+	return float((d as Object).call("get_height", Vector3(x, 0.0, z)))
+
+
+## 找"项目自己的地形封装"（类名/节点名含 terrain 且提供了 get_height_at 的节点）
+func _find_terrain_owner() -> Node:
+	var tree := get_tree()
+	if tree == null or tree.current_scene == null:
+		return null
+	var stack: Array = [tree.current_scene]
+	while not stack.is_empty():
+		var n := stack.pop_back() as Node
+		if n == null:
+			continue
+		var nm := String(n.name).to_lower()
+		if (String(n.get_class()).to_lower().contains("terrain") or nm.contains("terrain")) \
+				and n.has_method("get_height_at"):
+			return n
+		for c in n.get_children():
+			stack.append(c)
+	return null
+
+
+func _first_collision_layer(from_node: Node) -> int:
+	var stack: Array = [from_node]
+	var guard := 0
+	while not stack.is_empty() and guard < 4000:
+		guard += 1
+		var n := stack.pop_back() as Node
+		if n == null:
+			continue
+		if n is CollisionObject3D:
+			return (n as CollisionObject3D).collision_layer
+		for c in n.get_children():
+			stack.append(c)
+	return 0
+
+
+## 采样：外层环逐顶点朝下打射线（内圈半径 0 = 圆心高度）。
+## 返回 rows[ring][s] = {"hit": bool, "y": float, "ny": float}（ny = 命中面法线的朝上程度）
+##   —— **只采一次**，圆盘/扇形各按自己的阈值筛（见 _extract_rows），不重复打射线。
+## 射线排除施法者自己：扇形圆心就在角色脚下，别把角色当成"物体表面"爬上去。
+func _sample_heights(rings: int = RINGS) -> Array:
 	var world := get_world_3d()
 	var y0 := _center.y
+	var exclude: Array = []
+	if _player is CollisionObject3D:
+		exclude = [(_player as CollisionObject3D).get_rid()]
 	var rows: Array = []
-	for ring in range(RINGS + 1):
-		var rr := float(ring) / float(RINGS)
-		var row := PackedFloat32Array()
+	# ★ 复用同一个查询对象（只改 from/to）：一次重建最多 832 根射线，
+	#   每根都 create 一个 PhysicsRayQueryParameters3D 是白白的分配开销。
+	var q := PhysicsRayQueryParameters3D.create(Vector3.ZERO, Vector3.ZERO)
+	# ★ 打**全层**：地形、台阶、路面/石板这些"贴地物体"都要贴上（它们会把扇面挡住）。
+	#   高物体（石头/墙/遗迹）由上面的口径（±0.35m 限幅）自然忽略 -> 交给"表面叠加"。
+	var tl := _terrain_layer()
+	q.collision_mask = tl if (terrain_only_sampling and tl != 0) else 0xFFFFFFFF
+	q.exclude = exclude
+	for ring in range(rings + 1):
+		var rr := float(ring) / float(maxi(rings, 1))
+		var row: Array = []
 		row.resize(SEGMENTS)
 		for s in range(SEGMENTS):
-			var y := y0
+			var e := {"hit": false, "y": y0, "ny": 0.0, "terrain": false}
 			if ring > 0 and world != null:
 				var a := float(s) / float(SEGMENTS) * TAU
 				var x := _center.x + cos(a) * _radius * rr
 				var z := _center.z + sin(a) * _radius * rr
-				var q := PhysicsRayQueryParameters3D.create(Vector3(x, y0 + 12.0, z),
-						Vector3(x, y0 - 60.0, z))
-				q.collision_mask = 0xFFFFFFFF
+				q.from = Vector3(x, y0 + 12.0, z)
+				q.to = Vector3(x, y0 - 60.0, z)
 				var hit := world.direct_space_state.intersect_ray(q)
-				if not hit.is_empty() and _is_ground(hit):
-					y = (hit["position"] as Vector3).y
-			row[s] = y
+				if not hit.is_empty():
+					e["hit"] = true
+					e["y"] = (hit["position"] as Vector3).y
+					e["ny"] = (hit.get("normal", Vector3.UP) as Vector3).normalized().y
+					var col: Variant = hit.get("collider")
+					if tl != 0 and col is CollisionObject3D:
+						e["terrain"] = ((col as CollisionObject3D).collision_layer & tl) != 0
+					# ★ 不论命中地形还是物体，都取该 XZ 的**地形视觉高度**：
+					#   · 命中地形：它比碰撞体高度准（视觉/碰撞有偏差）；
+					#   · 命中物体：它就是"这个物体下面的地形"。
+					#   于是**地面网格只铺地形**，绝不和物体顶面互相戳穿
+					#   （用户实测"一块白一块不白"就是网格与物体在阈值处穿模）；
+					#   物体表面一律交给"物体表面叠加"——分工按**类型**，不按高度。
+					var tvh := _terrain_visual_height(x, z)
+					if not is_nan(tvh):
+						e["y"] = tvh
+						e["terrain"] = true
+			row[s] = e
 		rows.append(row)
 	return rows
 
 
 ## 限幅 + 平滑（**纯函数**：只吃高度图，自检直接喂人造尖刺/斜坡验证）
-##   ① 硬限幅：把"墙顶 / 深沟"这种大落差压进 smooth_lift / smooth_drop
-##   ② **坡度限幅**：相邻顶点落差不超过 slope_step，迭代若干轮。
+##   ① 硬限幅：把"墙顶 / 深沟"这种大落差压进 lift / drop
+##   ② **坡度限幅**：相邻顶点落差不超过 step，迭代若干轮。
 ##      这一步才是关键：它**保住整体坡形**（缓坡每级差一点，始终合法），
 ##      只把"一级跳 3 米"的尖刺一级一级削下来 -> 不再拉出尖刺布帘。
 ##   ③ 一轮**轻量**三点平均：把削出来的棱角抹圆（幅度小，不会抹掉坡形）
 ##   ★ 不要用"多轮重度平均"来做平滑：实测 3 轮 4 点平均会把 3 米尖刺压成 0.000，
 ##     整张盘变成完全平坦 —— 那样就不"适配地形"了。
-func _smooth_heights(rows: Array, y0: float) -> Array:
+## lift/drop/step/passes 默认 <0 = 用圆盘那一套（保持原来的行为与自检口径）；
+## 扇形传自己的一套（见 sector_* 参数）。
+func _smooth_heights(rows: Array, y0: float, lift := -1.0, drop := -1.0,
+		step := -1.0, passes := -1, circle := true) -> Array:
+	var up_lim: float = smooth_lift if lift < 0.0 else lift
+	var dn_lim: float = smooth_drop if drop < 0.0 else drop
+	var st: float = slope_step if step < 0.0 else step
+	var np: int = maxi(slope_passes if passes < 0 else passes, 0)
 	var n := rows.size()
 	# ① 硬限幅
 	var cur: Array = []
@@ -474,10 +833,10 @@ func _smooth_heights(rows: Array, y0: float) -> Array:
 		var capped := PackedFloat32Array()
 		capped.resize(SEGMENTS)
 		for s in range(SEGMENTS):
-			capped[s] = clampf(src[s], y0 - smooth_drop, y0 + smooth_lift)
+			capped[s] = clampf(src[s], y0 - dn_lim, y0 + up_lim)
 		cur.append(capped)
 	# ② 坡度限幅
-	for pass_i in range(maxi(slope_passes, 0)):
+	for pass_i in range(np):
 		var nxt: Array = []
 		for ring in range(n):
 			var row: PackedFloat32Array = cur[ring]
@@ -489,17 +848,22 @@ func _smooth_heights(rows: Array, y0: float) -> Array:
 					continue
 				var l := row[(s - 1 + SEGMENTS) % SEGMENTS]
 				var r := row[(s + 1) % SEGMENTS]
-				var lo := minf(l, r) - slope_step
-				var hi := maxf(l, r) + slope_step
+				var lo := minf(l, r) - st
+				var hi := maxf(l, r) + st
 				if ring < n - 1:
 					var up: PackedFloat32Array = cur[ring - 1]
 					var dn: PackedFloat32Array = cur[ring + 1]
-					lo = maxf(lo, minf(up[s], dn[s]) - slope_step)
-					hi = minf(hi, maxf(up[s], dn[s]) + slope_step)
+					lo = maxf(lo, minf(up[s], dn[s]) - st)
+					hi = minf(hi, maxf(up[s], dn[s]) + st)
 				out[s] = clampf(row[s], lo, hi)
 			nxt.append(out)
 		cur = nxt
 	# ③ 轻量抹圆（只沿圆周，一轮）
+	#   ★ 扇形**不做这一步**：抹圆会把顶点拉向圆周邻居的平均值 -> 凸起处网格沉到
+	#     视觉地形下面 -> 地形把扇面戳穿（用户实测："扇形中间部分区域还是没有被涂白"）。
+	#     地形本身是连续的、不会出尖刺，所以扇形不需要靠平滑兜底。
+	if not circle:
+		return cur
 	var fin: Array = []
 	for ring in range(n):
 		var row2: PackedFloat32Array = cur[ring]
@@ -514,3 +878,199 @@ func _smooth_heights(rows: Array, y0: float) -> Array:
 			out2[s] = (l2 + r2 + row2[s] * 2.0) / 4.0
 		fin.append(out2)
 	return fin
+
+
+# ---------------------------------------------------------------- 扇形：物体表面叠加
+## 把扇面画到**物体自己的表面**上（material_overlay + 世界坐标算形状）——
+## 这是【物体探测】探测波的做法：任何朝向的表面都能贴住，不受"顶点高度场"限制。
+## 只给**有碰撞体的物体**挂（石头/箱子/房子/树），并在离开范围、切回圆盘、
+## 选点结束时**逐个还原**原来的 material_overlay（绝不能留在物体上）。
+func _ensure_surface_mat() -> ShaderMaterial:
+	if _surface_mat != null:
+		return _surface_mat
+	_surface_mat = ShaderMaterial.new()
+	var sh := load(SURFACE_SHADER) as Shader
+	if DEBUG_MOUNT_SCAN_SHADER:
+		sh = load("res://assets/shaders/detect_scan.gdshader") as Shader
+	if sh == null:
+		push_warning("[选点器] 缺少 spell_sector_surface.gdshader，扇形不会画在物体表面")
+		return _surface_mat
+	_surface_mat.shader = sh
+	# ★ 物体上默认"只勾边不铺满"（见 surface_fill_strength 的说明）
+	_surface_mat.set_shader_parameter("fill_strength", surface_fill_strength)
+	_surface_mat.set_shader_parameter("edge_strength", surface_edge_strength)
+	_surface_mat.set_shader_parameter("rim_strength", surface_edge_strength * 0.7)
+	_surface_mat.set_shader_parameter("climb", surface_climb)
+	_surface_mat.set_shader_parameter("edge_boost", surface_edge_boost)
+	return _surface_mat
+
+
+func _update_surface_params() -> void:
+	if _surface_mat == null:
+		return
+	if DEBUG_MOUNT_SCAN_SHADER:
+		# 把"探测波扫描带"调成一道很宽的亮带，压在 4.5m 处 -> 墓碑/石棺正好在带里
+		_surface_mat.set_shader_parameter("scan_color", Color(1.0, 1.0, 1.0))
+		_surface_mat.set_shader_parameter("scan_alpha", 1.5)
+		_surface_mat.set_shader_parameter("band_width", 3.0)
+		_surface_mat.set_shader_parameter("band_gain", 2.0)
+		_surface_mat.set_shader_parameter("trail_len", 0.6)
+		_surface_mat.set_shader_parameter("trail_gain", 0.0)
+		_surface_mat.set_shader_parameter("climb", 0.0)
+		_surface_mat.set_shader_parameter("edge_boost", 0.0)
+		_surface_mat.set_shader_parameter("pattern_freq", 0.0)
+		_surface_mat.set_shader_parameter("wave_count", 0)
+		_surface_mat.set_shader_parameter("wave_center", _center)
+		_surface_mat.set_shader_parameter("wave_radius", 4.5)
+		return
+	_surface_mat.set_shader_parameter("sector_center", _center)
+	_surface_mat.set_shader_parameter("axis", _axis)
+	_surface_mat.set_shader_parameter("half_angle", half_angle())
+	_surface_mat.set_shader_parameter("radius", _radius)
+	_surface_mat.set_shader_parameter("inner_m", sector_inner_m)
+
+
+## 重新扫描"扇形范围内的物体"，给它们的网格挂/摘叠加材质。
+## ★ 挂/还原全部交给**公共模块** SurfaceOverlay（和【物体探测】共用同一份实现）：
+##   这里只负责"算出该挂哪些网格 + 参数"。
+func _refresh_surface() -> void:
+	if not surface_scan or not sector:
+		return
+	# 重建可能每帧都在调 -> 这里自己限流（球查询 + 包围盒判定比打射线便宜，但没必要每帧）
+	var now_s := Time.get_ticks_msec() * 0.001
+	if now_s - _last_surface < surface_refresh_interval:
+		return
+	_last_surface = now_s
+	_ensure_surface_mat()
+	if _surface_mat == null or _surface_mat.shader == null:
+		return
+	_update_surface_params()
+	var want := {}
+	for mi in _collect_sector_meshes():
+		want[mi.get_instance_id()] = {"mi": mi, "mat": _surface_mat}
+	_surface.sync(want)          # 不在范围内的会被自动还原
+	_overlaid = _surface.entries  # 兼容旧调试脚本（只读）
+
+
+## 球查询 + 扇区过滤 -> 该范围内物体的所有可见网格
+func _collect_sector_meshes() -> Array:
+	var out: Array = []
+	var world := get_world_3d()
+	if world == null:
+		return out
+	var exclude: Array[RID] = []
+	if _player is CollisionObject3D:
+		exclude.append((_player as CollisionObject3D).get_rid())
+	# ★ 球查询 / 碰撞体->可视节点解析 / 包围盒 都在公共模块里
+	var tl := _terrain_layer()
+	var keep := func(n: Node, _v: Node, box: AABB) -> bool:
+		# 地形自己不算"物体"：地面已经由贴合网格画了，再叠一层会重复变亮
+		if tl != 0 and n is CollisionObject3D \
+				and ((n as CollisionObject3D).collision_layer & tl) != 0:
+			return false
+		if not _aabb_in_sector(box):
+			return false
+		return true        # ★ 不再按高度跳过：网格只管地形，物体一律由叠加材质画，
+		                  #   两者不再抢同一块表面 -> 也就没有"一块白一块不白"。
+	# visual_up=6：碰撞体与网格隔得远的（导入模型常见）也要找得到
+	var hits := SurfaceOverlay.collect_meshes(world, _center, maxf(0.1, _radius),
+			surface_mask, exclude, keep, 64, 6)
+	for h in hits:
+		# ★ 再按**每个网格自己的包围盒**过滤：导入模型的"一整片"往往只挂一个碰撞体，
+		#   组包围盒巨大（17m），按组放行会把几十个网格全挂上；按网格过滤则只挂
+		#   真正被扇面切到的那些 —— 既省 draw pass，也不会出现"一块白一块不白"。
+		for mi in SurfaceOverlay.visible_meshes(h["visual"] as Node):
+			var mesh := mi as MeshInstance3D
+			if mesh.mesh == null:
+				continue
+			var mb: AABB = mesh.global_transform * mesh.mesh.get_aabb()
+			if _aabb_in_sector(mb):
+				out.append(mesh)
+	return out
+
+
+## 世界包围盒是否碰到扇形。
+## ★ 实测教训：墓地遗迹的碰撞体是**一个 17.2×1.6×16.8 m 的巨盒**（导入模型常见：
+##   一整片只挂一个 StaticBody）。这时任何"固定几档采样"都会因为间距太大而全部落在
+##   扇区外（3×3×3 时间距 8.6m）-> 整片被判"不在扇区"、一个网格都挂不上，
+##   表现出来就是"一块白一块不白"。
+##   所以：① 先判"扇形顶点(角色)在盒内"；② 采样间距压到 ≤1m（最多 12 档）× 三个高度。
+func _aabb_in_sector(box: AABB) -> bool:
+	# ① 角色站在这个盒子上/下 -> 必然相交（也是最快的一条）
+	if box.position.x <= _center.x and _center.x <= box.position.x + box.size.x \
+			and box.position.z <= _center.z and _center.z <= box.position.z + box.size.z:
+		return true
+	# ② XZ 密采样（间距 ≤1m，最多 12×12）× 上/中/下三档高度
+	var nx := clampi(int(ceil(box.size.x / 1.0)), 1, 12)
+	var nz := clampi(int(ceil(box.size.z / 1.0)), 1, 12)
+	for ix in range(nx + 1):
+		for iz in range(nz + 1):
+			for iy in [0.0, 0.5, 1.0]:
+				var c := box.position + Vector3(
+						box.size.x * float(ix) / float(nx),
+						box.size.y * iy,
+						box.size.z * float(iz) / float(nz))
+				if _in_sector_xz(c):
+					return true
+	return false
+
+
+func _in_sector_xz(w: Vector3) -> bool:
+	var d := Vector2(w.x - _center.x, w.z - _center.z)
+	if d.length() > _radius:
+		return false
+	if d.length() < 0.0001:
+		return true
+	return absf(wrapf(atan2(d.y, d.x) - _axis, -PI, PI)) <= half_angle()
+
+
+## 找到物体真正持有网格的那个可视节点（容器的原点常常在 (0,0,0)、几何体是偏移的）
+func _resolve_visual(node: Node) -> Node:
+	if node == null:
+		return null
+	var cur := node
+	for i in range(6):
+		if cur == null:
+			break
+		if cur is MeshInstance3D:
+			return cur
+		if not _visible_meshes(cur).is_empty():
+			return cur
+		cur = cur.get_parent()
+	return node
+
+
+func _visual_aabb(visual: Node) -> AABB:
+	var box := AABB()
+	var first := true
+	for mi in _visible_meshes(visual):
+		var m := mi as MeshInstance3D
+		if m.mesh == null:
+			continue
+		var b: AABB = m.global_transform * m.mesh.get_aabb()
+		if first:
+			box = b
+			first = false
+		else:
+			box = box.merge(b)
+	return box
+
+
+## 节点下所有可见网格（转发到公共模块）
+func _visible_meshes(node: Node) -> Array:
+	return SurfaceOverlay.visible_meshes(node)
+
+
+## 还原一个网格（转发到公共模块：overlay / 透明度 / 可见层一起还原）
+func _restore_one(id: int) -> void:
+	_surface.detach(id)
+
+
+## 还原**所有**被叠加的物体（切回圆盘 / 选点结束 / 节点退出时都必须调）
+func _restore_surface() -> void:
+	_surface.clear()
+	_overlaid = _surface.entries
+
+
+func _exit_tree() -> void:
+	_restore_surface()

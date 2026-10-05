@@ -301,7 +301,6 @@ func _check_card_facing() -> void:
 	_ck("内部填充保持随机朝向（逐卡均值 <0.8；随机≈0.64）",
 			int(mi45["i_cards"]) > 0 and float(mi45["i_card"]) < 0.8,
 			"%d 张卡 逐卡均值=%.3f" % [int(mi45["i_cards"]), float(mi45["i_card"])])
-
 	# ---- ③ 红线：火焰灼烧的焰卡必须**仍是随机朝向**（改动不得带走它）----
 	var SC := load("res://scripts/spells/flame_scorch.gd") as GDScript
 	var sc: Node3D = SC.new()
@@ -334,193 +333,6 @@ func _check_card_facing() -> void:
 	_ck("★ 火焰灼烧代码不引用逐卡朝向接口（两边互不干扰）",
 			not src.contains("face_cards_to"))
 	_check_feet_clear_and_glow()
-
-
-## ================================================================
-## ★ 用户反馈 1：「最好角色脚底不要生成火焰」
-##   量的是**角色到任意火焰三角面的水平最近距离**（三角面投到 XZ 平面 = 这块地上
-##   方有没有火），而不是到簇中心/到 AABB 的距离 —— AABB 对旋转过的卡片会偏大，
-##   量出来偏小，当年就是被这个口径骗过（以为留了 0.68m，实际只有 0.10m）。
-##   还要在**逐卡动画跑起来之后**再量（焰卡会呼吸伸缩，水平最多涨 ~6%）。
-##
-## ★ 用户反馈 2：「有角色很远的地方也有火焰效果」
-##   症状根因：flame_advance 覆盖了 _spawn_patches，却漏了基类里"给贴地光斑
-##   设置 transform"那一步 -> 15 个光斑全堆在特效根节点原点、竖着、scale=1，
-##   而特效根挂在 _player.get_parent() 上 -> 角色一走开，原地就剩一团火。
-##   这里钉住：每个光斑都必须贴在自己那一簇脚下、平铺、且不越出扇形。
-## ================================================================
-func _check_feet_clear_and_glow() -> void:
-	print("---- 角色脚底留白 / 贴地光斑 ----")
-	var S := load("res://scripts/spells/flame_advance.gd") as GDScript
-	var cases := [
-		{"deg": 45.0, "radius": 10.0, "axis": 0.0},
-		{"deg": 62.5, "radius": 8.0, "axis": -0.5},
-		{"deg": 80.0, "radius": 6.0, "axis": 0.7},
-	]
-	for c in cases:
-		var tag := "%.0f°×%.0fm" % [float(c["deg"]), float(c["radius"])]
-		var mana := get_root().get_node_or_null("Mana")
-		if mana != null:
-			mana.call("refill")
-		var sp: Node3D = S.new()
-		get_root().add_child(sp)
-		sp.set("debug_sector", false)
-		sp.set("debug_vegetation", false)
-		# ★ 时间由测试自己推进（_process 手动调），否则无头模式的帧率不受控，
-		#   波前/点燃的时序会变成随机的 —— 而且**不能**在 grow=0 时调焰卡的 _process
-		#   （那条路径里有 1/sqrt(grow)，会把卡片横向吹大 4 倍，是测试假象不是游戏行为）。
-		sp.set_process(false)
-		sp.call("cast_sector", Vector3.ZERO, float(c["radius"]), float(c["axis"]),
-				deg_to_rad(float(c["deg"])) * 0.5)
-		var used: int = int(sp.get("_used"))
-		var patches: Array = sp.get("_patches")
-		var glows: Array = sp.get("_glows")
-		var gap_want := float(sp.get("place_inner_gap_m"))
-		var gap_vis := float(sp.get("place_gap_visible_grow"))
-		for i in range(mini(used, patches.size())):
-			var pf0 := patches[i] as Node3D
-			if pf0 != null and is_instance_valid(pf0):
-				pf0.set_process(false)
-		var min_all := 1e9
-		var min_half := 1e9
-		var min_bright := 1e9
-		var dt := 1.0 / 60.0
-		for k in range(96):                      # 1.6s：覆盖波前(1.0s)+点燃(0.35s)+稳定燃烧
-			sp.call("_process", dt)
-			for i in range(mini(used, patches.size())):
-				var pf := patches[i] as Node3D
-				if pf != null and is_instance_valid(pf):
-					pf.call("_process", dt)
-			min_all = minf(min_all, _nearest_flame_aabb_xz(patches, used, Vector3.ZERO, 0.0))
-			min_half = minf(min_half, _nearest_flame_aabb_xz(patches, used, Vector3.ZERO, 0.5))
-			# 硬判据用"满亮"的火（正常燃烧 = 观众看的那团火）
-			min_bright = minf(min_bright, _nearest_flame_aabb_xz(patches, used, Vector3.ZERO, 0.95))
-		var tri := _nearest_flame_tri_xz(patches, used, Vector3.ZERO)
-		_ck("★ %s：角色脚底没有看得见的火（满亮全程 ≥ 留白 − 容差）" % tag,
-				min_bright >= gap_want - 0.25,
-				"满亮 %.2fm / 半透明起 %.2fm / 含鬼影 %.2fm（留白参数 %.1fm）；最近来源 %s"
-				% [min_bright, min_half, min_all, gap_want, str(tri["what"])])
-		# ② 贴地光斑：必须贴在自己那一簇脚下、平铺、不越界
-		var worst_gap := 0.0
-		var bad_flat := 0
-		var bad_far := 0
-		var lim := float(c["radius"]) + 1.0        # 光斑是 2.6m 的方片，留 1m 余量
-		for i in range(mini(used, mini(glows.size(), patches.size()))):
-			var g := glows[i] as MeshInstance3D
-			var pf2 := patches[i] as Node3D
-			if g == null or pf2 == null or not is_instance_valid(g) or not is_instance_valid(pf2):
-				continue
-			worst_gap = maxf(worst_gap, Vector2(g.global_position.x - pf2.global_position.x,
-					g.global_position.z - pf2.global_position.z).length())
-			if g.global_transform.basis.z.normalized().y < 0.9:
-				bad_flat += 1
-			if Vector2(g.global_position.x, g.global_position.z).length() > lim:
-				bad_far += 1
-		_ck("★ %s：贴地光斑都贴在自己那一簇脚下（≤0.5m；原来全堆在特效根原点）" % tag,
-				worst_gap <= 0.5, "最大偏差 %.2fm（%d 个光斑）" % [worst_gap, mini(used, glows.size())])
-		_ck("★ %s：贴地光斑是平铺在地面的（不是竖着的纸片）" % tag,
-				bad_flat == 0, "竖着 %d 个" % bad_flat)
-		_ck("★ %s：没有跑到扇形之外的火焰/光斑" % tag, bad_far == 0, "越界 %d 个" % bad_far)
-		sp.queue_free()
-	print("通过 %d  |  失败 %d" % [_pass, _fail])
-	quit(0 if _fail == 0 else 1)
-
-
-## 角色到任意可见火焰网格的世界 AABB 的水平最近距离（可只算 grow ≥ min_grow 的）。
-## AABB 一定**包含**几何体 -> 这个值 ≤ 到真实几何的距离（保守口径）：
-## 拿它当验收判据，通过就说明真实留白只会更大。
-func _nearest_flame_aabb_xz(patches: Array, used: int, p: Vector3, min_grow: float) -> float:
-	var best := 1e9
-	for i in range(mini(used, patches.size())):
-		var pa := patches[i] as Node3D
-		if pa == null or not is_instance_valid(pa) or not pa.visible:
-			continue
-		if min_grow > 0.0 and float(pa.get("grow")) < min_grow:
-			continue
-		for mi in _all_meshes(pa):
-			var m := (mi as MeshInstance3D).mesh
-			if m == null:
-				continue
-			var box: AABB = (mi as Node3D).global_transform * m.get_aabb()
-			var cx := clampf(p.x, box.position.x, box.position.x + box.size.x)
-			var cz := clampf(p.z, box.position.z, box.position.z + box.size.z)
-			best = minf(best, Vector2(cx - p.x, cz - p.z).length())
-	return best
-
-
-## 点到任意可见火焰**三角面**在 XZ 平面上的最近距离
-func _nearest_flame_tri_xz(patches: Array, used: int, p: Vector3) -> Dictionary:
-	var best := 1e9
-	var what := ""
-	for i in range(mini(used, patches.size())):
-		var pa := patches[i] as Node3D
-		if pa == null or not is_instance_valid(pa) or not pa.visible:
-			continue
-		for mi in _all_meshes(pa):
-			var m := (mi as MeshInstance3D).mesh
-			if m == null or m.get_surface_count() == 0:
-				continue
-			var xf := (mi as Node3D).global_transform
-			var box: AABB = xf * m.get_aabb()
-			var ax := clampf(p.x, box.position.x, box.position.x + box.size.x)
-			var az := clampf(p.z, box.position.z, box.position.z + box.size.z)
-			if Vector2(ax - p.x, az - p.z).length() >= best:
-				continue                                   # 粗筛：AABB 都比当前最优远
-			var arr := m.surface_get_arrays(0)
-			var verts: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
-			var idx: PackedInt32Array = arr[Mesh.ARRAY_INDEX]
-			var nt := int(idx.size() / 3) if not idx.is_empty() else int(verts.size() / 3)
-			for t in range(nt):
-				var i0 := t * 3
-				var i1 := t * 3 + 1
-				var i2 := t * 3 + 2
-				if not idx.is_empty():
-					i0 = int(idx[t * 3])
-					i1 = int(idx[t * 3 + 1])
-					i2 = int(idx[t * 3 + 2])
-				if i0 >= verts.size() or i1 >= verts.size() or i2 >= verts.size():
-					continue
-				var d := _pt_tri_xz(p, xf * verts[i0], xf * verts[i1], xf * verts[i2])
-				if d < best:
-					best = d
-					what = "%s/%s" % [pa.name, (mi as Node).name]
-	return {"d": best, "what": what}
-
-
-func _pt_tri_xz(p: Vector3, a3: Vector3, b3: Vector3, c3: Vector3) -> float:
-	var p2 := Vector2(p.x, p.z)
-	var a := Vector2(a3.x, a3.z)
-	var b := Vector2(b3.x, b3.z)
-	var c := Vector2(c3.x, c3.z)
-	var d1 := _cross2(b - a, p2 - a)
-	var d2 := _cross2(c - b, p2 - b)
-	var d3 := _cross2(a - c, p2 - c)
-	if not ((d1 < 0.0 or d2 < 0.0 or d3 < 0.0) and (d1 > 0.0 or d2 > 0.0 or d3 > 0.0)):
-		return 0.0
-	return minf(minf(_seg_xz(p2, a, b), _seg_xz(p2, b, c)), _seg_xz(p2, c, a))
-
-
-func _cross2(u: Vector2, v: Vector2) -> float:
-	return u.x * v.y - u.y * v.x
-
-
-func _seg_xz(p: Vector2, a: Vector2, b: Vector2) -> float:
-	var ab := b - a
-	var l2 := ab.length_squared()
-	if l2 < 1e-12:
-		return (p - a).length()
-	var t := clampf((p - a).dot(ab) / l2, 0.0, 1.0)
-	return (p - (a + ab * t)).length()
-
-
-## 特效里所有网格（**含** CoreGlow 光片：它们也是会被看到的火）
-func _all_meshes(n: Node) -> Array:
-	var out: Array = []
-	for c in n.get_children():
-		if c is MeshInstance3D:
-			out.append(c)
-		out.append_array(_all_meshes(c))
-	return out
 
 
 # ---------------------------------------------------------------- 朝向测量（几何）
@@ -688,6 +500,400 @@ func _cluster_normal(patch: Node3D) -> Vector3:
 			n = -n
 		acc += n
 	return acc.normalized() if acc.length_squared() > 1e-9 else Vector3.UP
+
+
+## ================================================================
+## ★ 用户反馈 1：「最好角色脚底不要生成火焰」
+##   量的是**角色到任意火焰三角面的水平最近距离**（三角面投到 XZ 平面 = 这块地上
+##   方有没有火），而不是到簇中心/到 AABB 的距离 —— AABB 对旋转过的卡片会偏大，
+##   量出来偏小，当年就是被这个口径骗过（以为留了 0.68m，实际只有 0.10m）。
+##   还要在**逐卡动画跑起来之后**再量（焰卡会呼吸伸缩，水平最多涨 ~6%）。
+##
+## ★ 用户反馈 2：「有角色很远的地方也有火焰效果」
+##   症状根因：flame_advance 覆盖了 _spawn_patches，却漏了基类里"给贴地光斑
+##   设置 transform"那一步 -> 15 个光斑全堆在特效根节点原点、竖着、scale=1，
+##   而特效根挂在 _player.get_parent() 上 -> 角色一走开，原地就剩一团火。
+##   这里钉住：每个光斑都必须贴在自己那一簇脚下、平铺、且不越出扇形。
+## ================================================================
+func _check_feet_clear_and_glow() -> void:
+	print("---- 角色脚底留白 / 贴地光斑 ----")
+	var S := load("res://scripts/spells/flame_advance.gd") as GDScript
+	var cases := [
+		{"deg": 45.0, "radius": 10.0, "axis": 0.0},
+		{"deg": 62.5, "radius": 8.0, "axis": -0.5},
+		{"deg": 80.0, "radius": 6.0, "axis": 0.7},
+	]
+	for c in cases:
+		var tag := "%.0f°×%.0fm" % [float(c["deg"]), float(c["radius"])]
+		var mana := get_root().get_node_or_null("Mana")
+		if mana != null:
+			mana.call("refill")
+		var sp: Node3D = S.new()
+		get_root().add_child(sp)
+		sp.set("debug_sector", false)
+		sp.set("debug_vegetation", false)
+		# ★ 时间由测试自己推进（_process 手动调），否则无头模式的帧率不受控，
+		#   波前/点燃的时序会变成随机的 —— 而且**不能**在 grow=0 时调焰卡的 _process
+		#   （那条路径里有 1/sqrt(grow)，会把卡片横向吹大 4 倍，是测试假象不是游戏行为）。
+		sp.set_process(false)
+		sp.call("cast_sector", Vector3.ZERO, float(c["radius"]), float(c["axis"]),
+				deg_to_rad(float(c["deg"])) * 0.5)
+		var used: int = int(sp.get("_used"))
+		var patches: Array = sp.get("_patches")
+		var glows: Array = sp.get("_glows")
+		var gap_want := float(sp.get("place_inner_gap_m"))
+		for i in range(mini(used, patches.size())):
+			var pf0 := patches[i] as Node3D
+			if pf0 != null and is_instance_valid(pf0):
+				pf0.set_process(false)
+		var min_all := 1e9
+		var min_half := 1e9
+		var min_bright := 1e9
+		var dt := 1.0 / 60.0
+		for k in range(96):                      # 1.6s：覆盖波前(1.0s)+点燃(0.35s)+稳定燃烧
+			sp.call("_process", dt)
+			for i in range(mini(used, patches.size())):
+				var pf := patches[i] as Node3D
+				if pf != null and is_instance_valid(pf):
+					pf.call("_process", dt)
+			min_all = minf(min_all, _nearest_flame_aabb_xz(patches, used, Vector3.ZERO, 0.0))
+			min_half = minf(min_half, _nearest_flame_aabb_xz(patches, used, Vector3.ZERO, 0.5))
+			# 硬判据用"满亮"的火（正常燃烧 = 观众看的那团火）
+			min_bright = minf(min_bright, _nearest_flame_aabb_xz(patches, used, Vector3.ZERO, 0.95))
+		var tri := _nearest_flame_tri_xz(patches, used, Vector3.ZERO)
+		_ck("★ %s：角色脚底没有看得见的火（满亮全程 ≥ 留白 − 容差）" % tag,
+				min_bright >= gap_want - 0.25,
+				"满亮 %.2fm / 半透明起 %.2fm / 含鬼影 %.2fm（留白参数 %.1fm）；最近来源 %s"
+				% [min_bright, min_half, min_all, gap_want, str(tri["what"])])
+		# ② 贴地光斑：必须贴在自己那一簇脚下、平铺、不越界
+		var worst_gap := 0.0
+		var bad_flat := 0
+		var bad_far := 0
+		var lim := float(c["radius"]) + 1.0        # 光斑是 2.6m 的方片，留 1m 余量
+		for i in range(mini(used, mini(glows.size(), patches.size()))):
+			var g := glows[i] as MeshInstance3D
+			var pf2 := patches[i] as Node3D
+			if g == null or pf2 == null or not is_instance_valid(g) or not is_instance_valid(pf2):
+				continue
+			worst_gap = maxf(worst_gap, Vector2(g.global_position.x - pf2.global_position.x,
+					g.global_position.z - pf2.global_position.z).length())
+			if g.global_transform.basis.z.normalized().y < 0.9:
+				bad_flat += 1
+			if Vector2(g.global_position.x, g.global_position.z).length() > lim:
+				bad_far += 1
+		_ck("★ %s：贴地光斑都贴在自己那一簇脚下（≤0.5m；原来全堆在特效根原点）" % tag,
+				worst_gap <= 0.5, "最大偏差 %.2fm（%d 个光斑）" % [worst_gap, mini(used, glows.size())])
+		_ck("★ %s：贴地光斑是平铺在地面的（不是竖着的纸片）" % tag,
+				bad_flat == 0, "竖着 %d 个" % bad_flat)
+		_ck("★ %s：没有跑到扇形之外的火焰/光斑" % tag, bad_far == 0, "越界 %d 个" % bad_far)
+		# ★ 用户反馈："火焰生成距离角色过远" —— 留白只许把火推到"实际伸距 + 留白"，
+		#   不许用保守上界把整圈火往外推（实测保守上界会比真实伸距大 0.8~1.0m）。
+		var tight := 1e9
+		for i in range(mini(used, patches.size())):
+			var pf3 := patches[i] as Node3D
+			if pf3 == null or not is_instance_valid(pf3):
+				continue
+			var need: float = float(sp.call("_patch_reach", pf3)) + gap_want
+			var d3 := Vector2(pf3.global_position.x, pf3.global_position.z).length()
+			tight = minf(tight, need - d3)
+		_ck("★ %s：留白没有把最内侧的火推远（簇心 ≤ 实际伸距 + 留白 + 0.35m）" % tag,
+				tight <= 0.35, "最紧的一簇超出 %.2f m" % tight)
+		sp.queue_free()
+	_check_selector_covers_props()
+
+
+## 角色到任意可见火焰网格的世界 AABB 的水平最近距离（可只算 grow ≥ min_grow 的）。
+## AABB 一定**包含**几何体 -> 这个值 ≤ 到真实几何的距离（保守口径）：
+## 拿它当验收判据，通过就说明真实留白只会更大。
+func _nearest_flame_aabb_xz(patches: Array, used: int, p: Vector3, min_grow: float) -> float:
+	var best := 1e9
+	for i in range(mini(used, patches.size())):
+		var pa := patches[i] as Node3D
+		if pa == null or not is_instance_valid(pa) or not pa.visible:
+			continue
+		if min_grow > 0.0 and float(pa.get("grow")) < min_grow:
+			continue
+		for mi in _all_meshes(pa):
+			var m := (mi as MeshInstance3D).mesh
+			if m == null:
+				continue
+			var box: AABB = (mi as Node3D).global_transform * m.get_aabb()
+			var cx := clampf(p.x, box.position.x, box.position.x + box.size.x)
+			var cz := clampf(p.z, box.position.z, box.position.z + box.size.z)
+			best = minf(best, Vector2(cx - p.x, cz - p.z).length())
+	return best
+
+
+## 点到任意可见火焰**三角面**在 XZ 平面上的最近距离
+func _nearest_flame_tri_xz(patches: Array, used: int, p: Vector3) -> Dictionary:
+	var best := 1e9
+	var what := ""
+	for i in range(mini(used, patches.size())):
+		var pa := patches[i] as Node3D
+		if pa == null or not is_instance_valid(pa) or not pa.visible:
+			continue
+		for mi in _all_meshes(pa):
+			var m := (mi as MeshInstance3D).mesh
+			if m == null or m.get_surface_count() == 0:
+				continue
+			var xf := (mi as Node3D).global_transform
+			var box: AABB = xf * m.get_aabb()
+			var ax := clampf(p.x, box.position.x, box.position.x + box.size.x)
+			var az := clampf(p.z, box.position.z, box.position.z + box.size.z)
+			if Vector2(ax - p.x, az - p.z).length() >= best:
+				continue                                   # 粗筛：AABB 都比当前最优远
+			var arr := m.surface_get_arrays(0)
+			var verts: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+			var idx: PackedInt32Array = arr[Mesh.ARRAY_INDEX]
+			var nt := int(idx.size() / 3) if not idx.is_empty() else int(verts.size() / 3)
+			for t in range(nt):
+				var i0 := t * 3
+				var i1 := t * 3 + 1
+				var i2 := t * 3 + 2
+				if not idx.is_empty():
+					i0 = int(idx[t * 3])
+					i1 = int(idx[t * 3 + 1])
+					i2 = int(idx[t * 3 + 2])
+				if i0 >= verts.size() or i1 >= verts.size() or i2 >= verts.size():
+					continue
+				var d := _pt_tri_xz(p, xf * verts[i0], xf * verts[i1], xf * verts[i2])
+				if d < best:
+					best = d
+					what = "%s/%s" % [pa.name, (mi as Node).name]
+	return {"d": best, "what": what}
+
+
+func _pt_tri_xz(p: Vector3, a3: Vector3, b3: Vector3, c3: Vector3) -> float:
+	var p2 := Vector2(p.x, p.z)
+	var a := Vector2(a3.x, a3.z)
+	var b := Vector2(b3.x, b3.z)
+	var c := Vector2(c3.x, c3.z)
+	var d1 := _cross2(b - a, p2 - a)
+	var d2 := _cross2(c - b, p2 - b)
+	var d3 := _cross2(a - c, p2 - c)
+	if not ((d1 < 0.0 or d2 < 0.0 or d3 < 0.0) and (d1 > 0.0 or d2 > 0.0 or d3 > 0.0)):
+		return 0.0
+	return minf(minf(_seg_xz(p2, a, b), _seg_xz(p2, b, c)), _seg_xz(p2, c, a))
+
+
+func _cross2(u: Vector2, v: Vector2) -> float:
+	return u.x * v.y - u.y * v.x
+
+
+func _seg_xz(p: Vector2, a: Vector2, b: Vector2) -> float:
+	var ab := b - a
+	var l2 := ab.length_squared()
+	if l2 < 1e-12:
+		return (p - a).length()
+	var t := clampf((p - a).dot(ab) / l2, 0.0, 1.0)
+	return (p - (a + ab * t)).length()
+
+
+## 特效里所有网格（**含** CoreGlow 光片：它们也是会被看到的火）
+func _all_meshes(n: Node) -> Array:
+	var out: Array = []
+	for c in n.get_children():
+		if c is MeshInstance3D:
+			out.append(c)
+		out.append_array(_all_meshes(c))
+	return out
+
+
+## ================================================================
+## ★ 用户反馈 3："扇形选择器，没有在物体表面显示，只对地形有效"
+##   原因：圆盘和扇形**共用一份网格**，而那份网格是给圆盘定的口径
+##   （只认能站的地面 + 硬限幅 y0±0.35 + 坡度限幅 0.22/级）—— 1.6m 的石头会被
+##   压回地面高度，石头就把扇面挡住了（复现：石头正上方顶点只有 0.24m）。
+##   现在扇形单独一套"贴哪"的参数，还会用密一倍的径向（12 级）爬上去。
+##   这里用**合成场景**量顶点高度（选点器把"贴哪"完全交给顶点采样）。
+##   合成体放在 x=200 处，不影响前面的法术测试（那边是空场地）。
+## ================================================================
+func _check_selector_covers_props() -> void:
+	print("---- 扇形选点器：铺到物体表面 ----")
+	var stage := Node3D.new()
+	stage.name = "SelectorProbeStage"
+	get_root().add_child(stage)
+	# 地面（顶面 y=0）
+	var ground := StaticBody3D.new()
+	var gcs := CollisionShape3D.new()
+	var gb := BoxShape3D.new()
+	gb.size = Vector3(60.0, 1.0, 60.0)
+	gcs.shape = gb
+	gcs.position = Vector3(200.0, -0.5, 0.0)
+	ground.add_child(gcs)
+	stage.add_child(ground)
+	# 石头：2×1.6×2，顶面 y=1.6（在半径 5m 处，正落在采样环上）
+	var rock := StaticBody3D.new()
+	var rcs := CollisionShape3D.new()
+	var rb := BoxShape3D.new()
+	rb.size = Vector3(2.0, 1.6, 2.0)
+	rcs.shape = rb
+	rock.add_child(rcs)
+	rock.position = Vector3(205.0, 0.8, 0.0)
+	stage.add_child(rock)
+	# 8m 细杆：正好压在第 0 号采样射线上（半径 8.33m，角度 0）-> 验证尖刺仍会被削掉
+	var pole := StaticBody3D.new()
+	var pcs := CollisionShape3D.new()
+	var pb := BoxShape3D.new()
+	pb.size = Vector3(0.3, 8.0, 0.3)
+	pcs.shape = pb
+	pole.add_child(pcs)
+	pole.position = Vector3(208.33, 4.0, 0.0)
+	stage.add_child(pole)
+	# ★ 贴地物体：0.3m 高"石板路"（用户截图里把扇面切断的那种东西）
+	var plat := StaticBody3D.new()
+	var plcs := CollisionShape3D.new()
+	var plb := BoxShape3D.new()
+	plb.size = Vector3(1.5, 0.3, 3.0)
+	plcs.shape = plb
+	plat.add_child(plcs)
+	plat.position = Vector3(207.25, 0.15, 0.0)
+	stage.add_child(plat)
+	var player := Node3D.new()
+	stage.add_child(player)
+	player.global_position = Vector3(200.0, 0.0, 0.0)
+	var tg: Node3D = (load("res://scripts/spells/spell_targeting.gd") as GDScript).new()
+	stage.add_child(tg)
+	tg.call("setup", player, null)
+	tg.call("configure", {"mode": "sector", "angle_min": 45.0, "angle_max": 80.0,
+			"radius_at_min": 10.0, "radius_at_max": 6.0, "range_min": 1.0, "range_max": 12.0})
+	tg.set("debug_targeting", false)
+	tg.call("begin")
+	tg.set("_center", Vector3(200.0, 0.0, 0.0))
+	tg.set("_axis", 0.0)
+	tg.set("_angle", 45.0)
+	tg.set("_radius", 10.0)
+	tg.call("_rebuild_mesh")
+	var sec := tg.get("_sector_disc") as MeshInstance3D
+	var disc := tg.get("_disc") as MeshInstance3D
+	var sec_top := _max_y_in_rect(sec, Rect2(204.2, -0.8, 1.6, 1.6))
+	var disc_top := _max_y_in_rect(disc, Rect2(204.2, -0.8, 1.6, 1.6))
+	var pole_top := _max_y_in_rect(sec, Rect2(207.9, -0.4, 0.9, 0.8))
+	var plat_top := _max_y_in_rect(sec, Rect2(206.6, -0.6, 1.2, 1.2))
+	# ★ 分层设计（这是这一版的核心）：贴合网格只铺"**地形 + 贴地物体**"；
+	#   高物体（石头/墙/遗迹）的表面由**物体表面叠加**（material_overlay）负责。
+	#   所以网格在高石头/细杆上必须**保持低位**（被限幅在 ±0.35m），不能爬上去
+	#   —— 爬上去会拉出裙边，而且和叠加材质画两遍。
+	_ck("★ 高物体（1.6m 石头）不把网格拉上去（石头正上方 ≤0.45m）",
+			sec_top <= 0.45, "最高 y=%.2f（石头顶 1.60；网格应停在 ~0.35）" % sec_top)
+	_ck("★ 8m 细杆同样有界且不被爬（杆顶处 ≤0.45m）",
+			pole_top <= 0.45, "最高 y=%.2f" % pole_top)
+	# ★ 回归项：用户实测的 bug ——"扇形中间部分区域还是没有被涂白"：
+	#   根因是"只打地形层"漏掉了路面/石板这类**贴地物体**（属物体层），它们把扇面切断。
+	#   现在采样打全层 + 非地形命中限幅 ±0.35m -> 贴地物体必须被贴住。
+	_ck("★ 贴地物体（0.3m 石板路）被网格贴住（该处 ≥0.28m）—— 截图那个 bug 的回归项",
+			plat_top >= 0.28, "该处网格高度=%.2f（石板顶 0.30）" % plat_top)
+	_ck("★ 圆盘在石头上仍保持低位（≤0.4m）—— 火焰灼烧的观感没被带走",
+			disc_top <= 0.4, "最高 y=%.2f" % disc_top)
+	var sv: PackedVector3Array = (sec.mesh as ArrayMesh).surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	var dv: PackedVector3Array = (disc.mesh as ArrayMesh).surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	# ★ 扇形 12 级 = 基础 4608 顶点；有落差时还会**插入竖直裙边**（每插一行 +384），
+	#   所以这里断言"不少于基础值"，另有一条专门验裙边确实被插进去了。
+	_ck("★ 扇形径向密一倍（12 级 ≥4608 顶点）、圆盘仍是 6 级（2304 顶点）",
+			sv.size() >= 4608 and dv.size() == 2304, "扇形 %d / 圆盘 %d" % [sv.size(), dv.size()])
+	_ck("★ 落差处插入了竖直裙边（顶点数 > 基础 4608，多出的是台阶立面）",
+			sv.size() > 4608, "扇形顶点 %d（基础 4608）" % sv.size())
+	# ★ UV 半径必须按各自的级数换算：着色器是**按 UV 裁形状**的，
+	#   扇形用 ring/RINGS 算会让最外圈 UV 半径到 1.83 -> 扇面只剩内半截可见。
+	var suv: PackedVector2Array = (sec.mesh as ArrayMesh).surface_get_arrays(0)[Mesh.ARRAY_TEX_UV]
+	var duv: PackedVector2Array = (disc.mesh as ArrayMesh).surface_get_arrays(0)[Mesh.ARRAY_TEX_UV]
+	var smax := 0.0
+	for uv in suv:
+		smax = maxf(smax, (uv - Vector2(0.5, 0.5)).length() * 2.0)
+	var dmax := 0.0
+	for uv in duv:
+		dmax = maxf(dmax, (uv - Vector2(0.5, 0.5)).length() * 2.0)
+	_ck("★ 扇形/圆盘的 UV 半径都不超过 1.0（超了扇面会被着色器裁掉半截）",
+			smax <= 1.001 and dmax <= 1.001, "扇形 %.3f / 圆盘 %.3f" % [smax, dmax])
+	# ★ 光"最高顶点够高"不等于"那一块被盖住"；反过来，高物体这里**本来就不该高**：
+	#   网格在高物体上保持低位（表面交给叠加），所以这里验的是"没有把网格拉上去"。
+	var cover_top := _mesh_y_at_xz(sec, Vector2(205.0, 0.0))
+	var cover_side := _mesh_y_at_xz(sec, Vector2(207.5, 0.0))
+	var cover_plat := _mesh_y_at_xz(sec, Vector2(207.25, 0.0))
+	_ck("★ 石头顶中心没把网格拉上去（该处 ≤0.45m；物体表面由叠加负责）",
+			cover_top >= -100.0 and cover_top <= 0.45, "石头顶中心处网格高度=%.2f" % cover_top)
+	_ck("★ 石头旁边的地面被扇面盖住（该处高度 ≈0）",
+			cover_side > -100.0 and cover_side < 0.6, "旁边地面处高度=%.2f" % cover_side)
+	_ck("★ 石板路中心被扇面盖住（该处 ≈0.35m，不是被切断）",
+			cover_plat >= 0.28, "石板路中心处网格高度=%.2f" % cover_plat)
+	# ---- ★ 物体表面叠加（复用【物体探测】探测波那套：material_overlay + 世界坐标形状）----
+	#   扇形里的物体应当被挂上叠加材质（任何朝向的表面都能画出扇面）；
+	#   扇形外的物体不该被动；选点结束必须**还原**（绝不能留在物体上）。
+	var out_rock := StaticBody3D.new()
+	var ocs := CollisionShape3D.new()
+	var ob := BoxShape3D.new()
+	ob.size = Vector3(2.0, 1.6, 2.0)
+	ocs.shape = ob
+	out_rock.add_child(ocs)
+	var omi := MeshInstance3D.new()
+	var obm := BoxMesh.new()
+	obm.size = Vector3(2.0, 1.6, 2.0)
+	omi.mesh = obm
+	out_rock.add_child(omi)
+	out_rock.position = Vector3(193.0, 0.8, 0.0)     # 角色背后 -> 不在扇形里
+	stage.add_child(out_rock)
+	var rock_mi: MeshInstance3D = null
+	for c in rock.get_children():
+		if c is MeshInstance3D:
+			rock_mi = c as MeshInstance3D
+	tg.set("surface_scan", true)
+	tg.set("sector", true)
+	tg.call("_refresh_surface")
+	var mat_ok := rock_mi != null and rock_mi.material_overlay is ShaderMaterial \
+			and (rock_mi.material_overlay as ShaderMaterial).shader != null \
+			and (rock_mi.material_overlay as ShaderMaterial).shader.resource_path.contains("sector_surface")
+	_ck("★ 扇形里的石头被挂上「物体表面叠加」（探测波那套做法）", mat_ok,
+			"overlay=%s" % str(rock_mi.material_overlay if rock_mi != null else null))
+	_ck("★ 扇形外的物体不被挂叠加材质（背后那块石头 overlay 为空）",
+			omi.material_overlay == null, "overlay=%s" % str(omi.material_overlay))
+	var sm := rock_mi.material_overlay as ShaderMaterial if rock_mi != null else null
+	var got_r: Variant = sm.get_shader_parameter("radius") if sm != null else null
+	_ck("★ 叠加材质的扇形参数已写入（radius = 选点半径 10）",
+			got_r != null and absf(float(got_r) - 10.0) < 0.01, "radius=%s" % str(got_r))
+	tg.call("end")
+	_ck("★ 选点结束时叠加材质被**还原**（不能留在物体上）",
+			rock_mi == null or rock_mi.material_overlay == null,
+			"overlay=%s" % str(rock_mi.material_overlay if rock_mi != null else null))
+	stage.queue_free()
+	print("通过 %d  |  失败 %d" % [_pass, _fail])
+	quit(0 if _fail == 0 else 1)
+
+
+## 网格在 XZ 矩形范围内的最高顶点 y
+func _max_y_in_rect(mi: MeshInstance3D, rect: Rect2) -> float:
+	if mi == null or mi.mesh == null:
+		return -1e9
+	var verts: PackedVector3Array = (mi.mesh as ArrayMesh).surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	var best := -1e9
+	for v in verts:
+		if rect.has_point(Vector2(v.x, v.z)):
+			best = maxf(best, v.y)
+	return best
+
+
+## 网格在某个 XZ 点处的**高度**（三角形内插），没有任何三角形覆盖该点时返回 -1e9。
+## 用来验"这块地方到底有没有被扇面盖住"，而不是只看顶点最大值。
+func _mesh_y_at_xz(mi: MeshInstance3D, xz: Vector2) -> float:
+	if mi == null or mi.mesh == null:
+		return -1e9
+	var verts: PackedVector3Array = (mi.mesh as ArrayMesh).surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	var best := -1e9
+	var n_tri := int(verts.size() / 3)
+	for t in range(n_tri):
+		var a := Vector2(verts[t * 3].x, verts[t * 3].z)
+		var b := Vector2(verts[t * 3 + 1].x, verts[t * 3 + 1].z)
+		var c := Vector2(verts[t * 3 + 2].x, verts[t * 3 + 2].z)
+		var d := (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y)
+		if absf(d) < 1e-9:
+			continue
+		var w0 := ((b.y - c.y) * (xz.x - c.x) + (c.x - b.x) * (xz.y - c.y)) / d
+		var w1 := ((c.y - a.y) * (xz.x - c.x) + (a.x - c.x) * (xz.y - c.y)) / d
+		var w2 := 1.0 - w0 - w1
+		if w0 < -1e-4 or w1 < -1e-4 or w2 < -1e-4:
+			continue
+		var y := w0 * verts[t * 3].y + w1 * verts[t * 3 + 1].y + w2 * verts[t * 3 + 2].y
+		best = maxf(best, y)
+	return best
 
 
 ## 构造一个"滚轮"事件（headless 里也能走 _input 分支）

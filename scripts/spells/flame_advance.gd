@@ -35,8 +35,8 @@ var _wave_report := 0.0              ## 波前日志节流
 ##   焰卡的网格原点离簇心最远有 ~2.9 个场景单位、再乘 pscale），
 ##   实测最近的一张卡离角色只有 **0.10m**（火直接烧在脚上）。
 ##   所以内圈半径 = 这一簇火的**实际水平伸距** + 这个留白
-##   （伸距由 _cluster_horizontal_reach 逐网格实测，不用估算系数）。
-@export var place_inner_gap_m := 1.2
+##   外缘离角色 0.5m（用户：先要"脚底不要有火"，后又要"别离太远"）。
+@export var place_inner_gap_m := 0.5
 ## ★ 火焰簇的**实际半径** ≈ patch_footprint × 该系数。
 ##   焰卡与核心辉光铺得比 patch_footprint 更开，系数取小了会导致
 ##   "贴边那几簇溢出到扇区外"（用户实测：扇形周边有多余火焰）。
@@ -220,14 +220,15 @@ func _spawn_patches() -> void:
 	# ★ 单簇火的**实际**半径：焰卡/核心铺开比 patch_footprint 大，按系数放宽，
 	#   否则角度余量算小了 -> 贴边的簇会溢出扇区（用户："扇形周边有多余火焰"）
 	var cluster_r := fp * cluster_radius_scale
-	# ★ 角色脚底留白（用户反馈："最好角色脚底不要生成火焰"）：
-	#   r_clear = 任何簇中心都不许比它更近；因为 reach 是与卡片 yaw **无关的上界**，
-	#   所以火焰外缘离角色至少 place_inner_gap_m（不管随机 yaw 抽成什么样）。
-	var reach := _cluster_reach_bound(pscale)
+	# ★ 角色脚底留白（用户反馈：先"不要烧在脚上"，再"火焰生成距离角色过远"）：
+	#   留白 = 火焰外缘离角色多远。**必须按这一簇"实际"伸出多少来算**，不能用保守上界：
+	#   上界（逐级位置长度相加 + 最坏横向倍率）实测比真实伸距大 0.8~1.0m，
+	#   结果火被推得老远（用户："火焰生成距离角色过远"）。
+	#   做法改成**两遍布点**：① 先按名义半径摆一遍 -> ② 量每簇实际伸距，
+	#   取最大值 + 留白当作最内侧半径，整体重映射再摆一遍（重映射保证不会挤成一团）。
 	var r_in := maxf(clampf(place_inner_m, 0.5, 6.0), cluster_r * 0.5)
 	if r_in > fit:
 		r_in = maxf(fit * 0.5, 0.0)         # 扇形太小（留白占满）时只能退让
-	var r_clear := minf(reach + maxf(place_inner_gap_m, 0.0), fit)
 	# ================================================================
 	# 布点（用户建议）：**先用边界圈把扇形钉出来，再填内部**
 	#   ① 两条边：角度**锁定**在边线内侧一个簇角宽处 -> 火焰外缘正好压在边线上
@@ -240,42 +241,65 @@ func _spawn_patches() -> void:
 	var arc_n := maxi(5, int(round(float(want) * 0.32)))      # 外弧上的簇数
 	# ★ 留白重映射的基准：名义分布里**最内侧**那一簇的半径（边圈第一簇用 0.5/edge_n 的分数）
 	var r_min_nom := lerpf(r_in, fit, 0.5 / float(edge_n))
+	# ================================================================
+	# 先把"该摆哪些簇、摆在哪个角度/半径"排成计划，再交给 _place_one 摆。
+	# 两遍布点共用这份计划（第二遍只改半径）。
+	# ================================================================
+	var plan: Array = []
 	# ① 两条边（从内圈到外缘，角度锁在边线上）
 	#    ★ side 必须显式取 float：数组字面量取出来是 Variant，
 	#      `var ang := 表达式` 会因为推断不出类型而**编译失败**（实测踩过）
 	for side_v in [-1.0, 1.0]:
 		var side := float(side_v)
 		for k in range(edge_n):
-			if placed >= want:
+			if plan.size() >= want:
 				break
 			var t := (float(k) + 0.5) / float(edge_n)
-			var rr_e := _remap_inner(lerpf(r_in, fit, t), r_min_nom, fit, r_clear)
+			var rr_e := lerpf(r_in, fit, t)
 			var m_e := asin(clampf(cluster_r / maxf(rr_e, cluster_r + 0.02), 0.0, 0.95))
 			var ang_e := sector_axis + side * maxf(sector_half - m_e, 0.01)
-			placed = _place_one(placed, ang_e, rr_e, pscale, ORIENT_TO_AXIS)
+			plan.append({"ang": ang_e, "rad": rr_e, "orient": ORIENT_TO_AXIS})
 	# ② 外弧（半径锁在 fit）
 	var m_arc := asin(clampf(cluster_r / maxf(fit, cluster_r + 0.02), 0.0, 0.95))
 	var half_arc := maxf(sector_half - m_arc, 0.01)
 	for k in range(arc_n):
-		if placed >= want:
+		if plan.size() >= want:
 			break
 		var ka := (float(k) + 0.5) / float(arc_n)
 		var ang_a := sector_axis + lerpf(-half_arc, half_arc, ka)
-		placed = _place_one(placed, ang_a, fit, pscale, ORIENT_TO_CASTER)
+		plan.append({"ang": ang_a, "rad": fit, "orient": ORIENT_TO_CASTER})
 	# ③ 内部填充：按行列铺满扇形（半径方向用同一个角余量规则）
-	var rest := maxi(0, want - placed)
+	var rest := maxi(0, want - plan.size())
 	var rows := maxi(1, int(ceil(sqrt(float(rest)))))
 	for ir in range(rows):
 		for ia in range(rows):
-			if placed >= want:
+			if plan.size() >= want:
 				break
 			var kr := (float(ir) + 0.5) / float(rows)
 			var ka2 := (float(ia) + 0.5) / float(rows)
-			var rr2 := _remap_inner(lerpf(r_in, fit, kr), r_min_nom, fit, r_clear)
+			var rr2 := lerpf(r_in, fit, kr)
 			var m_i := asin(clampf(cluster_r / maxf(rr2, cluster_r + 0.02), 0.0, 0.95))
 			var hu := maxf(sector_half - m_i, 0.01)
 			var ang_i := sector_axis + lerpf(-hu, hu, ka2)
-			placed = _place_one(placed, ang_i, rr2, pscale)
+			plan.append({"ang": ang_i, "rad": rr2, "orient": ORIENT_FILL})
+	# ---- 第一遍：按名义半径摆，量出"这一遍实际伸出多远" ----
+	_kd.clear()
+	placed = _place_plan(plan, pscale)
+	var reach_max := 0.0
+	for i in range(mini(placed, _patches.size())):
+		var pf := _patches[i] as Node3D
+		if pf != null and is_instance_valid(pf):
+			reach_max = maxf(reach_max, _patch_reach(pf))
+	# ---- 第二遍：需要留白就把所有半径整体重映射，再摆一遍（不会挤成一团） ----
+	var r_clear := minf(reach_max + maxf(place_inner_gap_m, 0.0), fit)
+	if r_clear > r_min_nom + 0.001:
+		_kd.clear()
+		var plan2: Array = []
+		for e in plan:
+			plan2.append({"ang": float(e["ang"]),
+					"rad": _remap_inner(float(e["rad"]), r_min_nom, fit, r_clear),
+					"orient": int(e["orient"])})
+		placed = _place_plan(plan2, pscale)
 	# ★ 只启用摆好的这些簇：多余的池子成员要藏起来
 	_used = placed
 	for i3 in range(placed, _patches.size()):
@@ -392,75 +416,37 @@ func _face_dir_for(orient: int, x: float, z: float) -> Vector3:
 	return dir
 
 
-## ★ 留白按"多亮的火"来算：焰卡的贴图动画是**体积守恒**的（纵向缩、横向涨，
-##   横向倍率 = 1/sqrt(grow)）。点燃/熄灭阶段 grow 小 -> 卡片横向涨大，
-##   所以留白要用"这个亮度以上的火焰"的最坏横向倍率。
-##   1.0 = 按**满亮**（正常燃烧）的尺寸算 —— 留白是照着"观众真正看到的那团火"给的；
-##   grow<1 的那 0.35s 点燃过渡里，火更淡也会更宽（实测：半透明时最近 ~0.9m），
-##   调大这个值会把留白算得更保守（内圈更空，80° 这种小扇形会被挤成一条细弧）。
-@export var place_gap_visible_grow := 1.0
 
-## 一簇火在水平方向可能伸出的**上界**（米，含本次 pscale）。
-##
-## 用途：角色脚底留白。内圈半径 = 这个上界 + place_inner_gap_m
-##   => 不管卡片随机 yaw 抽到什么方向、也不管点燃动画涨到多宽，
-##      亮度 ≥ place_gap_visible_grow 的火焰外缘离角色都不少于留白。
-##
-## 【为什么不能用估算系数】patch_footprint(1.1) × cluster_radius_scale(1.6) ≈ 1.36m，
-##   而实测一簇火会向中心伸出 **2.6m**（16 张 ~2m 宽的焰卡围成一团；焰卡的网格
-##   原点离簇心最远有 ~2.9 个场景单位）—— 估小了 1.2m，结果火直接烧在角色脚上。
-##
-## 【为什么必须与 yaw 无关】给卡片写 yaw 时转的是"卡片 holder"，而网格相对 holder
-##   有偏移（GLB 内部层级），一转就会把网格甩出去 —— 所以"摆好之后量一次"会随
-##   随机 yaw 忽大忽小（实测：同一参数下，留白从 1.2m 掉到 0.00m）。这里用与 yaw
-##   无关的上界：
-##     ① 从特效根到每个网格：把**每一级的局部水平位移**按累计缩放相加
-##        （旋转不改变长度）；
-##     ② 加上网格自身 AABB 半尺寸在水平面内的分量 ×（祖先累计缩放）×（最坏横向倍率）；
-##     ③ 再加上"根节点倾斜"把竖直分量倒进水平面的量（≤ sin(max_tilt_deg) × 高度）。
-func _cluster_reach_bound(pscale: float) -> float:
-	var sin_tilt := sin(deg_to_rad(clampf(max_tilt_deg, 0.0, 89.0)))
-	# 焰卡动画的最坏横向倍率（体积守恒：横向 = 1/sqrt(纵向)）
-	var stretch := 0.11
-	var side_max := 1.0
-	for f0 in _patches:
-		if f0 != null and is_instance_valid(f0):
-			var sg: Variant = f0.get("stretch_gain")
-			if sg != null:
-				stretch = float(sg)
-			break
-	var g_vis := clampf(place_gap_visible_grow, 0.05, 1.0)
-	side_max = 1.0 / sqrt(g_vis * maxf(1.0 - stretch, 0.05))
+## 这一簇火**实际**向水平方向伸出多远（米）：用 AABB 角点（含当前逐卡 yaw 与缩放），
+## 是几何体真实伸距的上界。留白按它算 -> 火焰外缘正好落在 place_inner_gap_m 上，
+## 不会像「保守上界」那样把火推得老远（用户反馈：火焰生成距离角色过远）。
+func _patch_reach(f: Node3D) -> float:
+	var inv := f.global_transform.affine_inverse()
 	var reach := 0.0
-	for f in _patches:
-		if f == null or not is_instance_valid(f):
+	for mi in _effect_meshes(f):
+		var mesh := (mi as MeshInstance3D).mesh
+		if mesh == null:
 			continue
-		var root := f as Node3D
-		for mi in _effect_meshes(root):
-			var mesh := (mi as MeshInstance3D).mesh
-			if mesh == null or mesh.get_surface_count() == 0:
-				continue
-			# ① 根 -> 网格：把每一级的局部水平位移按累计缩放加起来（与 yaw 无关）
-			var chain: Array = []
-			var node: Node = mi
-			while node != null and node != root:
-				chain.append(node)
-				node = node.get_parent()
-			var sum_xz := 0.0
-			var acc := 1.0
-			for k in range(chain.size() - 1, -1, -1):
-				var nd := chain[k] as Node3D
-				sum_xz += acc * Vector2(nd.position.x, nd.position.z).length()
-				acc *= maxf(absf(nd.scale.x), maxf(absf(nd.scale.y), absf(nd.scale.z)))
-			# ②③ 网格自身（含祖先缩放 + 最坏横向倍率）+ 倾斜允差
-			var b := (mi as Node3D).transform.basis
-			var h := mesh.get_aabb().size * 0.5
-			var hx := b.x.length() * h.x * acc * side_max
-			var hy := b.y.length() * h.y * acc * side_max
-			var hz := b.z.length() * h.z * acc * side_max
-			reach = maxf(reach, sum_xz + Vector2(hx, hz).length() + hy * sin_tilt)
-		break      # 所有簇都是同一个场景的实例，量第一个就够
-	return reach * pscale
+		var rel := inv * (mi as Node3D).global_transform
+		var box := mesh.get_aabb()
+		for k in range(8):
+			var c := box.position + Vector3(
+					box.size.x if (k & 1) != 0 else 0.0,
+					box.size.y if (k & 2) != 0 else 0.0,
+					box.size.z if (k & 4) != 0 else 0.0)
+			var w := rel * c
+			reach = maxf(reach, Vector2(w.x, w.z).length())
+	return reach * f.scale.x
+
+
+## 按计划摆一遍（返回摆好的簇数）
+func _place_plan(plan: Array, pscale: float) -> int:
+	var placed := 0
+	for e in plan:
+		if placed >= _patches.size():
+			break
+		placed = _place_one(placed, float(e["ang"]), float(e["rad"]), pscale, int(e["orient"]))
+	return placed
 
 
 ## 把**名义**半径按"角色脚底留白"重映射：最内侧那簇正好落在 r_clear，最外侧仍是 fit，
