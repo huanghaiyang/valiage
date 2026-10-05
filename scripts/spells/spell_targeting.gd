@@ -490,11 +490,25 @@ func _update_center_from_mouse() -> void:
 			#   之前的"高度判定 + 周围射线投票"是错的思路 —— 透过围栏可能打到地面，
 			#   也可能打到围栏后面的另一个物体；用高度根本分不清（用户指出）。
 			#   所以这里只用命中点本身（XZ），y 再落到该处地面（仅为了日志与调试可读）。
-			var gh3 := _terrain_visual_height(pos.x, pos.z)
-			if not is_nan(gh3):
-				pos.y = gh3
-			elif _player != null and is_instance_valid(_player):
-				pos.y = _player.global_position.y
+			# ★★ 用户建议的做法（更直观，也是"地面选点"的标准做法）：
+			#   相机->鼠标 只用来定 **XZ**；再从该 XZ **垂直向下**打一条射线，
+			#   命中"鼠标下方的第一层表面"（地面/矮台）作为圆心。
+			#   于是鼠标指着围栏、墓碑上半部时，圈自然落在它下方的地面上，
+			#   完全不需要"猜是不是障碍"（那套高度启发式已删）。
+			var down_from := Vector3(pos.x, pos.y + 25.0, pos.z)
+			var down_to := Vector3(pos.x, pos.y - 60.0, pos.z)
+			var qd := PhysicsRayQueryParameters3D.create(down_from, down_to)
+			qd.collision_mask = 0xFFFFFFFF
+			qd.exclude = [_player.get_rid()] if _player is CollisionObject3D else []
+			var hd := world.direct_space_state.intersect_ray(qd)
+			if not hd.is_empty():
+				pos = hd["position"]          # 鼠标下方的表面（优先于"地形高度"）
+			else:
+				var gh3 := _terrain_visual_height(pos.x, pos.z)
+				if not is_nan(gh3):
+					pos.y = gh3
+				elif _player != null and is_instance_valid(_player):
+					pos.y = _player.global_position.y
 			if DEBUG_LOG_PREVIEW:
 				var col = hit.get("collider")
 				_dbg_hit_name = String((col as Node).name) if col is Node else "(无)"
