@@ -1103,7 +1103,7 @@ func _exit_tree() -> void:
 ##   碎块拼的底座）都会按世界坐标取到同一张贴图 -> 天然贴合、无需逐物体挂载、
 ##   也没有高度场的弦切割/裙边/台阶缝（这些正是前面十几轮反复的根源）。
 ##   形状做成一张**运行时生成**的扇形贴图（角度变化时才重画）。
-@export var use_decal := true
+@export var use_decal := false      ## 第 2 条路径的开关，默认关（用户选定的方案是屏幕空间覆盖）
 ## 贴图里扇形的填充/边线透明度（贴花最终亮度还受 albedo_mix / emission 影响）
 @export var decal_fill_alpha := 0.35
 @export var decal_edge_alpha := 0.95
@@ -1195,7 +1195,7 @@ func _update_decal() -> void:
 ##   做法：相机前一个全屏面 -> 片元用深度纹理重建世界坐标 -> 落在扇形内就上白。
 ##   探测波已有同族实现（遮罩子视口 + 相机下全屏面），这里沿用同一套结构。
 const SCREEN_SHADER := "res://assets/shaders/spell_sector_screen.gdshader"
-@export var use_screen_pass := true
+## ★★ 选点器的实现路径（**预留开关**，按需切换；默认 = 用户选定方案）：`n##   1) use_screen_pass = true  -> **屏幕空间覆盖**（默认）：相机前全屏面 + 深度重建世界坐标，`n##      逐像素判"在不在范围内" -> 扫到的一切都变白（地形/草/墓碑/碎块底座/半个物体全对）。`n##      扇形 shape_mode=0（两条边 + 外弧 + 内圈留白）；圆环 shape_mode=1（只有外弧）。`n##   2) use_screen_pass = false 且 use_decal = true -> **投影贴花 Decal**（盒体 + 运行时扇形贴图）。`n##      注意其固有取舍：盒子高则把草也刷白，盒子矮则盖不到高物体。`n##   3) 两者都 false -> **射线贴合网格**（顶点高度场）。台阶/竖面/大物体做不到，`n##      但**不依赖深度纹理**（Compatibility 渲染器下也能跑）。`n##   4) DEBUG_MOUNT_SCAN_SHADER = true -> 物体表面只挂探测波的扫描带（A/B 诊断，默认 false）。`n##   另：terrain_only_sampling = true 用来复现"采样只打地形层"的旧 bug（诊断，默认 false）。`n@export var use_screen_pass := true
 ## 世界位置低于"脚下 + 这个值"不画（防止把角色脚下/地下也刷白）
 @export var screen_floor_margin := 2.0   # 允许画到脚下 2m 以下（地面就在脚下高度，正值会全挡掉）
 @export var screen_fill_strength := 0.55
