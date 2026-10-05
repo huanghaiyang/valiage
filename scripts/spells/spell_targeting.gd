@@ -486,9 +486,29 @@ func _update_center_from_mouse() -> void:
 			# ★ 圆环中心**落到地面**：XZ 用鼠标命中点（指哪打哪），y 取该处地形高度。
 			#   之前圆心直接取命中点高度 -> 鼠标打到围栏上时圆心飘到 3m 高空（实测），
 			#   日志与调试都被误导。
-			# ★ 命中点若明显高于该处地面 -> 是障碍（围栏/石头），继续沿射线找后面的地面
+			# ★ 命中点若明显高于该处地面：可能只是**从围栏缝隙里指到后面**，也可能是**指着实心面**。
+			#   用周围 4 根偏移射线投票区分：多数打到地面 -> 穿过去取地面；
+			#   多数也打到同一个高物体（实心）-> 听射线的（用户实测：瞄准墓碑不该穿过去）。
 			var gh := _terrain_visual_height(pos.x, pos.z)
+			var pass_ok := false
 			if not is_nan(gh) and pos.y > gh + aim_ignore_m:
+				var votes := 0
+				for off in [Vector2(16.0, 0.0), Vector2(-16.0, 0.0), Vector2(0.0, 16.0), Vector2(0.0, -16.0)]:
+					var f2 := _cam.project_ray_origin(mouse + off)
+					var d2 := _cam.project_ray_normal(mouse + off)
+					var q2 := PhysicsRayQueryParameters3D.create(f2, f2 + d2 * 400.0)
+					q2.collision_mask = 0xFFFFFFFF
+					q2.exclude = [_player.get_rid()] if _player is CollisionObject3D else []
+					var h2 := world.direct_space_state.intersect_ray(q2)
+					if h2.is_empty():
+						continue
+					var p2: Vector3 = h2["position"]
+					var g2 := _terrain_visual_height(p2.x, p2.z)
+					if not is_nan(g2) and p2.y <= g2 + aim_ignore_m:
+						votes += 1
+				# 缝隙很窄时偏移射线也可能全撞到障碍：再判"命中点是否高于环绕它的地面"来兜底
+				pass_ok = votes >= 2
+			if pass_ok:
 				var t_hit := from.distance_to(pos)
 				for k in range(1, 30):
 					var t2 := t_hit + float(k) * 0.35
