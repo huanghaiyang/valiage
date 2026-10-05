@@ -36,7 +36,7 @@ _surfaces = [{
 blend_shape_mode = 0
 shadow_mesh = SubResource("ArrayMesh_c4xis")
 
-[node name="grass_bermuda_01_seedling_a" type="Node3D" unique_id=1920032524]
+[node name="grass_bermuda_01_seedling_a" type="Node3D" groups=["burnable"] unique_id=1920032524]
 
 [node name="grass_bermuda_01_seedling_a" type="MeshInstance3D" parent="." unique_id=759980834]
 transform = Transform3D(12, 0, 0, 0, 12, 0, 0, 0, 12, 0.014647394, 0.0023396017, -0.010931403)

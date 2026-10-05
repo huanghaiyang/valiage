@@ -31,7 +31,26 @@ uniform float sway_scale = 0.06;      // 每米高度的摆幅系数
 uniform float bend_bias : hint_range(0.0, 1.0) = 0.35; // 顺风持续倾斜比例
 uniform bool flat_shading = true;   // 低多边形平面着色
 
+// ---- 燃烧（本项目新增）----
+// ★ 为什么把 burn 做进**这个着色器**，而不是在外面叠一层：
+//   这个着色器是 **不透明** 渲染（没有写 ALPHA，形状来自几何体），
+//   在外面叠一层黑只会盖成"没有光照、没有层次的纯黑块"，
+//   而且还要自己去解决轮廓/透明问题（反复踩坑）。做进着色器就天然正确：
+//   未烧的部分保持原样，烧过的部分直接改 ALBEDO、并且不再受光。
+//   默认 burn = 0 -> 输出与改动前完全一致（不影响没被烧的植被）。
+uniform float burn : hint_range(0.0, 1.0) = 0.0;     // 0..1 烧蚀进度（斑点扩大）
+uniform float ash : hint_range(0.0, 1.0) = 0.0;      // 灰化/消失进度
+uniform vec3 char_color : source_color = vec3(0.07, 0.06, 0.05);
+uniform vec3 ember_color : source_color = vec3(1.0, 0.32, 0.05);
+uniform float burn_noise_scale : hint_range(0.1, 6.0) = 1.6;
+uniform float burn_ember : hint_range(0.0, 2.0) = 0.45;
+uniform float burn_phase = 0.0;                       // 每株随机，避免斑点位置雷同
+
+varying float v_burned;
+varying float v_ember;
+
 // 顶点着色器中的风偏移计算（世界空间 -> 模型空间）
+// ★ 这段绝对不能删：全项目植被的风吹摆动都靠它（本项目新增 burn 时我误删过一次）
 vec3 wind_offset(vec3 world_pos, float h) {
 	// 阵风：低频脉动，让风"一阵一阵"
 	float gust = 1.0 + wind_gust * 2.2
@@ -70,8 +89,23 @@ void fragment() {
 	if (tex.a > 0.001) {
 		base *= tex.rgb;
 	}
-	// 顶点色里可能已经有明暗信息（部分模型自带），这里只取 r 通道做一次亮度归一
-	ALBEDO = base;
+	// ★ 燃烧：世界坐标噪声决定"斑点"，阈值随 burn 下降 -> 斑点逐个出现并连成片
+	vec3 wp = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	float n = fract(sin(dot(wp.xz + vec2(wp.y), vec2(12.9898, 78.233)) + burn_phase) * 43758.5453);
+	float thr = clamp(1.0 - burn, 0.0, 1.0);
+	float burned = 1.0 - smoothstep(thr - 0.02, thr + 0.02, n);
+	float ember = exp(-pow((n - thr) / 0.05, 2.0)) * burn_ember * (1.0 - ash);
+	// ★ 灰化：按噪声把已烧部分一块块抠掉（不需要自己处理透明度/轮廓，几何体说了算）
+	if (ash > 0.001) {
+		if (n < ash) {
+			discard;
+		}
+	}
+	v_burned = burned;
+	v_ember = ember;
+	// 烧过的部分变焦黑；未烧部分不变（乘 (1-burned) 保证不污染原外观）
+	base = mix(base, char_color, burned);
+	ALBEDO = base + ember_color * ember * 0.35;
 	ROUGHNESS = roughness;
 	if (flat_shading) {
 		// 低多边形平面着色：用屏幕空间导数求面法线，得到硬边面片感
@@ -81,8 +115,11 @@ void fragment() {
 }
 
 void light() {
+	// 烧焦处不再受光（炭是黑的），未烧处照常
+	float lit = 1.0 - v_burned;
 	float ndl = max(dot(NORMAL, LIGHT), 0.0);
 	float toon = step(0.30, ndl);
 	vec3 diff = mix(shadow_color, ALBEDO, toon);
-	DIFFUSE_LIGHT += diff * LIGHT_COLOR * ATTENUATION;
+	DIFFUSE_LIGHT += diff * LIGHT_COLOR * ATTENUATION * lit;
+	DIFFUSE_LIGHT += ember_color * v_ember * 2.0 * ATTENUATION;   // 余烬自发光
 }

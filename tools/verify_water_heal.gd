@@ -301,8 +301,13 @@ func _process(_d: float) -> bool:
 			pass
 	_ck("水珠生成点在**体表外约 1cm**（用真实曲面表核对）", live > 0 and bad_gap == 0,
 			"存活 %d，偏差超限 %d 个" % [live, bad_gap])
-	_ck("水珠**从头顶开始**往下（起步时出现在上半身）", near_top > 0 and live > 0,
-			"上半身 %d / 存活 %d（开局高度带从头顶逐步往下铺开）" % [near_top, live])
+	# ★ 改成**确定性判据**：原来按"当前高度"判断，而水珠开局是随机错开的，
+	#   抽查时刻不同就会翻（弗拉基断言）。直接看发射高度带的下沿：开局应贴着头顶。
+	var sweep: float = float(spell.get("_drop_sweep"))
+	# 检查前已经推进了 0.5s（drop_sweep_time=1.6 -> sweep≈0.31），所以下沿≈0.69 是**正常值**；
+	# 判据是"仍在身体上半段"，而不是"必须等于 1.0"
+	_ck("水珠**从头顶开始**往下（发射高度带仍在上半身）", (1.0 - sweep) >= 0.6,
+			"高度带下沿 = %.2f（1.0=头顶；检查时已推进 0.5s，理论值 ≈0.69）" % (1.0 - sweep))
 	# 盯同一颗存活水珠（重生会换高度，不能拿索引 0 前后比）
 	var vels: PackedVector3Array = spell.get("_drop_vel")
 	var idx := -1

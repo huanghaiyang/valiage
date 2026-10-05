@@ -66,6 +66,21 @@ varying vec2 uv_align;
 varying vec2 uv_scale;
 varying flat vec3 v_normal_grass;
 
+// ---- 本项目新增：逐实例燃烧（读 MultiMesh 的 INSTANCE_CUSTOM）----
+// 为什么加在这里：这个 include 被 8 个 grass 变体共用，改一处即可全覆盖。
+// 逐实例进度由 scripts/vfx/foliage_burn.gd 用 set_instance_custom_data 写入：
+//   x = burn 进度, y = ash 进度, z = 每实例随机相位
+// 默认全 0 -> 不烧的草输出与改动前完全一致。
+uniform vec3 burn_char_color : source_color = vec3(0.06, 0.05, 0.045);
+uniform vec3 burn_ember_color : source_color = vec3(1.0, 0.32, 0.05);
+uniform float burn_ember_gain : hint_range(0.0, 2.0) = 0.5;
+
+varying float v_burn_amt;
+varying float v_burn_ember;
+varying float v_burn_kill;
+/// ★ 消失/长回都用**缩放**：1 = 正常大小，0 = 缩到 0（贴着火根消失）
+varying float v_burn_scale;
+
 const highp float EPSILON = 0.0001;
 
 
@@ -133,6 +148,46 @@ void vertex() {
 		VERTEX.y -= (VERTEX.y - NODE_POSITION_WORLD.y) * norm_mov.b * interactive_level_y;
 	}
 	v_normal_grass = (MODELVIEW_MATRIX * vec4(0.0, 1.0, 0.0, 1.0)).xyz - NODE_POSITION_VIEW;
+
+	// ★ 逐实例燃烧：INSTANCE_CUSTOM 只在**顶点阶段**可用，所以在这里算好、用 varying 传下去。
+	//   噪声取实例的世界位置 -> 每个实例的斑点位置不同且固定（不会游走）。
+	{
+		float b = clamp(INSTANCE_CUSTOM.x, 0.0, 1.0);
+		float a = clamp(INSTANCE_CUSTOM.y, 0.0, 1.0);
+		float ph = INSTANCE_CUSTOM.z;
+		float bn = fract(sin(dot(NODE_POSITION_WORLD.xz + vec2(NODE_POSITION_WORLD.y),
+				vec2(12.9898, 78.233)) + ph) * 43758.5453);
+		if (b > 0.001 || a > 0.001) {
+			// ★ 焦黑与余烬**只在"正在烧"（b>0）时出现**：
+			//   长回阶段是 b=0、a 从 1 递减 —— 那时草应该是正常的绿色在长大，
+			//   不能还带着焦黑/火光（用户明确要求）。
+			if (b > 0.001) {
+				// ★ 阈值**就是 b**：bn < b 的区域被烧掉 —— b 从 0 长到 1，焦黑面积随之扩大。
+				//   之前写成 thr = 1-b 且方向也反了：b=0 时几乎整株全黑、b=1 时又变回绿色
+				//   （用户实测："草变黑之后又变绿了"）。焦黑必须随 b **单调增加**。
+				v_burn_amt = 1.0 - smoothstep(b - 0.02, b + 0.02, bn);
+				v_burn_ember = exp(-pow((bn - b) / 0.05, 2.0)) * burn_ember_gain * (1.0 - a);
+			} else {
+				v_burn_amt = 0.0;
+				v_burn_ember = 0.0;
+			}
+			v_burn_kill = (a > 0.999) ? 1.0 : 0.0;
+			// ★ 消失/长回都用**缩放**：ash=0 -> 1.0 正常大小，ash=1 -> 0.0 缩到根
+			v_burn_scale = clamp(1.0 - a, 0.0, 1.0);
+		} else {
+			v_burn_amt = 0.0;
+			v_burn_ember = 0.0;
+			v_burn_kill = 0.0;
+			v_burn_scale = 1.0;
+		}
+		// ★ 缩放要绕**该实例的根**做。这里的 VERTEX **已经是世界坐标**
+		//   （addon 在本函数前面写了 VERTEX = NODE_POSITION_WORLD + offset），
+		//   所以直接 *= s 会绕**世界原点**缩 = 向整片草地中心缩（实测踩过）。
+		//   实例的根就是 NODE_POSITION_WORLD（addon 也用它当枢轴），绕它缩才对。
+		vec3 burn_root = NODE_POSITION_WORLD;
+		VERTEX.xz = burn_root.xz + (VERTEX.xz - burn_root.xz) * v_burn_scale;
+		VERTEX.y = burn_root.y + (VERTEX.y - burn_root.y) * v_burn_scale;
+	}
 }
 
 
@@ -166,4 +221,15 @@ void fragment() {
 	ROUGHNESS = roughness_tex * roughness;
 	ALPHA *= albedo.a * albedo_tex.a;
 	ALPHA_SCISSOR_THRESHOLD = alpha_scissor_threshold;
+
+	// ★ 逐实例燃烧：烧焦变黑 + 余烬。
+	//   消失/长回走**缩放**（见 vertex 里的 v_burn_scale），不再是噪声溶解，
+	//   所以缩小过程中一直是焦黑的（用户要求：消失时保持焦黑）。
+	if (v_burn_kill > 0.5) {
+		discard;                       // 完全缩没了才丢弃，避免留下一个点
+	}
+	if (v_burn_amt > 0.001) {
+		ALBEDO = mix(ALBEDO, burn_char_color, v_burn_amt);
+		ALBEDO += burn_ember_color * v_burn_ember;
+	}
 }

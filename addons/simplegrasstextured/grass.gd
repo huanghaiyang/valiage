@@ -143,7 +143,21 @@ func _init():
 			})
 
 
+## ★ 本项目改动：统一在这里创建 MultiMesh，并在**创建时**打开 use_custom_data ——
+##   这是 INSTANCE_CUSTOM 能送进着色器的前提（运行时再改会被 Godot 拒绝）。
+##   逐实例燃烧（火焰灼烧烧草丛）依赖它，见 scripts/vfx/foliage_burn.gd。
+func _new_multimesh() -> MultiMesh:
+	var mm := MultiMesh.new()
+	mm.use_custom_data = true
+	return mm
+
+
 func _ready():
+	# ★ 本项目改动（不属于插件原版）：把每一片草丛注册到 "burnable" 组，
+	#   让「火焰灼烧」能按组找到植被并点燃（见 scripts/spells/flame_scorch.gd::_find_vegetation）。
+	#   将来升级/重装这个插件时，这一行需要重新补上。
+	if not is_in_group("burnable"):
+		add_to_group("burnable")
 	if Engine.is_editor_hint():
 		set_process(true)
 	else:
@@ -167,7 +181,7 @@ func _ready():
 			disable_node_rotation = false
 	
 	if multimesh == null:
-		multimesh = MultiMesh.new()
+		multimesh = _new_multimesh()
 		multimesh.transform_format = MultiMesh.TRANSFORM_3D
 	if multimesh.mesh == null:
 		if mesh != null:
@@ -366,7 +380,7 @@ static func _raycast(from: Node3D, pos: Vector3, dir: Vector3, dist: float, mask
 
 
 func _apply_erase_tool(func_tool: Callable):
-	var multi_new := MultiMesh.new()
+	var multi_new := _new_multimesh()
 	var array : Array[Transform3D] = []
 	multi_new.transform_format = MultiMesh.TRANSFORM_3D
 	if mesh != null:
@@ -374,7 +388,7 @@ func _apply_erase_tool(func_tool: Callable):
 	else:
 		multi_new.mesh = _default_mesh
 	if multimesh == null:
-		multimesh = MultiMesh.new()
+		multimesh = _new_multimesh()
 		multimesh.mesh = mesh if mesh != null else _default_mesh
 	if func_tool.call(array) == 0:
 		return
@@ -395,7 +409,7 @@ func _apply_erase_tool(func_tool: Callable):
 
 func auto_center_position():
 	if multimesh == null:
-		multimesh = MultiMesh.new()
+		multimesh = _new_multimesh()
 		multimesh.mesh = mesh if mesh != null else _default_mesh
 	var aabb : AABB = multimesh.get_aabb()
 	var center : Vector3 = global_position + aabb.position + (aabb.size / 2)
@@ -403,7 +417,7 @@ func auto_center_position():
 	if center == global_position:
 		return
 	global_position = center
-	var multi_new := MultiMesh.new()
+	var multi_new := _new_multimesh()
 	multi_new.transform_format = MultiMesh.TRANSFORM_3D
 	if mesh != null:
 		multi_new.mesh = mesh
@@ -432,7 +446,7 @@ func auto_center_position():
 
 func recalculate_custom_aabb():
 	if multimesh == null:
-		multimesh = MultiMesh.new()
+		multimesh = _new_multimesh()
 		multimesh.mesh = mesh if mesh != null else _default_mesh
 	var start := Vector3.ONE * 0x7FFFFFFF
 	var end := start * -1
@@ -453,9 +467,9 @@ func recalculate_custom_aabb():
 
 func _update_multimesh() -> void:
 	if multimesh == null:
-		multimesh = MultiMesh.new()
+		multimesh = _new_multimesh()
 		multimesh.mesh = mesh if mesh != null else _default_mesh
-	var multi_new := MultiMesh.new()
+	var multi_new := _new_multimesh()
 	var count_prev := multimesh.instance_count
 	multi_new.transform_format = MultiMesh.TRANSFORM_3D
 	if mesh != null:
@@ -510,7 +524,7 @@ func _update_multimesh() -> void:
 
 func _create_height_map_image(local : bool) -> Image:
 	if multimesh == null:
-		multimesh = MultiMesh.new()
+		multimesh = _new_multimesh()
 		multimesh.mesh = mesh if mesh != null else _default_mesh
 	var aabb : AABB = multimesh.get_aabb()
 	var img_size := Vector2i(
@@ -576,7 +590,7 @@ func bake_height_map() -> void:
 	if not Engine.is_editor_hint():
 		return
 	if multimesh == null:
-		multimesh = MultiMesh.new()
+		multimesh = _new_multimesh()
 		multimesh.mesh = mesh if mesh != null else _default_mesh
 	await get_tree().process_frame
 	var _dummy = multimesh.buffer.size()
@@ -587,13 +601,13 @@ func bake_height_map() -> void:
 
 func clear_all() -> void:
 	if multimesh == null:
-		multimesh = MultiMesh.new()
+		multimesh = _new_multimesh()
 	if Engine.is_editor_hint() and multimesh.resource_path.length():
 		var path := multimesh.resource_path
-		multimesh = MultiMesh.new()
+		multimesh = _new_multimesh()
 		multimesh.take_over_path(path)
 	else:
-		multimesh = MultiMesh.new()
+		multimesh = _new_multimesh()
 	multimesh.mesh = mesh if mesh != null else _default_mesh
 	multimesh.transform_format = MultiMesh.TRANSFORM_3D
 	if Engine.is_editor_hint():
@@ -608,7 +622,7 @@ func _update_height_map() -> void:
 	if Engine.is_editor_hint() or _singleton == null:
 		return
 	if multimesh == null:
-		multimesh = MultiMesh.new()
+		multimesh = _new_multimesh()
 		multimesh.mesh = mesh if mesh != null else _default_mesh
 	
 	var img : Image = null
@@ -702,7 +716,7 @@ func _on_set_light_mode(value : int):
 		return
 	if _update_material_shader():
 		if multimesh == null:
-			multimesh = MultiMesh.new()
+			multimesh = _new_multimesh()
 			multimesh.mesh = mesh if mesh != null else _default_mesh
 		if multimesh.mesh != null:
 			for isur in range(multimesh.mesh.get_surface_count()):
@@ -717,7 +731,7 @@ func _on_set_texture_filter(value : int) -> void:
 		return
 	if _update_material_shader():
 		if multimesh == null:
-			multimesh = MultiMesh.new()
+			multimesh = _new_multimesh()
 			multimesh.mesh = mesh if mesh != null else _default_mesh
 		if multimesh.mesh != null:
 			for isur in range(multimesh.mesh.get_surface_count()):

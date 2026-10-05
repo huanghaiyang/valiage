@@ -304,6 +304,39 @@ func _process(_d: float) -> bool:
 	# 多点采样：取最低点（防悬浮）—— 纯函数等价性检查
 	_ck("落点高度取多点最低（防悬浮）",
 			(load("res://scripts/spells/flame_scorch.gd").get_script_constant_map()) != null)
+	# ---- 8. 距离判定必须**全量扫描** MultiMesh 实例（不能抽样）----
+	# 之前按 总数/24 抽样 -> "火边全是草却判成 4 米外" -> 圈内 0 个（实测日志）。
+	var mm_far := MultiMesh.new()
+	mm_far.transform_format = MultiMesh.TRANSFORM_3D
+	mm_far.instance_count = 50
+	var bm_far := BoxMesh.new()
+	bm_far.size = Vector3(0.2, 0.2, 0.2)
+	mm_far.mesh = bm_far
+	var mmi_far := MultiMeshInstance3D.new()
+	mmi_far.multimesh = mm_far
+	mmi_far.position = Vector3(500.0, 0.0, 500.0)     # 离圈很远 -> 不会提前 break
+	mmi_far.add_to_group("burnable")
+	get_root().add_child(mmi_far)
+	spell.set("_center", Vector3.ZERO)
+	spell.set("_radius", 3.0)
+	spell.set("_scanned_instances", 0)
+	spell.call("_find_vegetation")
+	# ★ 两级过滤：**先按块，再查块内**。圆离这片草很远 -> 相交的块里没有实例 -> 扫 0 个。
+	_ck("★ 先按块再查块内：远处的草丛扫 0 个实例（不做无谓全量遍历）",
+			int(spell.get("_scanned_instances")) == 0,
+			"扫描 %d 个实例（该片总数 50，圆在 300 米外）" % int(spell.get("_scanned_instances")))
+	# 块索引已建立且命中缓存
+	_ck("块索引已缓存（同一片草不会重复建索引）",
+			(spell.get("_mm_index") as Dictionary).size() > 0,
+			"缓存 %d 片" % (spell.get("_mm_index") as Dictionary).size())
+	# 把圆挪到草丛上 -> 该块的实例会被扫到（验证"块内"这一步）
+	spell.set("_center", Vector3(500.0, 0.0, 500.0))
+	spell.set("_radius", 3.0)
+	spell.set("_scanned_instances", 0)
+	spell.call("_find_vegetation")
+	_ck("★ 圆压到草丛上时，块内实例被扫到并命中",
+			int(spell.get("_scanned_instances")) > 0,
+			"扫描 %d 个实例" % int(spell.get("_scanned_instances")))
 	print("通过 %d  |  失败 %d" % [_pass, _fail])
 	quit(0 if _fail == 0 else 1)
 	return true

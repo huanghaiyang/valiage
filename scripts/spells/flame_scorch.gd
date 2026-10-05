@@ -21,6 +21,12 @@ const SHEET := preload("res://scripts/spells/spell_sheet.gd")
 const SHEET_ID := "flame_scorch"
 const GROUND_SHADER := "res://assets/shaders/fire_ground.gdshader"
 const FIRE_TEX := "res://assets/textures/法术特效/龙卷风/T_FirePanningCyl45.png"
+const FOLIAGE_BURN := preload("res://scripts/vfx/foliage_burn.gd")
+## 植被名字提示（**兜底**用）：项目里的植被没有统一分组，
+## 优先用组 "burnable"；没有分组时才按名称匹配，属于权宜之计。
+const VEG_HINTS := ["grass", "bush", "flower", "plant", "leaf", "foliage", "weed",
+		"shrub", "fern", "clover", "tree", "草", "花", "灌木", "树", "植"]
+const VEG_MAX := 0                     ## 0 = **不限制数量**（用户要求取消限制）
 
 # ---- 数值（表缺失时的兜底）----
 @export var mana_cost := 30.0
@@ -64,6 +70,11 @@ var _radius := 2.5
 var _patches: Array[Node3D] = []       ## 复用的火焰簇（避免每次施法现建十几份特效）
 var _glows: Array[MeshInstance3D] = []  ## 每簇火脚下的一层"贴地燃烧"光斑（粘滞感）
 var _glow_mat: ShaderMaterial = null
+var _burns: Array[Node] = []
+## 自检用：累计扫描过的 MultiMesh 实例数（证明没有抽样）
+var _scanned_instances := 0            ## 圈内被点着的植被燃烧控制器
+## 是否点燃圈内植被
+@export var burn_vegetation := true
 var _used := 0
 var _dmg_acc: Dictionary = {}          ## 目标 id -> 累积的小数伤害（保证 take_damage 收到整数）
 
@@ -123,6 +134,7 @@ func cast_at(center: Vector3, radius: float) -> void:
 	_center = center
 	_radius = maxf(radius, 0.5)
 	_spawn_patches()
+	_ignite_vegetation()               # 圈内的花草树木也跟着烧起来
 	_state = ST_IGNITE
 	_state_t = 0.0
 	_dmg_acc.clear()
@@ -358,6 +370,183 @@ func _ensure_glow_pool(n: int) -> void:
 		mi.visible = false
 		add_child(mi)
 		_glows.append(mi)
+
+
+## 点燃圈内的花草树木：每株一个燃烧控制器，逐株错开点燃（错开才像"火在蔓延"）
+func _ignite_vegetation() -> void:
+	var targets := _find_vegetation()
+	var i := 0
+	for t in targets:
+		var b: Node3D = FOLIAGE_BURN.new()
+		b.name = "FoliageBurn%d" % i
+		var host := get_parent()
+		if host == null:
+			host = get_tree().root
+		host.add_child(b)
+		# ★ 逐实例燃烧要"只烧圈内实例"，所以把圆心/半径交给它
+		b.set("burn_center", _center)
+		b.set("burn_radius", _radius)
+		# ★ 把"块内实例表"直接交给控制器：整次施法**只做一次**块扫描，
+		#   控制器不再全量遍历（先按块、再查块内）。
+		if t is MultiMeshInstance3D:
+			var hits2 := _mm_scan_circle(t as MultiMeshInstance3D, _center, _radius)
+			var ids: Array = []
+			for h in hits2:
+				ids.append(int(h["i"]))
+			b.set("preset_mm", t)
+			b.set("preset_indices", ids)
+		if bool(b.call("burn_node", t, float(i) * 0.12)):
+			_burns.append(b)
+		else:
+			b.queue_free()
+		i += 1
+
+
+## 找圈内可烧的植被：优先组 "burnable"，没有分组时退回名字提示（见 VEG_HINTS 注释）
+## 诊断开关：编辑器里跑一次就能在输出面板看到"到底找到了什么植被"，
+## 用来排查"某个来源的植被不烧"这类问题（而不是靠猜）。
+@export var debug_vegetation := true
+
+func _find_vegetation() -> Array:
+	var out: Array = []
+	var tree := get_tree()
+	if tree == null or not burn_vegetation:
+		return out
+	var cand: Array = []
+	var grouped := tree.get_nodes_in_group("burnable")
+	if not grouped.is_empty():
+		cand = grouped
+	else:
+		var st: Array = [tree.root]
+		while st.size() > 0 and cand.size() < 400:
+			var cur: Node = st.pop_back()
+			if cur is MeshInstance3D:
+				var nm := String(cur.name).to_lower()
+				for hint in VEG_HINTS:
+					if nm.contains(String(hint)):
+						cand.append(cur)
+						break
+			for c in cur.get_children():
+				st.append(c)
+	# 先按"是否触及圈内"筛，再按距离从近到远取前 VEG_MAX 个
+	# （否则静态草先把名额占满，addon 草丛永远轮不上）
+	var hits: Array = []
+	for n in cand:
+		if not (n is Node3D) or not is_instance_valid(n):
+			continue
+		if not _node_touches_circle(n as Node3D):
+			continue
+		var p := (n as Node3D).global_position
+		hits.append({"n": n, "d": _node_distance(n as Node3D)})
+	hits.sort_custom(func(a, b): return float(a["d"]) < float(b["d"]))
+	for h in hits:
+		out.append(h["n"])
+		if VEG_MAX > 0 and out.size() >= VEG_MAX:
+			break
+	if debug_vegetation:
+		print("[火焰灼烧] 圆心=%s 半径=%.2f" % [str(_center), _radius])
+		print("[火焰灼烧] burnable 组共 %d 个；触及圈内 %d 个；实际点燃 %d 个" % [
+				cand.size(), hits.size(), out.size()])
+		# ★ 不管在不在圈内，列出最近的 3 个候选：这样"0 个命中"能立刻看出是
+		#   距离判定错、还是候选本身的 global_position 不对劲（不用靠猜）。
+		var probe: Array = []
+		for n in cand:
+			if n is Node3D and is_instance_valid(n):
+				probe.append({"n": n, "d": _node_distance(n as Node3D)})
+		probe.sort_custom(func(a, b): return float(a["d"]) < float(b["d"]))
+		for i in range(mini(probe.size(), 3)):
+			var pn := probe[i]["n"] as Node3D
+			print("    ~ 最近候选 %d: %s (%s) 距离=%.2f 位置=%s" % [i, pn.name,
+					pn.get_class(), float(probe[i]["d"]), str(pn.global_position)])
+		for i in range(mini(out.size(), 5)):
+			var nn := out[i] as Node3D
+			print("    · %s (%s) @ %s" % [nn.name, nn.get_class(), str(nn.global_position)])
+	return out
+
+
+## 这个植被节点距圆心的**有效距离**。
+## ★ MultiMesh（addon 的整片草丛）必须取**最近实例**的距离：整片草地是一个节点，
+##   原点常常离实际草很远（甚至在世界原点）。用原点距离排序的话草丛永远排最后，
+##   会被 VEG_MAX(12) 个名额挤掉 —— 实测诊断：组里 836、圈内 63，点燃的 12 个
+##   全是个体道具，草丛一个没轮到。
+## MultiMesh 的**块索引**：把实例按 cell 米见方的格子归类；查询时**先筛块、再看块内**。
+## 键 = MultiMesh 实例 id；值 = {cell, count, blocks:{Vector2i -> Array[实例下标]}}
+var _mm_index: Dictionary = {}
+## 块大小（米）。太小 -> 块数爆炸；太大 -> 每块实例太多。8 米对草地比较合适。
+@export var mm_cell_size := 8.0
+
+
+## 取（必要时建）某片草丛的块索引；实例数没变就命中缓存
+func _mm_block_index(mmi: MultiMeshInstance3D) -> Dictionary:
+	var mm := mmi.multimesh
+	if mm == null:
+		return {}
+	var key := mm.get_instance_id()
+	var idx: Dictionary = _mm_index.get(key, {})
+	if not idx.is_empty() and int(idx.get("count", -1)) == mm.instance_count:
+		return idx
+	var cell := maxf(mm_cell_size, 0.5)
+	var blocks := {}
+	for i in range(mm.instance_count):
+		var w: Vector3 = mmi.global_transform * mm.get_instance_transform(i).origin
+		var bk := Vector2i(int(floor(w.x / cell)), int(floor(w.z / cell)))
+		if not blocks.has(bk):
+			blocks[bk] = []
+		(blocks[bk] as Array).append(i)
+	var built := {"cell": cell, "count": mm.instance_count, "blocks": blocks}
+	_mm_index[key] = built
+	return built
+
+
+## ★ 两级过滤：**先按块**（只保留与圆相交的块）**再查块内**实例。
+## 直接全量遍历上万实例太浪费 —— 这就是块索引的意义。
+## 返回 [{i, w}]，w = 实例世界坐标。
+func _mm_scan_circle(mmi: MultiMeshInstance3D, center: Vector3, radius: float) -> Array:
+	var idx := _mm_block_index(mmi)
+	if idx.is_empty():
+		return []
+	var cell: float = idx["cell"]
+	var blocks: Dictionary = idx["blocks"]
+	var mm := mmi.multimesh
+	var out: Array = []
+	var bx0 := int(floor((center.x - radius) / cell))
+	var bx1 := int(floor((center.x + radius) / cell))
+	var bz0 := int(floor((center.z - radius) / cell))
+	var bz1 := int(floor((center.z + radius) / cell))
+	for bx in range(bx0, bx1 + 1):
+		for bz in range(bz0, bz1 + 1):
+			var bk := Vector2i(bx, bz)
+			if not blocks.has(bk):
+				continue                  # 空块直接跳过（这才是"先按块"的收益）
+			for i in (blocks[bk] as Array):
+				var w: Vector3 = mmi.global_transform * mm.get_instance_transform(int(i)).origin
+				_scanned_instances += 1
+				if Vector2(w.x - center.x, w.z - center.z).length() <= radius:
+					out.append({"i": int(i), "w": w})
+	return out
+
+
+func _node_distance(n: Node3D) -> float:
+	if n is MultiMeshInstance3D:
+		var mmi := n as MultiMeshInstance3D
+		if mmi.multimesh != null:
+			# ★ 先按块筛、再查块内（见 _mm_scan_circle）：命中就返回其中最近的距离
+			var hit := _mm_scan_circle(mmi, _center, _radius)
+			if not hit.is_empty():
+				var best := 1e9
+				for h in hit:
+					var w: Vector3 = h["w"]
+					best = minf(best, Vector2(w.x - _center.x, w.z - _center.z).length())
+				return best
+			# 圈内没有 -> 用节点原点距离参与排序（它必然被排除）
+			return Vector2(mmi.global_position.x - _center.x,
+					mmi.global_position.z - _center.z).length()
+	return Vector2(n.global_position.x - _center.x, n.global_position.z - _center.z).length()
+
+
+## 是否触及圈内（= 有效距离在半径内）
+func _node_touches_circle(n: Node3D) -> bool:
+	return _node_distance(n) <= _radius
 
 
 ## 从上方朝下打射线找地面
