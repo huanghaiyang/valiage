@@ -1213,7 +1213,7 @@ const SCREEN_SHADER := "res://assets/shaders/spell_sector_screen.gdshader"
 ## 扇形填充（推进）：扫到的面都铺一层白
 @export var screen_fill_strength := 0.55
 ## ★ 圆环填充（火焰灼烧）：**要的是圈不是实心盘** -> 只留极淡的一层，靠外弧亮带成形
-@export var screen_fill_strength_circle := 0.10
+@export var screen_fill_strength_circle := 0.0    # ★ 用户定稿：圆盘**只要一圈外弧亮带**，内部完全透明
 @export var screen_edge_strength := 2.2
 var _sp_quad: MeshInstance3D = null
 var _sp_mat: ShaderMaterial = null
