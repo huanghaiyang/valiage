@@ -28,6 +28,10 @@ const NOISE_TEX := "res://assets/textures/法术特效/Noise1_tiled.png"
 @export var random_yaw := true
 @export var stretch_gain := 0.11        ## 纵向伸缩幅度（火焰呼吸）
 @export var flicker_gain := 0.16        ## 亮度闪烁幅度
+## 波纹幅度（米，逐卡再随机一次）：随高度线性增强
+@export var ripple_amt := 0.05
+## 卷曲幅度（米，逐卡再随机一次）：随高度平方增强
+@export var curl_amt := 0.10
 @export var sway_gain := 0.055          ## 左右摇摆幅度（弧度）
 @export var light_flicker := 0.45       ## 点光闪烁幅度
 @export var brightness := 2.6           ## 基础亮度（mix 模式下要让核心过曝到白热，才有火焰感）
@@ -184,6 +188,13 @@ func _make_fire_material() -> ShaderMaterial:
 	# ★ 逐卡随机的滚动倍率：否则所有焰卡的贴图流速完全一样，
 	#   整片火会按同一节奏一起窜（"过于有节奏感"）。相位只错开起始，不解决频率。
 	m.set_shader_parameter("scroll_scale", randf_range(0.7, 1.4))
+	# ★ 每张卡的**运动倍率**：波纹/卷曲的频率也各不相同，
+	#   否则整片火会像一块布在齐步抖（和贴图流速同一类问题）
+	m.set_shader_parameter("motion_scale", randf_range(0.7, 1.5))
+	# 波纹/卷曲幅度也逐卡微随机（同一片火里更自然），并**显式**写进材质
+	# （不写的话 get_shader_parameter 取回 null，外部核对时没法读）
+	m.set_shader_parameter("ripple_amt", ripple_amt * randf_range(0.8, 1.25))
+	m.set_shader_parameter("curl_amt", curl_amt * randf_range(0.8, 1.3))
 	return m
 
 

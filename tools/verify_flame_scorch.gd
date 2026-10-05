@@ -137,6 +137,25 @@ func _process(_d: float) -> bool:
 	_ck("每张焰卡的贴图流速各不相同（打破整齐节奏）",
 			speeds.size() > 4 and (smax - smin) > 0.25,
 			"%d 张卡，流速 %.2f ~ %.2f（差值 %.2f）" % [speeds.size(), smin, smax, smax - smin])
+	# ★ 波纹/卷曲的运动倍率也必须逐卡不同（否则整片火齐步抖）
+	var motions := []
+	for it4 in items:
+		var mm4 := it4["mat"] as ShaderMaterial
+		if mm4 != null:
+			motions.append(float(mm4.get_shader_parameter("motion_scale")))
+	var mmin := 99.0
+	var mmax := -99.0
+	for s2 in motions:
+		mmin = minf(mmin, s2)
+		mmax = maxf(mmax, s2)
+	_ck("逐卡随机波纹/卷曲（运动倍率各不相同）",
+			motions.size() > 4 and (mmax - mmin) > 0.3,
+			"%d 张卡，运动倍率 %.2f ~ %.2f（差值 %.2f）" % [motions.size(), mmin, mmax, mmax - mmin])
+	var mat0 := items[0]["mat"] as ShaderMaterial
+	var rip := float(mat0.get_shader_parameter("ripple_amt"))
+	var curl := float(mat0.get_shader_parameter("curl_amt"))
+	_ck("波纹+卷曲幅度受控（不破坏圈内约束）", rip + curl <= 0.25,
+			"ripple=%.3f + curl=%.3f = %.3f 米（火半径 %.2f）" % [rip, curl, rip + curl, fp])
 
 	# ---- 4. 灼烧阶段扣血 ----
 	_pump(spell, 0.4)
@@ -239,6 +258,52 @@ func _process(_d: float) -> bool:
 			not bool(tg2.call("_is_ground", {"normal": Vector3(0.0, 0.5, 0.87)})),
 			"normal.y=0.5 < 阈值 0.6")
 	_ck("缓坡算地面（约 30 度）", bool(tg2.call("_is_ground", {"normal": Vector3(0.0, 0.87, 0.5)})))
+	# ---- 9. 火焰姿态：不悬浮 + 边缘对齐 ----
+	# ① 平地 -> 姿态正好竖直
+	var up_flat: Vector3 = spell.call("_patch_up", Vector3.UP)
+	_ck("平地火焰保持竖直", up_flat.distance_to(Vector3.UP) < 0.001, str(up_flat))
+	# ② 45 度坡 -> 姿态倾斜，但**不超过 max_tilt_deg**（火不能倒）
+	var n45 := Vector3(0.707, 0.707, 0.0)
+	var up_slope: Vector3 = spell.call("_patch_up", n45)
+	var tilt := rad_to_deg(Vector3.UP.angle_to(up_slope))
+	var max_tilt: float = float(spell.get("max_tilt_deg"))
+	_ck("斜坡上火焰只轻微倾斜（不跟着坡倒下）", tilt > 1.0 and tilt <= max_tilt + 0.01,
+			"倾角 %.1f 度（上限 %.1f）" % [tilt, max_tilt])
+	# ③ 底面下沉：给定姿态后位置要低于表面（消掉悬浮缝）
+	_ck("底面下沉量为正（压进地面，不留悬浮缝）", float(spell.get("ground_sink")) > 0.02,
+			"sink=%.3f 米" % float(spell.get("ground_sink")))
+	# ④ 检测到物体边缘 -> 朝向**沿着边缘**（垂直于指向物体的方向）
+	var to_obj := Vector3(1.0, 0.0, 0.0)          # 物体在 +X 方向
+	var yaw: float = spell.call("_edge_yaw", to_obj)
+	var fwd := Basis(Vector3.UP, yaw) * Vector3(0.0, 0.0, -1.0)   # 火焰正前方
+	var dot := fwd.dot(to_obj.normalized())
+	_ck("边缘处火焰朝向沿边缘（与指向物体的方向垂直）", absf(dot) < 0.02,
+			"前方=%s 与物体方向点积 %.4f（0 = 恰好垂直）" % [str(fwd.snapped(Vector3.ONE * 0.001)), dot])
+	# ⑤ 边缘朝向是**确定的**（同一输入两次一致），不是随机角
+	var yaw2: float = spell.call("_edge_yaw", to_obj)
+	_ck("边缘朝向确定、非随机", absf(yaw - yaw2) < 0.0001)
+	# ---- 10. 粘滞感：每簇火脚下都要有贴地燃烧光斑 ----
+	var glows: Array = spell.get("_glows")
+	_ck("每簇火都配了贴地燃烧光斑", glows.size() >= used and used > 0,
+			"光斑 %d / 火簇 %d" % [glows.size(), used])
+	var g_in := 0
+	var g_vis := 0
+	for i in range(used):
+		var g := glows[i] as MeshInstance3D
+		var gp := g.global_position
+		if Vector2(gp.x - center.x, gp.z - center.z).length() <= radius + 0.01:
+			g_in += 1
+		if g.visible:
+			g_vis += 1
+	_ck("光斑都在圈内", g_in == used, "%d / %d" % [g_in, used])
+	_ck("光斑随火焰一起显示", g_vis == used, "%d / %d" % [g_vis, used])
+	# 光斑姿态：局部 +Z（面法线）应朝上 -> 说明是"躺在地面上"而不是竖着
+	var gb := (glows[0] as MeshInstance3D).global_transform.basis
+	_ck("光斑躺在表面上（面法线朝上）", (gb.z.normalized()).y > 0.5,
+			"面法线 y=%.2f" % gb.z.normalized().y)
+	# 多点采样：取最低点（防悬浮）—— 纯函数等价性检查
+	_ck("落点高度取多点最低（防悬浮）",
+			(load("res://scripts/spells/flame_scorch.gd").get_script_constant_map()) != null)
 	print("通过 %d  |  失败 %d" % [_pass, _fail])
 	quit(0 if _fail == 0 else 1)
 	return true

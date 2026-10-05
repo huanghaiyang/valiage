@@ -56,7 +56,7 @@ uniform float phase = 0.0;
 /// 顶点摇摆幅度
 uniform float sway : hint_range(0.0, 0.2) = 0.035;
 
-// ---- UV 是**算出来的**，不是读模型的 ----
+// ---- UV 是**算出来的**，不是读模型的（声明必须在 vertex() 之前，否则编译报 Unknown identifier）----
 // ★ 这个网格只有 POSITION + NORMAL，**没有任何 UV**（Tripo 生成时没贴图）。
 //   直接读 UV 会恒为 0 -> 纹理采样到固定常量（黑）-> 火焰完全不可见（实际踩过）。
 //   这张焰卡躺在 YZ 平面上（X 只有 0.02~0.035 米厚），所以把 (z, y) 归一化到 0..1
@@ -66,15 +66,45 @@ uniform float uv_scale_x = 2.5;
 uniform float uv_scale_y = 1.7;
 uniform vec2 uv_offset = vec2(0.5, 0.5);
 
+// ---- 随机波纹 + 卷曲（进阶）----
+/// ★ 每张卡的**运动倍率**（由 fire_burst 逐卡随机 0.7~1.5）。
+///   波纹/卷曲如果是全场同一频率，整片火会像一块布在齐步抖 ——
+///   和之前"贴图流速完全一致导致太有节奏"是同一类问题。
+uniform float motion_scale : hint_range(0.3, 2.0) = 1.0;
+/// 波纹幅度（米）：随高度**线性**增强，底部几乎不动（火根要稳）
+uniform float ripple_amt : hint_range(0.0, 0.2) = 0.05;
+/// 波纹频率（沿高度的波数）
+uniform float ripple_freq : hint_range(0.0, 12.0) = 4.2;
+/// 波纹上行速度（火舌像有波在往上走）
+uniform float ripple_speed : hint_range(0.0, 6.0) = 2.1;
+/// 卷曲幅度（米）：随高度**平方**增强 -> 越靠上越卷，火梢卷出去
+uniform float curl_amt : hint_range(0.0, 0.4) = 0.10;
+/// 贴图扭曲幅度：让火舌**纹理**也跟着卷，而不只是轮廓在动
+uniform float uv_curl : hint_range(0.0, 0.3) = 0.07;
+
 varying vec2 v_uv;
+varying float v_curl;
 
 void vertex() {
 	// 用局部坐标生成 UV（模型没有 UV，见上）
 	v_uv = vec2(VERTEX.z * uv_scale_x, VERTEX.y * uv_scale_y) + uv_offset;
-	// 越靠上摆得越厉害（火苗尖端飘）
 	float h = v_uv.y;
-	VERTEX.x += sin(TIME * 2.3 + phase) * sway * h;
-	VERTEX.z += cos(TIME * 1.7 + phase * 1.3) * sway * 0.6 * h;
+	float ms = motion_scale;   // ★ 局部变量不能带 hint_range 限定符（会报 Expected a ',' or ';'）
+	float t = TIME * ms;
+	// ① 基础摇摆：越靠上摆得越厉害（火苗尖端飘）
+	VERTEX.x += sin(t * 2.3 + phase) * sway * h;
+	VERTEX.z += cos(t * 1.7 + phase * 1.3) * sway * 0.6 * h;
+	// ② 波纹：两列不同频率/相位的行波叠加（沿高度往上走）-> 不规则的水波状边缘
+	float ripple_a = sin(h * ripple_freq - t * ripple_speed + phase * 1.7) * ripple_amt * h * ms;
+	float ripple_b = cos(h * ripple_freq * 0.63 - t * ripple_speed * 0.72 + phase * 2.3)
+			* ripple_amt * 0.7 * h * ms;
+	VERTEX.x += ripple_a;
+	VERTEX.z += ripple_b;
+	// ③ 卷曲：h² 增强（顶部卷得最厉害），方向由本卡的 phase 决定 -> 每张卡卷的方向不同
+	float curl = curl_amt * h * h * ms;
+	VERTEX.x += cos(phase * 1.9 + t * 0.6) * curl;
+	VERTEX.z += sin(phase * 1.9 + t * 0.6) * curl;
+	v_curl = curl;
 }
 
 void fragment() {
@@ -87,6 +117,9 @@ void fragment() {
 	//     噪声方向相反、互相打架。
 	vec2 uv = v_uv;
 	uv.y -= TIME * scroll_speed * scroll_scale + phase;
+	// ★ 贴图也跟着卷：只让轮廓动、纹理不动的话，火舌会像"纸片在晃"而不是"火焰在卷"
+	uv.x += sin(v_uv.y * 3.4 + TIME * 1.3 + phase) * uv_curl * clamp(v_uv.y, 0.0, 1.0);
+	uv.x += v_curl * 0.6;
 
 	// ② 噪声扰动：越靠上扭得越厉害。噪声的流速也跟着本卡的 scroll_scale 走，
 	//   否则噪声与火纹频率不一致，同一张卡会显得"两层皮"。

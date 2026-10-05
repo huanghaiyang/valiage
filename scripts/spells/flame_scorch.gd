@@ -19,6 +19,8 @@ extends Node3D
 const FIRE_SCENE: PackedScene = preload("res://scenes/法术特效/火焰燃烧特效.tscn")
 const SHEET := preload("res://scripts/spells/spell_sheet.gd")
 const SHEET_ID := "flame_scorch"
+const GROUND_SHADER := "res://assets/shaders/fire_ground.gdshader"
+const FIRE_TEX := "res://assets/textures/法术特效/龙卷风/T_FirePanningCyl45.png"
 
 # ---- 数值（表缺失时的兜底）----
 @export var mana_cost := 30.0
@@ -35,6 +37,22 @@ const SHEET_ID := "flame_scorch"
 ##   布点半径必须扣掉它，否则火焰会**溢出圈外**（用户实测症状）。
 @export var patch_footprint := 1.1
 
+# ---- 姿态：让火焰"坐"在表面而不是悬浮 ----
+## 姿态向面法线靠拢的比例（1 = 完全贴合表面，0 = 永远竖直）
+@export var tilt_gain := 0.55
+## 最大倾斜角（度）。火焰毕竟该是向上的，不能跟着陡坡倒下去
+@export var max_tilt_deg := 20.0
+## 沿姿态轴向下沉多少米：把底面压进地面，消掉"悬浮缝"
+@export var ground_sink := 0.07
+
+# ---- 物体边缘检测 ----
+## 探针距离（米）：在火焰位置四周这个距离上再打射线找"物体"
+@export var edge_probe_dist := 0.55
+## 探针命中面的法线朝上程度低于此值 -> 认为碰到了**立面（物体边缘）**
+@export var edge_normal_min := 0.75
+## 探针相对中心的高度差超过此值 -> 也认为碰到了边缘/台阶
+@export var edge_height_delta := 0.35
+
 var casting := false
 
 var _player: Node3D = null
@@ -44,6 +62,8 @@ var _state_t := 0.0
 var _center := Vector3.ZERO
 var _radius := 2.5
 var _patches: Array[Node3D] = []       ## 复用的火焰簇（避免每次施法现建十几份特效）
+var _glows: Array[MeshInstance3D] = []  ## 每簇火脚下的一层"贴地燃烧"光斑（粘滞感）
+var _glow_mat: ShaderMaterial = null
 var _used := 0
 var _dmg_acc: Dictionary = {}          ## 目标 id -> 累积的小数伤害（保证 take_damage 收到整数）
 
@@ -214,16 +234,24 @@ func _find_targets() -> Array:
 
 
 func _apply_grow(s: float) -> void:
+	var g := clampf(s, 0.0, 1.0)
 	for i in range(_used):
 		var f := _patches[i]
 		if f != null and is_instance_valid(f):
-			f.set("grow", clampf(s, 0.0, 1.0))
+			f.set("grow", g)
+	if _glow_mat != null:
+		_glow_mat.set_shader_parameter("fade", g)
 
 
 func _hide_all() -> void:
 	for f in _patches:
 		if f != null and is_instance_valid(f):
 			f.visible = false
+	for mi in _glows:
+		if mi != null and is_instance_valid(mi):
+			mi.visible = false
+	if _glow_mat != null:
+		_glow_mat.set_shader_parameter("fade", 0.0)
 
 
 ## 在圈内铺开火焰簇（抖动网格，保证覆盖均匀又不像阵列）
@@ -261,10 +289,31 @@ func _spawn_patches() -> void:
 			f.visible = true
 			var x := _center.x + jx
 			var z := _center.z + jz
-			var y := _ground_y(Vector3(x, 0.0, z), _center.y)
-			f.global_transform = Transform3D(Basis.IDENTITY, Vector3(x, y, z))
+			# ★ 姿态：贴合表面 + 底面下沉消缝 +（若有物体）朝边缘对齐而不是随机角
+			var pr := _probe_patch(x, z, _center.y)
+			var up: Vector3 = pr["up"]
+			var y: float = float(pr["y"]) - ground_sink
+			var yaw: float = float(pr["yaw"])
+			var basis := Basis(Vector3.UP, yaw)          # 先定朝向
+			var axis := basis.y.cross(up)                # 再把"上"倾到姿态轴
+			if axis.length_squared() > 1e-8:
+				basis = Basis(axis.normalized(), basis.y.angle_to(up)) * basis
+			f.global_transform = Transform3D(basis, Vector3(x, y, z))
 			f.scale = Vector3.ONE * pscale
 			f.set("grow", 0.2)
+			# ★ 贴地燃烧底光：让火焰"粘"在地表（消掉悬浮的观感）
+			var glow := _glows[placed]
+			glow.visible = true
+			var gup: Vector3 = (pr["up"] as Vector3)
+			var gfwd := Vector3(sin(yaw), 0.0, cos(yaw))
+			var gright := gfwd.cross(gup)
+			if gright.length_squared() < 1e-6:
+				gright = Vector3.RIGHT
+			gright = gright.normalized()
+			gfwd = gup.cross(gright).normalized()
+			glow.global_transform = Transform3D(Basis(gright, gfwd, gup),
+					Vector3(x, y, z) + gup * (ground_sink + 0.03))
+			glow.scale = Vector3.ONE * pscale
 			placed += 1
 
 
@@ -283,18 +332,126 @@ func _ensure_pool(n: int) -> void:
 		add_child(f)
 		f.set("grow", 0.0)
 		_patches.append(f)
+	_ensure_glow_pool(n)
+
+
+## 贴地燃烧光斑的池子（共用一份材质：整片火的 grow 是统一的）
+func _ensure_glow_pool(n: int) -> void:
+	if _glow_mat == null:
+		_glow_mat = ShaderMaterial.new()
+		var sh := load(GROUND_SHADER) as Shader
+		if sh == null:
+			return
+		_glow_mat.shader = sh
+		var ft := load(FIRE_TEX) as Texture2D
+		if ft != null:
+			_glow_mat.set_shader_parameter("fire_tex", ft)
+	while _glows.size() < n:
+		var q := QuadMesh.new()
+		q.size = Vector2(2.6, 2.6)
+		q.surface_set_material(0, _glow_mat)
+		var mi := MeshInstance3D.new()
+		mi.name = "ScorchGlow%d" % _glows.size()
+		mi.mesh = q
+		mi.material_override = _glow_mat
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mi.visible = false
+		add_child(mi)
+		_glows.append(mi)
 
 
 ## 从上方朝下打射线找地面
 func _ground_y(pos: Vector3, fallback: float) -> float:
-	var world := get_world_3d()
-	if world == null:
-		return fallback
-	var from := Vector3(pos.x, fallback + 15.0, pos.z)
-	var to := Vector3(pos.x, fallback - 60.0, pos.z)
-	var q := PhysicsRayQueryParameters3D.create(from, to)
-	q.collision_mask = 0xFFFFFFFF
-	var hit := world.direct_space_state.intersect_ray(q)
+	var hit := _ray_down(pos.x, pos.z, fallback)
 	if hit.is_empty():
 		return fallback
 	return (hit["position"] as Vector3).y
+
+
+func _ray_down(x: float, z: float, base_y: float) -> Dictionary:
+	var world := get_world_3d()
+	if world == null:
+		return {}
+	var q := PhysicsRayQueryParameters3D.create(Vector3(x, base_y + 15.0, z),
+			Vector3(x, base_y - 60.0, z))
+	q.collision_mask = 0xFFFFFFFF
+	return world.direct_space_state.intersect_ray(q)
+
+
+# ---------------------------------------------------------------- 姿态（纯函数，便于自检）
+## 火焰的姿态轴：把面法线**温和地**靠向竖直，并限制最大倾角。
+## 为什么不能直接用面法线：陡坡上火焰会整个倒下去，看起来像贴纸。
+func _patch_up(normal: Vector3) -> Vector3:
+	var nn := normal
+	if nn.length_squared() < 1e-8:
+		return Vector3.UP
+	nn = nn.normalized()
+	if nn.y < 0.0:
+		nn = -nn                                   # 朝下的法线翻上来
+	var blended := Vector3.UP.lerp(nn, clampf(tilt_gain, 0.0, 1.0)).normalized()
+	var ang := Vector3.UP.angle_to(blended)
+	var lim := deg_to_rad(maxf(max_tilt_deg, 0.0))
+	if ang > lim and ang > 1e-5:
+		var axis := Vector3.UP.cross(blended)
+		if axis.length_squared() < 1e-8:
+			return Vector3.UP
+		blended = Vector3.UP.rotated(axis.normalized(), lim)
+	return blended
+
+
+## 检测到物体边缘时火焰的朝向：**沿着边缘**（垂直于"指向物体"的方向），不再随机。
+## 返回绕 Y 的 yaw；该 yaw 下火焰的正前方(-Z)与边缘平行。
+func _edge_yaw(obstacle_dir: Vector3) -> float:
+	var d := Vector3(obstacle_dir.x, 0.0, obstacle_dir.z)
+	if d.length_squared() < 1e-8:
+		return 0.0
+	d = d.normalized()
+	var edge := Vector3(-d.z, 0.0, d.x)            # 水平面上与 d 垂直 = 边缘走向
+	return atan2(-edge.x, -edge.z)                 # 使 Basis(UP, yaw) 的 -Z 指向 edge
+
+
+## 探测一个落点：地面高度（**多点取最低**）/ 姿态轴 / 朝物体边缘对齐的 yaw
+## ★ 只打中心一根射线是不够的：火焰簇占地 ~2 米，地面在这个范围内一有起伏，
+##   火就架在低处上方 = **悬浮**（用户实测反馈）。所以按占地撒点、取**最低**：
+##   宁可让高处的土稍微扎进火里，也不能让火悬空。
+func _probe_patch(x: float, z: float, base_y: float) -> Dictionary:
+	var out := {"y": base_y, "up": Vector3.UP, "yaw": randf() * TAU, "has_edge": false}
+	var c := _ray_down(x, z, base_y)
+	var cy := base_y
+	var normal := Vector3.UP
+	if not c.is_empty():
+		cy = (c["position"] as Vector3).y
+		normal = c.get("normal", Vector3.UP)
+	# 多点采样（中心 + 一圈 + 半径 0.6 处）取最低
+	var lowest := cy
+	for ring in [0.45, 0.9]:
+		for i in range(6):
+			var a: float = float(i) / 6.0 * TAU
+			var px: float = x + cos(a) * patch_footprint * float(ring)
+			var pz: float = z + sin(a) * patch_footprint * float(ring)
+			var h := _ray_down(px, pz, base_y)
+			if not h.is_empty():
+				lowest = minf(lowest, (h["position"] as Vector3).y)
+	out["y"] = lowest
+	out["up"] = _patch_up(normal)
+	# 四向探针找物体边缘
+	var best := Vector3.ZERO
+	var found := false
+	for i in range(4):
+		var a2 := float(i) / 4.0 * TAU
+		var dir := Vector3(cos(a2), 0.0, sin(a2))
+		var s := _ray_down(x + dir.x * edge_probe_dist, z + dir.z * edge_probe_dist, base_y)
+		if s.is_empty():
+			continue
+		var n: Vector3 = s.get("normal", Vector3.UP)
+		var sy: float = (s["position"] as Vector3).y
+		var is_face := n.normalized().y < edge_normal_min
+		var is_step := absf(sy - cy) > edge_height_delta
+		if is_face or is_step:
+			out["has_edge"] = true
+			if not found or absf(sy - cy) > absf(best.length()):
+				best = dir * maxf(absf(sy - cy), 0.001)
+				found = true
+	if out["has_edge"]:
+		out["yaw"] = _edge_yaw(best)
+	return out
