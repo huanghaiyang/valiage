@@ -427,6 +427,25 @@ func _process(_d: float) -> bool:
 		_ck("★ 遮罩通道解析：grass_wind 用红通道 .r（不是 .a）",
 				shared_mat != null and int(gb2.call("_mask_channel_of", shared_mat, "alpha_tex")) == 0,
 				"channel=%s" % str(gb2.call("_mask_channel_of", shared_mat, "alpha_tex") if shared_mat != null else "无"))
+		# ---- ★ 天气风：燃烧材质副本必须继续收到风参数（风系统只写它名单里的材质）----
+		if shared_mat != null and dup_mat != null:
+			shared_mat.set_shader_parameter("wind_strength", 0.77)
+			shared_mat.set_shader_parameter("wind_direction", Vector2(0.0, 1.0))
+			_pump(gb2, 0.05)
+			var dw: Variant = dup_mat.get_shader_parameter("wind_strength")
+			var dd: Variant = dup_mat.get_shader_parameter("wind_direction")
+			_ck("★ 燃烧中的草**继续跟随天气风**（副本同步原材质的风参数）",
+					dw != null and absf(float(dw) - 0.77) < 0.001
+					and dd is Vector2 and absf((dd as Vector2).y - 1.0) < 0.001,
+					"副本 wind_strength=%s wind_direction=%s" % [str(dw), str(dd)])
+		# ---- ★ Wind 自动加载对外暴露"当前风"（供火焰等 VFX 读）----
+		var wind_node := get_root().get_node_or_null("Wind")
+		_ck("★ Wind 暴露 cur_dir/cur_strength（火焰据此随风）",
+				wind_node != null and wind_node.get("cur_dir") is Vector2
+				and wind_node.get("cur_strength") != null,
+				"cur_dir=%s cur_strength=%s" % [str(wind_node.get("cur_dir") if wind_node != null else "无"),
+						str(wind_node.get("cur_strength") if wind_node != null else "无")])
+
 	# ---- ★ 内建 burn 路线：不透明植被走这条路（不叠层、不碰透明度问题）----
 	var veg_sh := load("res://assets/shaders/vegetation_wind.gdshader") as Shader
 	_ck("vegetation_wind 着色器带 burn 参数（本项目新增）", veg_sh != null and (

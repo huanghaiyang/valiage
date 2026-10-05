@@ -195,10 +195,37 @@ func _make_fire_material() -> ShaderMaterial:
 	# （不写的话 get_shader_parameter 取回 null，外部核对时没法读）
 	m.set_shader_parameter("ripple_amt", ripple_amt * randf_range(0.8, 1.25))
 	m.set_shader_parameter("curl_amt", curl_amt * randf_range(0.8, 1.3))
+	# 先给一版风参数（_process 每帧会刷新），免得第一帧是默认风向
+	_flame_mats.append(m)
+	_apply_wind()
 	return m
 
 
+## ★ 已生成的焰卡材质（每帧把天气风写进去 —— 火焰随风倾倒）
+var _flame_mats: Array[ShaderMaterial] = []
+
+
+## 读 Wind 自动加载的"当前风"（没有 Wind 时用兜底值，保证不报错）
+func _apply_wind() -> void:
+	var w: Node = null
+	if Engine.has_singleton("Wind"):
+		w = Engine.get_singleton("Wind")
+	if w == null:
+		w = get_node_or_null("/root/Wind")
+	if w == null:
+		return
+	var dir: Vector2 = w.get("cur_dir") if w.get("cur_dir") is Vector2 else Vector2(1.0, 0.0)
+	for m in _flame_mats:
+		if not is_instance_valid(m):
+			continue
+		m.set_shader_parameter("wind_dir", dir)
+		m.set_shader_parameter("wind_strength", float(w.get("cur_strength")))
+		m.set_shader_parameter("wind_turb", float(w.get("cur_turbulence")))
+		m.set_shader_parameter("wind_speed", float(w.get("cur_speed")))
+
+
 func _process(delta: float) -> void:
+	_apply_wind()
 	_t += delta
 	var cam := get_viewport().get_camera_3d() if is_inside_tree() else null
 	for it in _items:

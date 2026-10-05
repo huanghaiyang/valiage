@@ -82,6 +82,18 @@ uniform float curl_amt : hint_range(0.0, 0.4) = 0.10;
 /// 贴图扭曲幅度：让火舌**纹理**也跟着卷，而不只是轮廓在动
 uniform float uv_curl : hint_range(0.0, 0.3) = 0.07;
 
+// ---- 天气风（进阶）：火焰随风倾倒 + 摆动，风向/风力由 fire_burst.gd 每帧写入 ----
+/// 世界风向（XZ 平面）
+uniform vec2 wind_dir = vec2(1.0, 0.0);
+/// 风力（与草的 wind_strength 同源，0..~1.5）
+uniform float wind_strength = 0.18;
+/// 倾倒倍率：火苗被风吹倒多少
+uniform float wind_bend : hint_range(0.0, 3.0) = 1.1;
+/// 湍流：风里火苗的抖动
+uniform float wind_turb = 0.30;
+/// 风的脉动速度
+uniform float wind_speed = 1.4;
+
 varying vec2 v_uv;
 varying float v_curl;
 
@@ -105,6 +117,20 @@ void vertex() {
 	VERTEX.x += cos(phase * 1.9 + t * 0.6) * curl;
 	VERTEX.z += sin(phase * 1.9 + t * 0.6) * curl;
 	v_curl = curl;
+
+	// ④ 天气风：整片火向**下风向**倾倒（高度越高倒得越多），再叠一点湍流抖动。
+	//   世界方向的偏移必须换算到模型空间再叠加 —— 否则每张卡自己的朝向会把方向带歪
+	//   （和 vegetation_wind.gdshader 同一个坑，那边也是用 inverse(MODEL_MATRIX) 解决的）。
+	{
+		vec2 wd = normalize(wind_dir + vec2(0.0001));
+		vec2 wp = vec2(-wd.y, wd.x);
+		float wamp = wind_strength * (1.0 + 0.35 * sin(TIME * wind_speed * 0.5 + phase));
+		float turb = sin(TIME * (1.1 + wind_speed) + phase * 2.1) * wind_turb;
+		vec2 off = wd * (wamp * wind_bend) + wp * (turb * 0.30 * wind_strength);
+		float hh = pow(clamp(h, 0.0, 1.0), 1.6);   // 火根不动，火梢倒得最多
+		vec3 woff = vec3(off.x, 0.0, off.y) * hh;
+		VERTEX += (inverse(MODEL_MATRIX) * vec4(woff, 0.0)).xyz;
+	}
 }
 
 void fragment() {

@@ -39,6 +39,13 @@ extends Node
 @export var fallback_direction := Vector2(1.0, 0.0)
 @export var scan_interval := 0.5
 
+## ★ 当前风（供火焰/其他 VFX 读取，不必去翻材质）。每次写材质前同步更新。
+var cur_dir := Vector2(1.0, 0.0)
+var cur_strength := 0.18
+var cur_gust := 0.15
+var cur_turbulence := 0.30
+var cur_speed := 1.4
+
 var _registered := 0
 var _scan_timer := 0.0
 var _mats_ours: Array[ShaderMaterial] = []
@@ -202,6 +209,11 @@ func _apply_from_weather(w: Node, delta: float, ppos: Vector3, pmov: Vector3) ->
 	var gust := float(w.get("wind_gust"))
 	var turb := float(w.get("wind_turbulence"))
 	var speed := float(w.get("wind_speed"))
+	cur_dir = dir2
+	cur_strength = strength
+	cur_gust = gust
+	cur_turbulence = turb
+	cur_speed = speed
 	_movement.x += dir2.x * speed * delta * 1.2
 	_movement.z += dir2.y * speed * delta * 1.2
 	_movement.y += delta * speed * 0.6
@@ -211,6 +223,11 @@ func _apply_from_weather(w: Node, delta: float, ppos: Vector3, pmov: Vector3) ->
 
 func _apply_fallback(ppos: Vector3, pmov: Vector3) -> void:
 	var d := fallback_direction.normalized()
+	cur_dir = d
+	cur_strength = fallback_wind
+	cur_gust = fallback_gust
+	cur_turbulence = fallback_turbulence
+	cur_speed = fallback_speed
 	_movement.x += d.x * fallback_speed * 0.02
 	_movement.z += d.y * fallback_speed * 0.02
 	_write_ours(d, fallback_wind, fallback_gust, fallback_turbulence, fallback_speed, ppos)

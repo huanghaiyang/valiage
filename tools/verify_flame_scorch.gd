@@ -337,6 +337,17 @@ func _process(_d: float) -> bool:
 	_ck("★ 圆压到草丛上时，块内实例被扫到并命中",
 			int(spell.get("_scanned_instances")) > 0,
 			"扫描 %d 个实例" % int(spell.get("_scanned_instances")))
+	# ---- ★ 火焰随风：焰卡材质必须带 wind_dir/风力，且着色器有倾倒参数 ----
+	var fsh := load("res://assets/shaders/fire_flame.gdshader") as Shader
+	var f_ok := false
+	if fsh != null:
+		for u in fsh.get_shader_uniform_list():
+			if String(u.get("name", "")) == "wind_bend":
+				f_ok = true
+	_ck("★ 火焰着色器带天气风参数（wind_dir/wind_bend/wind_turb）", f_ok)
+	var wind_node2 := get_root().get_node_or_null("Wind")
+	_ck("★ 火焰能从 Wind 读到当前风向", wind_node2 != null and wind_node2.get("cur_dir") is Vector2,
+			"cur_dir=%s" % str(wind_node2.get("cur_dir") if wind_node2 != null else "无"))
 	print("通过 %d  |  失败 %d" % [_pass, _fail])
 	quit(0 if _fail == 0 else 1)
 	return true

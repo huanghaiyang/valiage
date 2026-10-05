@@ -53,6 +53,19 @@ var _prev_override: Array = []
 var _mat: ShaderMaterial = null
 var _shader_mats: Array[ShaderMaterial] = []
 ## ★ 逐实例燃烧：要烧的 MultiMesh 实例列表 [{mmi, i, phase, delay, done}]
+## ★ 风系统每帧只写**它自己收集的材质**（scripts/wind.gd 的 _mats_ours/_mats_sgt）；
+##   我们为燃烧**复制**出来的材质不在名单里 -> 烧起来的草会停止摆动。
+##   所以每帧把风参数从**原材质**抄到副本上（原材质一直由风系统更新，抄过来就是实时的）。
+const WIND_PARAMS := [
+	"wind_direction", "wind_strength", "wind_gust", "wind_speed", "wind_turbulence",
+	"player_pos", "player_forward", "player_radius", "player_bend", "player_spread",
+	"player_move",
+	"sgt_wind_direction", "sgt_wind_strength", "sgt_wind_turbulence", "sgt_wind_movement",
+	"sgt_player_position", "sgt_player_mov",
+]
+## 与 _shader_mats 一一对应的"原材质"（风参数的来源）
+var _shader_src: Array[ShaderMaterial] = []
+
 var _mm_burn: Array = []
 var _reported := false            ## 1 秒的状态汇报只打一次
 ## 被我们打开 use_custom_data 的 MultiMesh（收尾时还原，避免改动 addon 的内存布局）
@@ -452,6 +465,21 @@ func _drive_multimesh_burn(bt: float, hold: float, at: float) -> bool:
 	return all_done
 
 
+## 把原材质的**风参数**抄到第 i 个副本上（见 WIND_PARAMS 的说明）。
+## 参数没设过时 get 返回 null，跳过即可。
+func _copy_wind_params(i: int) -> void:
+	if i < 0 or i >= _shader_mats.size() or i >= _shader_src.size():
+		return
+	var src: ShaderMaterial = _shader_src[i]
+	var dst: ShaderMaterial = _shader_mats[i]
+	if src == null or dst == null or src == dst:
+		return
+	for p in WIND_PARAMS:
+		var v: Variant = src.get_shader_parameter(p)
+		if v != null:
+			dst.set_shader_parameter(p, v)
+
+
 ## 走"改材质内建 burn"：给每个网格复制一份材质（共享 .tres 不能直接改，
 ## 否则所有同类植被会一起烧），之后逐帧只写这些副本的 burn / ash。
 func _apply_in_shader_burn() -> void:
@@ -473,6 +501,8 @@ func _apply_in_shader_burn() -> void:
 			dup.set_shader_parameter("burn_phase", _phase)
 			mi.set_surface_override_material(s, dup)
 			_shader_mats.append(dup)
+			_shader_src.append(base as ShaderMaterial)
+			_copy_wind_params(_shader_src.size() - 1)
 
 
 ## 材质是否"卡片型"（透明/裁剪/哈希）—— 这类必须靠贴图 alpha 才是真实轮廓
@@ -740,10 +770,13 @@ func _process(delta: float) -> void:
 		return
 	if not _shader_mats.is_empty():
 		# 内建 burn 路线：只写材质副本（每株独立）
-		for sm2 in _shader_mats:
+		for si in range(_shader_mats.size()):
+			var sm2: ShaderMaterial = _shader_mats[si]
 			if sm2 != null:
 				sm2.set_shader_parameter("burn", burn)
 				sm2.set_shader_parameter("ash", ash)
+				# ★ 每帧同步天气风：副本不在风系统的材质名单里，不抄就会"一烧就不摆"
+				_copy_wind_params(si)
 	elif _mat != null:
 		_mat.set_shader_parameter("burn", burn)
 		_mat.set_shader_parameter("ash", ash)
