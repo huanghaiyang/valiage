@@ -492,12 +492,12 @@ func _update_center_from_mouse() -> void:
 				var t_hit := from.distance_to(pos)
 				for k in range(1, 30):
 					var t2 := t_hit + float(k) * 0.35
-					var q := from + dir * t2
-					var gh2 := _terrain_visual_height(q.x, q.z)
+					var qp := from + dir * t2
+					var gh2 := _terrain_visual_height(qp.x, qp.z)
 					if is_nan(gh2):
 						break
-					if q.y <= gh2:
-						pos = Vector3(q.x, gh2, q.z)      # 越过障碍，落在地面上
+					if qp.y <= gh2:
+						pos = Vector3(qp.x, gh2, qp.z)    # 越过障碍，落在地面上
 						break
 			var gh3 := _terrain_visual_height(pos.x, pos.z)
 			if not is_nan(gh3):
