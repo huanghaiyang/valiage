@@ -182,6 +182,63 @@ func _process(_d: float) -> bool:
 	_ck("一次性：松手不中断（仍在灼烧）", int(spell.get("_state")) == 2,
 			"state=%d" % int(spell.get("_state")))
 
+	# ---- 7. 选点圈：不规则表面必须被平滑（喂人造尖刺给纯函数验证）----
+	var tg2: Node3D = (load("res://scripts/spells/spell_targeting.gd") as GDScript).new()
+	get_root().add_child(tg2)
+	var rows: Array = []
+	var SEG := int(tg2.get("SEGMENTS")) if false else 64
+	for ring in range(7):
+		var row := PackedFloat32Array()
+		row.resize(SEG)
+		for s in range(SEG):
+			row[s] = 0.0
+		rows.append(row)
+	# 在中间某处造一根 +3 米、-3 米的尖刺（等价于打到墙顶 / 掉进深沟）
+	# ★ PackedFloat32Array 是**值类型**：改副本不会影响数组里那份，必须写回
+	var spike: PackedFloat32Array = rows[3]
+	spike[10] = 3.0
+	spike[11] = -3.0
+	rows[3] = spike
+	var smoothed: Array = tg2.call("_smooth_heights", rows, 0.0)
+	var max_step := 0.0
+	var max_dev := 0.0
+	for ring in range(7):
+		var row2: PackedFloat32Array = smoothed[ring]
+		for s in range(SEG):
+			max_dev = maxf(max_dev, absf(row2[s]))
+			max_step = maxf(max_step, absf(row2[s] - row2[(s + 1) % SEG]))
+	_ck("尖刺被限幅（不会爬到墙顶/掉进深沟）", max_dev <= 0.55,
+			"最大偏离圆心高度 %.3f 米（限幅 0.45 + 平滑余量）" % max_dev)
+	_ck("相邻顶点落差被抹平（不再拉出尖刺布帘）", max_step <= 0.30,
+			"相邻顶点最大落差 %.3f 米（原始输入是 3.0）" % max_step)
+	# ★ 同时必须**保住坡形**：喂一片缓坡，平滑后落差不能被抹掉
+	#   （只做限幅+重平均会把缓坡也压平 -> 就不"适配地形"了）
+	var ramp: Array = []
+	for ring in range(7):
+		var row3 := PackedFloat32Array()
+		row3.resize(SEG)
+		for s in range(SEG):
+			row3[s] = float(s) / float(SEG) * 0.25     # 一圈内缓缓升高 0.25 米（小于限幅 0.35，避免限幅干扰判定）
+		ramp.append(row3)
+	var ramped: Array = tg2.call("_smooth_heights", ramp, 0.0)
+	var rmin := 99.0
+	var rmax := -99.0
+	for ring in range(1, 7):
+		var rr: PackedFloat32Array = ramped[ring]
+		for s in range(SEG):
+			rmin = minf(rmin, rr[s])
+			rmax = maxf(rmax, rr[s])
+	_ck("缓坡被保住（没有把地形抹平）", (rmax - rmin) > 0.20,
+			"平滑后落差 %.3f 米（输入 0.25，限幅 0.35 不干扰）" % (rmax - rmin))
+	# ---- 8. 选点圈：只认"能站的地面"，不顺着物体立面爬 ----
+	_ck("平地算地面（法线朝上）", bool(tg2.call("_is_ground", {"normal": Vector3(0.1, 0.98, 0.05)})))
+	_ck("垂直面不算地面（墙/栏杆/树干，不会铺上去）",
+			not bool(tg2.call("_is_ground", {"normal": Vector3(1.0, 0.02, 0.0)})),
+			"竖直墙法线被拒绝")
+	_ck("陡坡（约 60 度）不算地面",
+			not bool(tg2.call("_is_ground", {"normal": Vector3(0.0, 0.5, 0.87)})),
+			"normal.y=0.5 < 阈值 0.6")
+	_ck("缓坡算地面（约 30 度）", bool(tg2.call("_is_ground", {"normal": Vector3(0.0, 0.87, 0.5)})))
 	print("通过 %d  |  失败 %d" % [_pass, _fail])
 	quit(0 if _fail == 0 else 1)
 	return true

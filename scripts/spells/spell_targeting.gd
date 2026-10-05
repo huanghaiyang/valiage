@@ -32,10 +32,21 @@ var range_max := 12.0
 var wheel_step := 0.4
 var texture_path := TEX_DEFAULT
 ## ★ 顶点相对"圆心所在高度"最多抬高多少米。
-##   不限制的话，圈边打到石墙/高台时整张圆盘会变成"贴着墙往上爬的布"
-##   （实测：外圈顶点落在 4.17 米高的墙顶）。限幅后仍能贴合缓坡与矮物体，
-##   但不会爬高墙 —— 这是游戏里地面指示圈的通行做法。
+##   不限制的话，圈边打到石墙/高台时整张圆盘会变成"贴着墙往上爬的布"。
 var max_lift := 1.2
+## ★ 平滑参数：上下限幅收窄 + 对高度图做多轮三点平均。
+##   只限幅不平滑是不够的：相邻顶点一个在地面、一个在墙顶，仍会拉出**尖刺布帘**
+##   （用户实测反馈"不规则物体表面显示过于严重，要平滑些"）。
+var smooth_lift := 0.35
+var smooth_drop := 0.35
+## ★ 只认"能站的地面"：射线命中面的法线朝上程度低于这个值，就当作**没有地面**
+##   （墙基、栏杆、树干都是竖直面）。不这么滤的话，圆盘会**顺着物体的立面铺上去**，
+##   观感就是"圈选从物体表面穿过"（用户实测反馈）。
+##   滤掉之后圆盘保持在低位，被物体挡住的部分由**深度测试**自然切断 —— 这才是地面指示圈该有的样子。
+var ground_normal_min := 0.6
+## ★ 相邻顶点允许的最大落差（米）。坡形靠它保住，尖刺靠它削平。
+var slope_step := 0.22
+var slope_passes := 4
 
 var _player: Node3D = null
 var _cam: Camera3D = null
@@ -221,55 +232,131 @@ func _build_disc() -> void:
 	_disc = mi
 
 
-## 重建贴合地形的圆盘：逐顶点朝下打射线
+## 重建贴合地形的圆盘：采样高度 -> 限幅平滑 -> 建面
 func _rebuild_mesh() -> void:
 	if _disc == null:
 		return
+	var rows := _smooth_heights(_sample_heights(), _center.y)
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var world := get_world_3d()
-	var verts: Array = []
-	for ring in range(RINGS + 1):
+	var uv_of = func(rr: float, ss: int) -> Vector2:
+		var a := float(ss) / float(SEGMENTS) * TAU
+		return Vector2(0.5 + cos(a) * 0.5 * rr, 0.5 + sin(a) * 0.5 * rr)
+	var pv = func(ring: int, s: int) -> Vector3:
 		var rr := float(ring) / float(RINGS)
-		var row: Array = []
-		for s in range(SEGMENTS):
-			var a := float(s) / float(SEGMENTS) * TAU
-			var x := _center.x + cos(a) * _radius * rr
-			var z := _center.z + sin(a) * _radius * rr
-			var y := _center.y
-			if world != null:
-				var from := Vector3(x, _center.y + 12.0, z)
-				var to := Vector3(x, _center.y - 60.0, z)
-				var q := PhysicsRayQueryParameters3D.create(from, to)
-				q.collision_mask = 0xFFFFFFFF
-				var hit := world.direct_space_state.intersect_ray(q)
-				if not hit.is_empty():
-					y = (hit["position"] as Vector3).y
-			# ★ 限幅：不打到高墙/高台上（那种地方会变成贴墙的布）
-			y = clampf(y, _center.y - 3.0, _center.y + max_lift)
-			# 抬高一点点，避免与地面 z-fighting
-			row.append(Vector3(x, y + 0.02, z))
-		verts.append(row)
+		var a := float(s % SEGMENTS) / float(SEGMENTS) * TAU
+		var x := _center.x + cos(a) * _radius * rr
+		var z := _center.z + sin(a) * _radius * rr
+		# 抬高一点点，避免与地面 z-fighting
+		return Vector3(x, (rows[ring] as PackedFloat32Array)[s % SEGMENTS] + 0.02, z)
 	for ring in range(RINGS):
-		var r0: Array = verts[ring]
-		var r1: Array = verts[ring + 1]
+		var rr0 := float(ring) / float(RINGS)
+		var rr1 := float(ring + 1) / float(RINGS)
 		for s in range(SEGMENTS):
 			var s2 := (s + 1) % SEGMENTS
-			var uv = func(rr: float, ss: int) -> Vector2:
-				var a := float(ss) / float(SEGMENTS) * TAU
-				return Vector2(0.5 + cos(a) * 0.5 * rr, 0.5 + sin(a) * 0.5 * rr)
-			var rr0 := float(ring) / float(RINGS)
-			var rr1 := float(ring + 1) / float(RINGS)
-			st.set_uv(uv.call(rr0, s))
-			st.add_vertex(r0[s])
-			st.set_uv(uv.call(rr1, s))
-			st.add_vertex(r1[s])
-			st.set_uv(uv.call(rr1, s2))
-			st.add_vertex(r1[s2])
-			st.set_uv(uv.call(rr0, s))
-			st.add_vertex(r0[s])
-			st.set_uv(uv.call(rr1, s2))
-			st.add_vertex(r1[s2])
-			st.set_uv(uv.call(rr0, s2))
-			st.add_vertex(r0[s2])
+			st.set_uv(uv_of.call(rr0, s))
+			st.add_vertex(pv.call(ring, s))
+			st.set_uv(uv_of.call(rr1, s))
+			st.add_vertex(pv.call(ring + 1, s))
+			st.set_uv(uv_of.call(rr1, s2))
+			st.add_vertex(pv.call(ring + 1, s2))
+			st.set_uv(uv_of.call(rr0, s))
+			st.add_vertex(pv.call(ring, s))
+			st.set_uv(uv_of.call(rr1, s2))
+			st.add_vertex(pv.call(ring + 1, s2))
+			st.set_uv(uv_of.call(rr0, s2))
+			st.add_vertex(pv.call(ring, s2))
 	_disc.mesh = st.commit()
+
+
+## 命中面算不算"能站的地面"（纯函数，便于自检）
+##   法线朝上程度 >= ground_normal_min 才算地面；竖直面（墙/栏杆/树干）一律不算。
+func _is_ground(hit: Dictionary) -> bool:
+	if not hit.has("normal"):
+		return true
+	return (hit["normal"] as Vector3).normalized().y >= ground_normal_min
+
+
+## 采样高度图：外层环逐顶点朝下打射线（内圈半径 0 = 圆心高度）
+func _sample_heights() -> Array:
+	var world := get_world_3d()
+	var y0 := _center.y
+	var rows: Array = []
+	for ring in range(RINGS + 1):
+		var rr := float(ring) / float(RINGS)
+		var row := PackedFloat32Array()
+		row.resize(SEGMENTS)
+		for s in range(SEGMENTS):
+			var y := y0
+			if ring > 0 and world != null:
+				var a := float(s) / float(SEGMENTS) * TAU
+				var x := _center.x + cos(a) * _radius * rr
+				var z := _center.z + sin(a) * _radius * rr
+				var q := PhysicsRayQueryParameters3D.create(Vector3(x, y0 + 12.0, z),
+						Vector3(x, y0 - 60.0, z))
+				q.collision_mask = 0xFFFFFFFF
+				var hit := world.direct_space_state.intersect_ray(q)
+				if not hit.is_empty() and _is_ground(hit):
+					y = (hit["position"] as Vector3).y
+			row[s] = y
+		rows.append(row)
+	return rows
+
+
+## 限幅 + 平滑（**纯函数**：只吃高度图，自检直接喂人造尖刺/斜坡验证）
+##   ① 硬限幅：把"墙顶 / 深沟"这种大落差压进 smooth_lift / smooth_drop
+##   ② **坡度限幅**：相邻顶点落差不超过 slope_step，迭代若干轮。
+##      这一步才是关键：它**保住整体坡形**（缓坡每级差一点，始终合法），
+##      只把"一级跳 3 米"的尖刺一级一级削下来 -> 不再拉出尖刺布帘。
+##   ③ 一轮**轻量**三点平均：把削出来的棱角抹圆（幅度小，不会抹掉坡形）
+##   ★ 不要用"多轮重度平均"来做平滑：实测 3 轮 4 点平均会把 3 米尖刺压成 0.000，
+##     整张盘变成完全平坦 —— 那样就不"适配地形"了。
+func _smooth_heights(rows: Array, y0: float) -> Array:
+	var n := rows.size()
+	# ① 硬限幅
+	var cur: Array = []
+	for ring in range(n):
+		var src: PackedFloat32Array = rows[ring]
+		var capped := PackedFloat32Array()
+		capped.resize(SEGMENTS)
+		for s in range(SEGMENTS):
+			capped[s] = clampf(src[s], y0 - smooth_drop, y0 + smooth_lift)
+		cur.append(capped)
+	# ② 坡度限幅
+	for pass_i in range(maxi(slope_passes, 0)):
+		var nxt: Array = []
+		for ring in range(n):
+			var row: PackedFloat32Array = cur[ring]
+			var out := PackedFloat32Array()
+			out.resize(SEGMENTS)
+			for s in range(SEGMENTS):
+				if ring == 0:
+					out[s] = y0                 # 圆心一圈钉住
+					continue
+				var l := row[(s - 1 + SEGMENTS) % SEGMENTS]
+				var r := row[(s + 1) % SEGMENTS]
+				var lo := minf(l, r) - slope_step
+				var hi := maxf(l, r) + slope_step
+				if ring < n - 1:
+					var up: PackedFloat32Array = cur[ring - 1]
+					var dn: PackedFloat32Array = cur[ring + 1]
+					lo = maxf(lo, minf(up[s], dn[s]) - slope_step)
+					hi = minf(hi, maxf(up[s], dn[s]) + slope_step)
+				out[s] = clampf(row[s], lo, hi)
+			nxt.append(out)
+		cur = nxt
+	# ③ 轻量抹圆（只沿圆周，一轮）
+	var fin: Array = []
+	for ring in range(n):
+		var row2: PackedFloat32Array = cur[ring]
+		var out2 := PackedFloat32Array()
+		out2.resize(SEGMENTS)
+		for s in range(SEGMENTS):
+			if ring == 0:
+				out2[s] = y0
+				continue
+			var l2 := row2[(s - 1 + SEGMENTS) % SEGMENTS]
+			var r2 := row2[(s + 1) % SEGMENTS]
+			out2[s] = (l2 + r2 + row2[s] * 2.0) / 4.0
+		fin.append(out2)
+	return fin
