@@ -58,9 +58,9 @@ var _dbg_hit_pos := Vector3.ZERO
 var _dbg_t := -1.0
 
 ## 诊断：打印每次 configure 生效的模式、以及滚轮改的到底是什么
-## ★ 鼠标"指空地"时允许忽略的障碍高度：命中点比该处地面高出这么多就认为
-##   打到的是围栏/石头（障碍），继续沿射线找它后面的地面（用户实测：
-##   鼠标越过围栏指空地，圆环却被摆在围栏顶上）。
+## 已废弃（保留字段只为兼容旧场景文件）：曾经用"高度差"判断障碍并越过它，
+## 那个思路是错的 —— 透过围栏可能打到地面、也可能打到后面的另一个物体，
+## 用高度分不清。现在一律以鼠标射线命中点为圆心。
 @export var aim_ignore_m := 0.4
 
 @export var debug_targeting := true
@@ -486,39 +486,10 @@ func _update_center_from_mouse() -> void:
 			# ★ 圆环中心**落到地面**：XZ 用鼠标命中点（指哪打哪），y 取该处地形高度。
 			#   之前圆心直接取命中点高度 -> 鼠标打到围栏上时圆心飘到 3m 高空（实测），
 			#   日志与调试都被误导。
-			# ★ 命中点若明显高于该处地面：可能只是**从围栏缝隙里指到后面**，也可能是**指着实心面**。
-			#   用周围 4 根偏移射线投票区分：多数打到地面 -> 穿过去取地面；
-			#   多数也打到同一个高物体（实心）-> 听射线的（用户实测：瞄准墓碑不该穿过去）。
-			var gh := _terrain_visual_height(pos.x, pos.z)
-			var pass_ok := false
-			if not is_nan(gh) and pos.y > gh + aim_ignore_m:
-				var votes := 0
-				for off in [Vector2(16.0, 0.0), Vector2(-16.0, 0.0), Vector2(0.0, 16.0), Vector2(0.0, -16.0)]:
-					var f2 := _cam.project_ray_origin(mouse + off)
-					var d2 := _cam.project_ray_normal(mouse + off)
-					var q2 := PhysicsRayQueryParameters3D.create(f2, f2 + d2 * 400.0)
-					q2.collision_mask = 0xFFFFFFFF
-					q2.exclude = [_player.get_rid()] if _player is CollisionObject3D else []
-					var h2 := world.direct_space_state.intersect_ray(q2)
-					if h2.is_empty():
-						continue
-					var p2: Vector3 = h2["position"]
-					var g2 := _terrain_visual_height(p2.x, p2.z)
-					if not is_nan(g2) and p2.y <= g2 + aim_ignore_m:
-						votes += 1
-				# 缝隙很窄时偏移射线也可能全撞到障碍：再判"命中点是否高于环绕它的地面"来兜底
-				pass_ok = votes >= 2
-			if pass_ok:
-				var t_hit := from.distance_to(pos)
-				for k in range(1, 30):
-					var t2 := t_hit + float(k) * 0.35
-					var qp := from + dir * t2
-					var gh2 := _terrain_visual_height(qp.x, qp.z)
-					if is_nan(gh2):
-						break
-					if qp.y <= gh2:
-						pos = Vector3(qp.x, gh2, qp.z)    # 越过障碍，落在地面上
-						break
+			# ★ 不做任何"越过障碍"的猜测：**鼠标射线打到哪儿，圈就画在哪儿**。
+			#   之前的"高度判定 + 周围射线投票"是错的思路 —— 透过围栏可能打到地面，
+			#   也可能打到围栏后面的另一个物体；用高度根本分不清（用户指出）。
+			#   所以这里只用命中点本身（XZ），y 再落到该处地面（仅为了日志与调试可读）。
 			var gh3 := _terrain_visual_height(pos.x, pos.z)
 			if not is_nan(gh3):
 				pos.y = gh3
