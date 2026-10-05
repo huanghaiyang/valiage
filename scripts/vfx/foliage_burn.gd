@@ -188,9 +188,13 @@ func burn_node(n: Node3D, delay: float = 0.0) -> bool:
 		_mat.set_shader_parameter("use_albedo", true)
 		# ★ 轮廓遮罩：**优先用专门的透明度贴图**（alpha_tex），它才是草的轮廓；
 		#   albedo 常常是 JPG（没有 alpha），拿它当遮罩等于没遮。
-		var alpha_tex := _alpha_texture_from_material(_first_material())
+		var fmask := _first_material()
+		var alpha_tex := _alpha_texture_from_material(fmask)
 		var mask: Texture2D = alpha_tex if alpha_tex != null else albedo
 		_mat.set_shader_parameter("mask_tex", mask)
+		# ★ 通道必须跟原着色器一致（bermuda 草用 .r，不是 .a）
+		var mc := _mask_channel_of(fmask, _alpha_uniform_of(fmask))
+		_mat.set_shader_parameter("mask_channel", mc)
 	# ★ 透明度配置按**原材质**来（不透明就不遮罩；Alpha 混合就不硬裁；裁剪材质用它的阈值）
 	var fmat := _first_material()
 	var tr := _transparency_from_material(fmat)
@@ -521,6 +525,49 @@ func _alpha_texture_from_material(m: Material) -> Texture2D:
 		if v is Texture2D:
 			return v
 	return null
+
+
+## 找出遮罩贴图对应的 uniform 名（用来解析它用的是哪个通道）
+func _alpha_uniform_of(m: Material) -> String:
+	if m == null or not (m is ShaderMaterial):
+		return ""
+	var sm := m as ShaderMaterial
+	if sm.shader == null:
+		return ""
+	for u in sm.shader.get_shader_uniform_list():
+		var un := String(u.get("name", ""))
+		var ln := un.to_lower()
+		for hint in ["alpha", "opacity", "opac", "transp", "cutout", "mask"]:
+			if ln.contains(hint) and sm.get_shader_parameter(un) is Texture2D:
+				return un
+	return ""
+
+
+## ★ 原着色器用**哪个通道**表示形状？从它的源码里解析出来（不硬编码）。
+##   例：grass_wind.gdshader 写的是 `ALPHA = texture(alpha_tex, UV).r` -> 红通道。
+##   取错通道的后果：那张 PNG 的 a 恒为 1 -> 遮罩失效 -> 透明区域也变黑（实测踩过）。
+##   返回 0=r 1=g 2=b 3=a（解析不出来时按 a）。
+func _mask_channel_of(m: Material, tex_uniform: String) -> int:
+	if m == null or not (m is ShaderMaterial) or tex_uniform == "":
+		return 3
+	var sm := m as ShaderMaterial
+	if sm.shader == null:
+		return 3
+	var code := sm.shader.code
+	var re := RegEx.new()
+	if re.compile("texture\\s*\\(\\s*" + tex_uniform + "\\s*,[^)]*\\)\\s*\\.([rgba])") != OK:
+		return 3
+	var r := re.search(code)
+	if r == null:
+		return 3
+	match r.get_string(1):
+		"r":
+			return 0
+		"g":
+			return 1
+		"b":
+			return 2
+	return 3
 
 
 func _texture_from_material(m: Material) -> Texture2D:

@@ -385,38 +385,48 @@ func _process(_d: float) -> bool:
 	_ck("★ 拿不到轮廓的透明材质**不画形体叠加**（避免整块色块）",
 			mk5.material_overlay == null, "overlay=%s" % str(mk5.material_overlay))
 	_ck("★ 这种情况仍然会放火星", b_nt.get("_sparks") != null)
-	# ---- ★ 用**真实草场景 + 真实材质**验证透明度处理 ----
+	# ---- ★ 用**真实草场景 + 真实材质**验证 ----
 	# scenes/草 的材质是 ShaderMaterial(grass_wind.gdshader)：
-	#   albedo_tex = ..._diff_4k.jpg（**JPG 没有 alpha**）
-	#   alpha_tex  = ..._alpha_4k.png（透明度是**单独一张贴图**）
-	#   alpha_scissor = 0.5（它自己的裁剪阈值）
-	# 所以遮罩必须取 alpha_tex，取 albedo 的 alpha 等于没遮（这正是之前"没处理好"的根因）。
+	#   albedo_tex = ..._diff_4k.jpg（JPG 没有 alpha）、alpha_tex = ..._alpha_4k.png
+	#   alpha_scissor = 0.5，形状取 `texture(alpha_tex, UV).r`（**红通道**）
+	# 现在它也走"材质内建 burn"（因为要支持 scale 消失，叠加层动不了原几何体）。
 	var gs := load("res://scenes/草/grass_bermuda_01_single_a.tscn") as PackedScene
 	if gs != null:
 		var gnode := gs.instantiate() as Node3D
 		get_root().add_child(gnode)
-		var gb2: Node3D = (load("res://scripts/vfx/foliage_burn.gd") as GDScript).new()
-		get_root().add_child(gb2)
-		gb2.call("burn_node", gnode, 0.0)
 		# 草场景的根是 Node3D，材质挂在它的 MeshInstance3D 子节点上
 		var cmesh: MeshInstance3D = null
 		for ch in gnode.get_children():
 			if ch is MeshInstance3D:
 				cmesh = ch
 				break
-		var gmat := (cmesh.material_overlay if cmesh != null else null) as ShaderMaterial
-		var gmask: Variant = gmat.get_shader_parameter("mask_tex") if gmat != null else null
-		var gsc: Variant = gmat.get_shader_parameter("scissor") if gmat != null else null
-		var mp := ""
-		if gmask is Texture2D:
-			mp = (gmask as Texture2D).resource_path
-		_ck("★ 草的真实透明度来自 **alpha 贴图**（不是 JPG 的 alpha）",
-				gmask is Texture2D and mp.contains("alpha"),
-				"遮罩贴图 = %s" % mp)
-		_ck("★ 用材质**自己的裁剪阈值** alpha_scissor=0.5", gsc != null and absf(float(gsc) - 0.5) < 0.001,
-				"scissor=%s" % str(gsc))
-		_ck("草自身带风（wind_enabled）-> 不接管外观也能摆动",
-				gmat != null and cmesh != null and cmesh.material_override == null)
+		var shared_mat: ShaderMaterial = null
+		if cmesh != null and cmesh.mesh != null and cmesh.mesh.get_surface_count() > 0:
+			shared_mat = cmesh.mesh.surface_get_material(0) as ShaderMaterial
+		var gb2: Node3D = (load("res://scripts/vfx/foliage_burn.gd") as GDScript).new()
+		get_root().add_child(gb2)
+		gb2.call("burn_node", gnode, 0.0)
+		var dup_mat := (cmesh.get_surface_override_material(0) if cmesh != null else null) as ShaderMaterial
+		_ck("★ bermuda 草走**材质内建 burn**（要 scale 消失，叠加层做不到）",
+				cmesh != null and cmesh.material_overlay == null and dup_mat != null
+				and dup_mat.shader != null and dup_mat.shader.resource_path.contains("grass_wind"),
+				"overlay=%s 副本着色器=%s" % [str(cmesh.material_overlay if cmesh != null else null),
+						dup_mat.shader.resource_path if dup_mat != null and dup_mat.shader != null else "无"])
+		if dup_mat != null:
+			_ck("★ 内置 burn 的材质副本带 burn/ash（scale 消失由 ash 驱动）",
+					dup_mat.get_shader_parameter("burn") != null
+					and dup_mat.get_shader_parameter("ash") != null)
+		var shared_burn: Variant = shared_mat.get_shader_parameter("burn") if shared_mat != null else null
+		_ck("★ **共享材质未被污染**（否则所有 bermuda 草一起烧）",
+				shared_mat != null and (shared_burn == null or float(shared_burn) < 0.001),
+				"共享材质 burn=%s（null = 从未被写过，即未被污染）" % str(shared_burn))
+		_ck("不接管原外观（material_override 为空 -> 风/倒伏照旧）",
+				cmesh != null and cmesh.material_override == null)
+		# 叠加层那条路仍在（给"没有 burn 参数的材质"用）：通道解析必须正确
+		# （grass_wind.gdshader 是 texture(alpha_tex, UV).r -> 红通道，取 .a 会让遮罩失效）
+		_ck("★ 遮罩通道解析：grass_wind 用红通道 .r（不是 .a）",
+				shared_mat != null and int(gb2.call("_mask_channel_of", shared_mat, "alpha_tex")) == 0,
+				"channel=%s" % str(gb2.call("_mask_channel_of", shared_mat, "alpha_tex") if shared_mat != null else "无"))
 	# ---- ★ 内建 burn 路线：不透明植被走这条路（不叠层、不碰透明度问题）----
 	var veg_sh := load("res://assets/shaders/vegetation_wind.gdshader") as Shader
 	_ck("vegetation_wind 着色器带 burn 参数（本项目新增）", veg_sh != null and (

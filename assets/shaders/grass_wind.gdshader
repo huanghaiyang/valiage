@@ -46,6 +46,19 @@ uniform float player_bend : hint_range(0.0, 2.0) = 0.75;
 uniform float player_spread : hint_range(0.0, 1.5) = 0.30;      // 左右分开力度
 uniform float player_move : hint_range(0.0, 1.0) = 0.0;         // 移动量：站着 = 0 -> 草回弹
 
+// ---- 燃烧（本项目新增；语义与 vegetation_wind.gdshader 一致）----
+// ★ 为什么做进**这个着色器**而不是在外面叠一层：消失要用 **scale**，
+//   而叠加层只是多画一遍，动不了原几何体（用户要求 bermuda 草也用 scale 消失）。
+//   默认 burn = 0 -> 输出与改动前完全一致。
+uniform float burn : hint_range(0.0, 1.0) = 0.0;     // 0..1 烧蚀进度（斑点扩大）
+uniform float ash : hint_range(0.0, 1.0) = 0.0;      // 0..1 消失进度（驱动 scale）
+uniform vec3 char_color : source_color = vec3(0.07, 0.06, 0.05);
+uniform vec3 ember_color : source_color = vec3(1.0, 0.32, 0.05);
+uniform float burn_ember : hint_range(0.0, 2.0) = 0.45;
+uniform float burn_phase = 0.0;                       // 每株随机，避免斑点位置雷同
+varying float v_burn_amt;
+varying float v_burn_ember;
+
 void vertex() {
 	// world_vertex_coords 下 VERTEX 是世界坐标；实例自己的世界原点在 MODEL_MATRIX[3]。
 	// 用它算"离地高度" -> 根部不动、越高越摆（不受实例旋转影响）。
@@ -86,6 +99,27 @@ void vertex() {
 			VERTEX.y -= infl * h * player_bend * (0.40 + 0.60 * front);
 		}
 	}
+
+	// ★ 燃烧：世界坐标噪声决定斑点（同一株上位置固定、不同株不雷同），
+	//   阈值就是 burn：bn < burn 的区域被烧掉 -> 焦黑面积随 burn **单调增加**。
+	float bn = fract(sin(dot(VERTEX.xz + vec2(VERTEX.y), vec2(12.9898, 78.233))
+			+ burn_phase) * 43758.5453);
+	if (burn > 0.001) {
+		v_burn_amt = 1.0 - smoothstep(burn - 0.02, burn + 0.02, bn);
+		v_burn_ember = exp(-pow((bn - burn) / 0.05, 2.0)) * burn_ember * (1.0 - ash);
+	} else {
+		// 长回阶段（burn=0）：正常的绿草在长大，不能还带焦黑/火光
+		v_burn_amt = 0.0;
+		v_burn_ember = 0.0;
+	}
+
+	// ★ 消失/长回用**缩放**，枢轴 = 该网格的根。
+	//   world_vertex_coords 下 VERTEX 已是世界坐标，网格原点就是 MODEL_MATRIX[3]
+	//   （上面的 base_y 也是这么取的），所以绕它缩才是"从自己的根缩下去"。
+	float burn_scale = clamp(1.0 - ash, 0.0, 1.0);
+	vec3 burn_root = MODEL_MATRIX[3].xyz;
+	VERTEX.xz = burn_root.xz + (VERTEX.xz - burn_root.xz) * burn_scale;
+	VERTEX.y = burn_root.y + (VERTEX.y - burn_root.y) * burn_scale;
 }
 
 void fragment() {
@@ -99,4 +133,13 @@ void fragment() {
 	}
 	ROUGHNESS = texture(rough_tex, UV).r;
 	METALLIC = 0.0;
+
+	// ★ 燃烧：烧焦变黑 + 余烬；完全缩没后丢弃（避免留一个点）
+	if (v_burn_amt > 0.001) {
+		ALBEDO = mix(ALBEDO, char_color, v_burn_amt);
+		ALBEDO += ember_color * v_burn_ember;
+	}
+	if (ash > 0.999) {
+		discard;
+	}
 }

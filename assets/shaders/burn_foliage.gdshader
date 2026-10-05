@@ -28,6 +28,11 @@ uniform sampler2D albedo_tex : hint_default_white;
 ///   "烧的时候还是出现了斑块"）。草/树叶的形状都在贴图 alpha 里，必须用它遮罩。
 uniform sampler2D mask_tex : hint_default_white;
 uniform bool use_mask = false;
+/// ★ 遮罩取**哪个通道**：0=r 1=g 2=b 3=a。必须和原着色器一致 ——
+///   bermuda 草（grass_wind.gdshader）写的是 `ALPHA = texture(alpha_tex, UV).r`，
+///   形状在**红通道**，而那张 PNG 的 a 恒为 1；取 .a 会让遮罩失效
+///   -> 叠加层盖满卡片 -> **透明区域也变黑**（用户实测：卡片状黑块）。
+uniform int mask_channel = 3;
 /// ★ alpha 裁剪阈值：原贴图 alpha 低于它就直接丢弃。
 ///   只做 `ALPHA *= shape` 是不够的：半透明边缘仍会显示成"大黑斑"，
 ///   必须按植被真实轮廓**剪裁**（用户实测反馈："其他草还是大黑斑"）。
@@ -111,10 +116,20 @@ void fragment() {
 	float a = base.a * (1.0 - clamp(ash, 0.0, 1.0));
 	col = mix(col, vec3(0.03, 0.03, 0.03), clamp(ash, 0.0, 1.0) * 0.6);
 
-	// ★ 用原贴图的 alpha 裁出真实轮廓：否则叠加层会盖满整张卡片（方块斑块）
+	// ★ 用原贴图的轮廓裁出真实形状：否则叠加层会盖满整张卡片（方块斑块）
+	//   注意**通道**要和原着色器一致（mask_channel），否则透明区域也会变黑。
 	float shape = 1.0;
 	if (use_mask && !force_opaque) {
-		shape = texture(mask_tex, v_uv).a;
+		vec4 m = texture(mask_tex, v_uv);
+		if (mask_channel == 0) {
+			shape = m.r;
+		} else if (mask_channel == 1) {
+			shape = m.g;
+		} else if (mask_channel == 2) {
+			shape = m.b;
+		} else {
+			shape = m.a;
+		}
 		// ★ 裁剪只在原材质本身是"裁剪型"时做：
 		//   Alpha 混合的软边材质裁了会像被剪刀剪过（用户提醒："没考虑材质透明度"）
 		if (scissor_enabled && shape < scissor) {
