@@ -58,6 +58,11 @@ var _dbg_hit_pos := Vector3.ZERO
 var _dbg_t := -1.0
 
 ## 诊断：打印每次 configure 生效的模式、以及滚轮改的到底是什么
+## ★ 鼠标"指空地"时允许忽略的障碍高度：命中点比该处地面高出这么多就认为
+##   打到的是围栏/石头（障碍），继续沿射线找它后面的地面（用户实测：
+##   鼠标越过围栏指空地，圆环却被摆在围栏顶上）。
+@export var aim_ignore_m := 0.4
+
 @export var debug_targeting := true
 var angle_min := 45.0
 var angle_max := 80.0
@@ -481,9 +486,22 @@ func _update_center_from_mouse() -> void:
 			# ★ 圆环中心**落到地面**：XZ 用鼠标命中点（指哪打哪），y 取该处地形高度。
 			#   之前圆心直接取命中点高度 -> 鼠标打到围栏上时圆心飘到 3m 高空（实测），
 			#   日志与调试都被误导。
+			# ★ 命中点若明显高于该处地面 -> 是障碍（围栏/石头），继续沿射线找后面的地面
 			var gh := _terrain_visual_height(pos.x, pos.z)
-			if not is_nan(gh):
-				pos.y = gh
+			if not is_nan(gh) and pos.y > gh + aim_ignore_m:
+				var t_hit := from.distance_to(pos)
+				for k in range(1, 30):
+					var t2 := t_hit + float(k) * 0.35
+					var q := from + dir * t2
+					var gh2 := _terrain_visual_height(q.x, q.z)
+					if is_nan(gh2):
+						break
+					if q.y <= gh2:
+						pos = Vector3(q.x, gh2, q.z)      # 越过障碍，落在地面上
+						break
+			var gh3 := _terrain_visual_height(pos.x, pos.z)
+			if not is_nan(gh3):
+				pos.y = gh3
 			elif _player != null and is_instance_valid(_player):
 				pos.y = _player.global_position.y
 			if DEBUG_LOG_PREVIEW:
