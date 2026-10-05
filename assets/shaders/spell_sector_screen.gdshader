@@ -29,6 +29,11 @@ uniform float inner_m = 0.5;
 /// 允许画到"脚下以下"多少米（防止穿到地下；地面本身就在脚下高度，
 /// 所以这里不能用正值 —— 用正值会把整片地面全挡掉，实测"一点白色都没有"）
 uniform float floor_margin = 2.0;
+/// ★ 角色脚下高度：高度过滤的**唯一正确基准**。
+///   之前用"圆心.y"当基准，而圆心会被鼠标抬到围栏/石头顶上（实测 3.02m），
+///   于是允许范围整体上移、地面掉出范围 -> "地面不白、只有高物体白"。
+///   锚在脚下就不会切到地面（地面≈脚下），只排除地下/地基。
+uniform float ground_y = 0.0;
 uniform vec4 tint : source_color = vec4(1.0, 1.0, 1.0, 1.0);
 uniform float fill_strength : hint_range(0.0, 2.0) = 0.55;
 uniform float edge_strength : hint_range(0.0, 4.0) = 2.2;
@@ -61,7 +66,7 @@ void fragment() {
 	// ★ 不再做高度过滤：深度重建出来的本来就是"看得见的表面"，不需要过滤。
 	//   之前按"圆心.y - floor_margin"过滤，导致：鼠标打到围栏上（圆心被抬高）时
 	//   地面全被滤掉、只剩高墓碑变白；站在坡上时低处地面也被切掉（用户实测）。
-	float above = 1.0;
+	float above = smoothstep(ground_y - 1.5, ground_y - 0.5, wp.y);
 
 	float rim = smoothstep(0.86, 1.0, r) * outer_ok;
 	float a = inside * inner_ok * outer_ok * (fill_strength + rim_strength * rim);

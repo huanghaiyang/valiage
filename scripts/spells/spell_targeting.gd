@@ -1,4 +1,4 @@
-extends Node3D
+﻿extends Node3D
 ## 通用法术施法区域选择器（不绑定任何具体法术）
 ##
 ## 用法（法术侧只需两件事）：
@@ -478,6 +478,14 @@ func _update_center_from_mouse() -> void:
 		if not hit.is_empty():
 			pos = hit["position"]
 			ok = true
+			# ★ 圆环中心**落到地面**：XZ 用鼠标命中点（指哪打哪），y 取该处地形高度。
+			#   之前圆心直接取命中点高度 -> 鼠标打到围栏上时圆心飘到 3m 高空（实测），
+			#   日志与调试都被误导。
+			var gh := _terrain_visual_height(pos.x, pos.z)
+			if not is_nan(gh):
+				pos.y = gh
+			elif _player != null and is_instance_valid(_player):
+				pos.y = _player.global_position.y
 			if DEBUG_LOG_PREVIEW:
 				var col = hit.get("collider")
 				_dbg_hit_name = String((col as Node).name) if col is Node else "(无)"
@@ -1299,6 +1307,8 @@ func _update_screen_pass() -> void:
 	_sp_mat.set_shader_parameter("radius", _radius)
 	_sp_mat.set_shader_parameter("shape_mode", 0 if sector else 1)
 	_sp_mat.set_shader_parameter("inner_m", sector_inner_m if sector else 0.0)
+	# ★ 高度过滤锚在**角色脚下**（绝不能锚圆心：圆心会被鼠标抬到围栏顶上，实测 3.02m）
+	_sp_mat.set_shader_parameter("ground_y", _player.global_position.y if _player != null else _center.y)
 	_sp_mat.set_shader_parameter("floor_margin", screen_floor_margin)
 	_sp_mat.set_shader_parameter("fill_strength", screen_fill_strength if sector else screen_fill_strength_circle)
 	_sp_mat.set_shader_parameter("edge_strength", screen_edge_strength)
