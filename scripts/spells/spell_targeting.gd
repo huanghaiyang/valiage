@@ -357,10 +357,11 @@ func _process(_delta: float) -> void:
 		if _sector_disc != null:
 			_sector_disc.visible = false
 		_update_screen_pass()                        # ★ 圆环（火焰灼烧）与扇形共用同一套
+		# ★ 注意顺序：这里**不能**再隐藏 _sp_quad —— 上面刚由 _update_screen_pass() 打开，
+		#   若在它之后又 visible = false，圆环就永远不显示（用户实测："圆环效果没有"）。
+		#   关掉 use_screen_pass 时，_update_screen_pass() 自己会隐藏它。
 		if _decal != null and is_instance_valid(_decal):
 			_decal.visible = false       # 圆盘模式不显示扇形贴花
-		if _sp_quad != null and is_instance_valid(_sp_quad):
-			_sp_quad.visible = false
 		_restore_surface()           # 切回圆盘：把物体表面的扇形叠加摘干净
 		_update_center_from_mouse()
 	if _dirty:
