@@ -295,7 +295,13 @@ points = PackedVector3Array(0.21934411, 0.07722999, 0.059852276, 0.2483924, 0.08
 
 [node name="墓地遗迹" unique_id=1213595115 instance=ExtResource("1_jw451")]
 
-[node name="StaticBody3D" type="StaticBody3D" parent="ROOT/tripo_part_0" parent_id_path=PackedInt32Array(1636600349) index="0" unique_id=1572003376]
+[node name="ROOT" parent="." index="0" unique_id=102210352]
+metadata/allow_batch = true
+
+[node name="tripo_part_0" parent="ROOT" index="0" unique_id=1636600349]
+metadata/batch = false
+
+[node name="StaticBody3D" type="StaticBody3D" parent="ROOT/tripo_part_0" index="0" unique_id=1572003376]
 collision_layer = 4
 collision_mask = 0
 
@@ -427,7 +433,7 @@ shape = SubResource("ConvexPolygonShape3D_01jsj")
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.018270537, 0)
 shape = SubResource("ConvexPolygonShape3D_f6pfx")
 
-[node name="StaticBody3D2" type="StaticBody3D" parent="ROOT/tripo_part_0" parent_id_path=PackedInt32Array(1636600349) index="1" unique_id=707734670]
+[node name="StaticBody3D2" type="StaticBody3D" parent="ROOT/tripo_part_0" index="1" unique_id=707734670]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.0012844205, 0.052734375, -0.0016794801)
 collision_layer = 4
 collision_mask = 0
@@ -436,7 +442,7 @@ collision_mask = 0
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.22314072, -0.007953644, 0.040777326)
 shape = SubResource("BoxShape3D_mrm8q")
 
-[node name="StaticBody3D4" type="StaticBody3D" parent="ROOT/tripo_part_0" parent_id_path=PackedInt32Array(1636600349) index="2" unique_id=535553878]
+[node name="StaticBody3D4" type="StaticBody3D" parent="ROOT/tripo_part_0" index="2" unique_id=535553878]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.0012844205, 0.052734375, -0.0016794801)
 collision_layer = 4
 collision_mask = 0
@@ -445,7 +451,7 @@ collision_mask = 0
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.08331299, -0.04266566, -0.24497986)
 shape = SubResource("BoxShape3D_0avaw")
 
-[node name="StaticBody3D3" type="StaticBody3D" parent="ROOT/tripo_part_0" parent_id_path=PackedInt32Array(1636600349) index="3" unique_id=102113956]
+[node name="StaticBody3D3" type="StaticBody3D" parent="ROOT/tripo_part_0" index="3" unique_id=102113956]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.0012844205, 0.052734375, -0.0016794801)
 collision_layer = 4
 collision_mask = 0
@@ -454,7 +460,7 @@ collision_mask = 0
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.11835194, -0.030486047, 0.11721623)
 shape = SubResource("BoxShape3D_pgjqc")
 
-[node name="StaticBody3D5" type="StaticBody3D" parent="ROOT/tripo_part_0" parent_id_path=PackedInt32Array(1636600349) index="4" unique_id=1783994210]
+[node name="StaticBody3D5" type="StaticBody3D" parent="ROOT/tripo_part_0" index="4" unique_id=1783994210]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.0012844205, 0.052734375, -0.0016794801)
 collision_layer = 4
 collision_mask = 0
@@ -463,7 +469,7 @@ collision_mask = 0
 transform = Transform3D(0.7535634, 0, -0.6573753, 0, 1, 0, 0.6573753, 0, 0.7535634, -0.00855577, -0.029571027, -0.039228566)
 shape = SubResource("BoxShape3D_113k2")
 
-[node name="StaticBody3D6" type="StaticBody3D" parent="ROOT/tripo_part_0" parent_id_path=PackedInt32Array(1636600349) index="5" unique_id=2142513452]
+[node name="StaticBody3D6" type="StaticBody3D" parent="ROOT/tripo_part_0" index="5" unique_id=2142513452]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.0012844205, 0.052734375, -0.0016794801)
 collision_layer = 4
 collision_mask = 0
@@ -476,12 +482,12 @@ shape = SubResource("BoxShape3D_flylo")
 transform = Transform3D(0.63607824, 0, 0.77162457, 0, 1, 0, -0.77162457, 0, 0.63607824, 0.23296057, -0.018240973, 0.11487816)
 shape = SubResource("BoxShape3D_flylo")
 
-[node name="StaticBody3D7" type="StaticBody3D" parent="ROOT/tripo_part_0" parent_id_path=PackedInt32Array(1636600349) index="6" unique_id=89263740]
+[node name="StaticBody3D7" type="StaticBody3D" parent="ROOT/tripo_part_0" index="6" unique_id=89263740]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.0012844205, 0.052734375, -0.0016794801)
 collision_layer = 4
 collision_mask = 0
 
-[node name="StaticBody3D8" type="StaticBody3D" parent="ROOT/tripo_part_0" parent_id_path=PackedInt32Array(1636600349) index="7" unique_id=1946591655]
+[node name="StaticBody3D8" type="StaticBody3D" parent="ROOT/tripo_part_0" index="7" unique_id=1946591655]
 collision_layer = 32768
 collision_mask = 0
 

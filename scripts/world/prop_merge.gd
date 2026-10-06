@@ -21,8 +21,8 @@ extends RefCounted
 ## 所以合并/删除小件不会动碰撞 ✓。
 
 const ENABLED := true
-## 处理的子树关键词（节点名包含即整棵合并）
-const NAME_HINTS := ["墓地", "遗迹"]
+## （`NAME_HINTS` 已删除 ✓ —— 合批范围改由**节点 meta** 决定：
+##   `allow_batch = true` 表示允许合批该模型 ✓；子件 `batch = false` 表示排除 ✓）
 ## 少于这么多件就不值得合并
 const MIN_PARTS := 4
 
@@ -52,14 +52,11 @@ static func apply(root: Node) -> Dictionary:
 	return out
 
 
+## ★ 唯一判定（按需求）：节点上**存在 meta「allow_batch」且为 true** 才合批 ✓
+##   默认不勾选 = 没有该 meta = 不合批 ✓（原来按名称关键词匹配的那套已废弃 ✗）
+##   勾选入口：选中该模型根节点 → 自己的检查器最上面那个复选框 ✓（prop_batch 插件 ✓）
 static func _matched(n: Node) -> bool:
-	if NAME_HINTS.is_empty():
-		return true
-	var nm := String(n.name)
-	for h in NAME_HINTS:
-		if nm.contains(String(h)):
-			return true
-	return false
+	return n.has_meta("allow_batch") and bool(n.get_meta("allow_batch"))
 
 
 static func _merge_subtree(holder: Node) -> Dictionary:
@@ -67,8 +64,8 @@ static func _merge_subtree(holder: Node) -> Dictionary:
 	var stack: Array = [holder]
 	while not stack.is_empty():
 		var n = stack.pop_back()
-		if n is MeshInstance3D and _mergeable(n as MeshInstance3D):
-			parts.append(n)
+		if n is MeshInstance3D and _mergeable(n as MeshInstance3D) and bool(n.get_meta("batch", true)):
+			parts.append(n)      # ★ batch == false 的子件保持独立、不并入合并 ✓（默认 true ✓）
 		for c in n.get_children():
 			stack.append(c)
 	if parts.size() < MIN_PARTS:
@@ -119,6 +116,9 @@ static func _merge_subtree(holder: Node) -> Dictionary:
 	var node := MeshInstance3D.new()
 	node.name = "MERGED_" + String(holder.name).substr(0, 20)
 	node.mesh = merged
+	# ★ 挖洞（camera_rig 的遮挡透视）改由**逐子件开关**控制 ✓：
+	#   这里**不再**统一加入 occlusion_ignore ✗ —— 你在检查器里把底座/地面片的
+	#   「参与合批」取消勾选 ✓，它们就保持独立（照常挖洞、但不会被合并网格带穿 ✓）
 	node.cast_shadow = ref.cast_shadow
 	node.visibility_range_end = ref.visibility_range_end
 	node.visibility_range_end_margin = ref.visibility_range_end_margin
