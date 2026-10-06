@@ -585,10 +585,28 @@ func _ray_down(x: float, z: float, base_y: float) -> Dictionary:
 	var world := get_world_3d()
 	if world == null:
 		return {}
-	var q := PhysicsRayQueryParameters3D.create(Vector3(x, base_y + 15.0, z),
-			Vector3(x, base_y - 60.0, z))
+	var from := Vector3(x, base_y + 15.0, z)
+	var to := Vector3(x, base_y - 60.0, z)
+	var q := PhysicsRayQueryParameters3D.create(from, to)
+	# ★ 第一级（精确几何）：排除 Layer 3（值 4，导入模型那些"比可见网格大一圈"的假碰撞盒），
+	#   纳入 Layer 16（1<<15，编辑器里烘的精确三角网格）—— 能穿栅栏缝、不被假盒抬高。
+	#   ★ 这两个值必须与 spell_targeting.gd 的 ray_ignore_layer_mask / prop_visual_layer_mask 一致。
+	q.collision_mask = (0xFFFFFFFF & ~(1 << 2)) | (1 << 15)
+	var hit := world.direct_space_state.intersect_ray(q)
+	# ★ 第二级（回退）：没烘过 Layer 16 精确碰撞的物件会被第一级"穿过"，贴地探测就掉到
+	#   它下方的地形上。若"旧掩码（含 Layer 3 假盒）"的结果明显更高（差 > 0.35m），
+	#   说明那一件只有假盒、没有精确几何 -> 用它的顶面，免得火焰掉到物件脚下。
+	#   代价只是一次额外射线（微秒级，与之前的逐面脚本完全不同量级）。
 	q.collision_mask = 0xFFFFFFFF
-	return world.direct_space_state.intersect_ray(q)
+	var hit_old := world.direct_space_state.intersect_ray(q)
+	var fallback_drop_m := 0.35
+	if hit.is_empty():
+		return hit_old
+	if not hit_old.is_empty():
+		var dy := (hit_old["position"] as Vector3).y - (hit["position"] as Vector3).y
+		if dy > fallback_drop_m:
+			return hit_old
+	return hit
 
 
 # ---------------------------------------------------------------- 姿态（纯函数，便于自检）
