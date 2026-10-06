@@ -86,7 +86,9 @@ const ISO_ZOOM_STEP := 0.12
 ## 只有这一层上的碰撞体算遮挡物。本项目：地形=2，**建筑/树=4**，植被=8。
 @export_flags_3d_physics var occlusion_layer_mask := 4
 ## 单条采样线最多穿透几层遮挡物（密林里相机到角色之间可能叠着好几棵）。
-@export var occlusion_max_hits := 8
+## ★ 性能（实测）：8 层 × 采样线数 是重扫 50ms 的主因；实测叠 3 层以上已属罕见，
+##   降到 3 可少 60% 以上射线；"看得到角色"的观感基本不变（想更稳就调回 5）。
+@export var occlusion_max_hits := 3
 ## 放进这个组的节点（含子树）永不挖洞，给"不想被透视"的物件留后门。
 const OCCLUSION_IGNORE_GROUP := &"occlusion_ignore"
 ## 挖洞着色器（只影响被遮挡的那一块，不是整棵变透明）
@@ -118,6 +120,13 @@ var _occ_candidates: Array = []
 var _occ_backed := {}
 var _occ_cand_timer := 0.0
 var _occ_timer := 0.0
+## ★ 性能（实测）：`_rescan_occluders()` 是**物理帧最大开销**——关掉它物理帧从 59ms 掉到 1.1ms。
+##   这两个成员用于"位移门槛早退"：角色/相机几乎没动时，遮挡物集合不会变，直接跳过本轮重扫。
+var _occ_last_player := Vector3.ZERO
+var _occ_last_camera := Vector3.ZERO
+var _occ_ever_scanned := false
+## 位移阈值（米）：小于它就认为"没动，不必重扫"。想更灵敏就调小（如 0.02）。
+@export var occlusion_move_epsilon := 0.05
 var ui_override := false     # UI（动作菜单等）占用时让出鼠标/键盘控制
 
 func _ready() -> void:
@@ -216,7 +225,21 @@ func _update_occlusion_fade(delta: float) -> void:
 	_occ_timer -= delta
 	if _occ_timer <= 0.0:
 		_occ_timer = occlusion_probe_interval
-		_rescan_occluders()
+		# ★ 性能（实测）：整轮重扫 ≈ 50ms 的顿挫（8 条采样线 × 最多 8 次链式射线），
+		#   而 `occlusion_probe_interval` 只有 0.08s -> 每 80ms 卡一次。
+		#   这里加"位移门槛早退"：角色与相机几乎没动时，遮挡物集合不会变，直接跳过本轮。
+		if player == null:
+			_rescan_occluders()          # 未就绪时保持原行为（它内部自己判空）
+		else:
+			var pos_now := player.global_position
+			var cam_now := camera.global_position if camera != null else pos_now
+			if not _occ_ever_scanned \
+					or _occ_last_player.distance_to(pos_now) > occlusion_move_epsilon \
+					or _occ_last_camera.distance_to(cam_now) > occlusion_move_epsilon:
+				_occ_last_player = pos_now
+				_occ_last_camera = cam_now
+				_occ_ever_scanned = true
+				_rescan_occluders()
 
 
 ## 重建"可能挡住角色"的候选网格名单。

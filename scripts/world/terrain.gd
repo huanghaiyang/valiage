@@ -115,8 +115,11 @@ func _configure_terrain3d(t: Node) -> void:
 		return
 	_t3d_configured = true
 	# 开碰撞：collision_mode 0=Disabled 1=Dynamic/Game 2=Dynamic/Editor 3=Full/Game 4=Full/Editor
+	# ★ 修正：以前只在 0 时才改成 1，于是项目一直停在 **4 = Full/Editor**
+	#   （Terrain3D 自己在启动时警告 "Change collision mode to a non-editor mode for releases"）。
+	#   编辑器模式在发布/运行时会带来额外的构建与更新开销 —— 这里统一改成 **Game 模式**。
 	var mode := int(t.get("collision_mode"))
-	if mode == 0:
+	if mode == 0 or mode == 2 or mode == 4:
 		t.set("collision_mode", 1)
 		mode = 1
 	# 层/掩码在 **Terrain3DCollision 子对象** 上（Terrain3D.collision 不是 bool！）
