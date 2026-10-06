@@ -1,4 +1,4 @@
-﻿shader_type spatial;
+shader_type spatial;
 // 【扇形选点器 · 屏幕空间覆盖】
 //
 // 用户的要求只有一句："扇形扫到的地方变白，不管它是什么物体、不管多大，
@@ -26,9 +26,11 @@ uniform float axis = 0.0;
 uniform float half_angle = 0.785;
 uniform float radius = 10.0;
 uniform float inner_m = 0.5;
-/// 允许画到"脚下以下"多少米（防止穿到地下；地面本身就在脚下高度，
-/// 所以这里不能用正值 —— 用正值会把整片地面全挡掉，实测"一点白色都没有"）
-uniform float floor_margin = 2.0;
+/// ★ 允许画到"脚下以下"多少米（防止穿到地下）。
+///   角色站在高处（石台/岩石/台阶）时，镜头里那片**低处地面**可能比脚下低好几米
+///   —— 原来硬编码 1.5m ✗，于是低处地面被切掉、只有高物体变白（用户实测 bug ✓）。
+///   现在做成 uniform 并放宽到 12m ✓：足以覆盖常见落差，又仍能排除地下深处。
+uniform float floor_margin = 12.0;
 /// ★ 角色脚下高度：高度过滤的**唯一正确基准**。
 ///   之前用"圆心.y"当基准，而圆心会被鼠标抬到围栏/石头顶上（实测 3.02m），
 ///   于是允许范围整体上移、地面掉出范围 -> "地面不白、只有高物体白"。
@@ -62,11 +64,10 @@ void fragment() {
 	float inner_r = clamp(inner_m / max(radius, 0.001), 0.0, 0.85);
 	float inner_ok = smoothstep(inner_r - 0.006, inner_r + 0.006, r);
 	float outer_ok = 1.0 - smoothstep(0.985, 1.0, r);
-	// 低于地面一点点的不画（否则角色脚下/地下会被刷白）；天空因 r 远超 1 自然被排除
-	// ★ 不再做高度过滤：深度重建出来的本来就是"看得见的表面"，不需要过滤。
-	//   之前按"圆心.y - floor_margin"过滤，导致：鼠标打到围栏上（圆心被抬高）时
-	//   地面全被滤掉、只剩高墓碑变白；站在坡上时低处地面也被切掉（用户实测）。
-	float above = smoothstep(ground_y - 1.5, ground_y - 0.5, wp.y);
+	// 高度过滤：只排除"脚下 floor_margin 米以下"（地下/地基/地道）✓
+	// ★ 基准是 ground_y（脚下与圆心的较低者 ✓），下限由 uniform 控制 ✓
+	//   —— 站高处时低处地面在 12m 以内 → 照常被覆盖 ✓（bug 修复）
+	float above = smoothstep(ground_y - floor_margin, ground_y - floor_margin + 1.0, wp.y);
 
 	float rim = smoothstep(0.86, 1.0, r) * outer_ok;
 	float a = inside * inner_ok * outer_ok * (fill_strength + rim_strength * rim);
