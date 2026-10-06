@@ -100,6 +100,15 @@ func _ready() -> void:
 	# 预览、UI、输入动作。预览与相机都依赖 terrain/buildings/player，必须排在世界之后。
 	_wire_camera_rig()
 	var report := WorldBuilder.build(self, terrain, vegetation, buildings, roads, player, camera_rig)
+	# ★ 性能：给墓园/遗迹这类"远处小件聚集区"设可见距离（离开视野后不再绘制；
+	#   引擎级剔除、零每帧脚本开销）。参数在 prop_visibility.gd 顶部，保守默认 80m/20m。
+	preload("res://scripts/world/prop_visibility.gd").apply(self)
+	# ★ 画质分级：把墓园/道具的**贴图**按当前档位换成对应分辨率的版本，
+	#   与地表贴图分级（terrain_quality.gd）同一套 QualityTiers 规则：
+	#   换不到自动回退到存在的最高档、内嵌贴图自动跳过（日志会报数量）。
+	var pq := preload("res://scripts/quality/prop_texture_quality.gd").new()
+	pq.name = "PropTextureQuality"
+	add_child(pq)
 	_setup_previews()
 	_setup_ui()
 	_setup_input_actions()

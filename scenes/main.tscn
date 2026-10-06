@@ -42,6 +42,7 @@
 [ext_resource type="PackedScene" uid="uid://dv8violt7fhk1" path="res://scenes/草/grass_bermuda_01_medium_b.tscn" id="36_tm6hj"]
 [ext_resource type="PackedScene" uid="uid://b32ar7g7oha7e" path="res://scenes/草/grass_bermuda_01_flattened_a.tscn" id="37_kf5aa"]
 [ext_resource type="PackedScene" uid="uid://cq458t603bvr" path="res://scenes/草/grass_bermuda_01_dead_a.tscn" id="38_2cjbq"]
+[ext_resource type="PackedScene" uid="uid://c0ks84ssilbho" path="res://scenes/墓园/石质墓园栅栏_01.tscn" id="43_chjal"]
 
 [sub_resource type="ProceduralSkyMaterial" id="sky_mat"]
 sky_top_color = Color(0.7, 0.72, 0.56, 1)
@@ -130,7 +131,7 @@ normal_texture = ExtResource("13_jscy8")
 mesh_list = Array[Terrain3DMeshAsset]([SubResource("Terrain3DMeshAsset_jbj1t")])
 texture_list = Array[Terrain3DTextureAsset]([SubResource("Terrain3DTextureAsset_dp3eg")])
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_2cjbq"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_cjqg0"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -310,7 +311,7 @@ top_level = true
 metadata/_edit_lock_ = true
 
 [node name="SimpleGrassTextured" type="MultiMeshInstance3D" parent="." unique_id=494743626]
-material_override = SubResource("ShaderMaterial_2cjbq")
+material_override = SubResource("ShaderMaterial_cjqg0")
 cast_shadow = 0
 multimesh = SubResource("MultiMesh_chjal")
 script = ExtResource("19_jscy8")
@@ -3100,3 +3101,6 @@ transform = Transform3D(-14.638751, 0, -3.2721486, 0, 15, 0, 3.2721486, 0, -14.6
 
 [node name="cross_1" parent="." unique_id=2122225381 instance=ExtResource("23_og1vs")]
 transform = Transform3D(2.9588568, 0, -0.49514282, 0, 3, 0, 0.49514282, 0, 2.9588568, -9.690185, 1.3714155, -22.40274)
+
+[node name="石质墓园栅栏_01" parent="." unique_id=1531732196 instance=ExtResource("43_chjal")]
+transform = Transform3D(12, 0, 0, 0, 12, 0, 0, 0, 12, -11.660117, 0.83922553, -31.24592)

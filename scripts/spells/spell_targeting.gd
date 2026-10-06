@@ -56,7 +56,6 @@ const DEBUG_LOG_PREVIEW := true
 var _dbg_hit_name := "(未命中)"
 var _dbg_decision := "(未判定)"
 var _dbg_hit_pos := Vector3.ZERO
-var _dbg_t := -1.0
 
 ## 诊断：打印每次 configure 生效的模式、以及滚轮改的到底是什么
 ## 已废弃：曾用"命中点比地形高多少"来区分地面/物体 —— 高度判定不妥，
