@@ -1,4 +1,4 @@
-﻿extends Node3D
+extends Node3D
 ## 通用法术施法区域选择器（不绑定任何具体法术）
 ##
 ## 用法（法术侧只需两件事）：
@@ -65,7 +65,12 @@ var _dbg_t := -1.0
 
 ## ★ 方案 C：选点射线**忽略的层**（默认排除 layer 4 —— 导入模型的碰撞盒常比可见网格
 ##   大一圈，打在它上面会得到"空气命中"、导致误判）。bit = 层号 - 1，故 layer 4 = 1<<3。
-@export var ray_ignore_layer_mask := 1 << 3
+## ★ 精修碰撞层（默认 layer 16 = 1<<15）：你在编辑器里给重点物件加的
+##   **三角网格碰撞**请放到这一层 + mask 0 —— 角色 mask=14 看不到它（不会卡进凹面），
+##   只有这里的"地面选点射线"会去看它（于是能按真实网格判定、穿栅栏缝）。
+@export var prop_visual_layer_mask := 1 << 15
+
+@export var ray_ignore_layer_mask := 1 << 2   ## ★ 实测修正：假碰撞盒在 Layer 3 = 值 4（此前误写 1<<3 = Layer 4，等于没排除）
 
 @export var debug_targeting := true
 var angle_min := 45.0
@@ -470,7 +475,7 @@ func _update_center_from_mouse() -> void:
 		var far := from + dir * 400.0
 		var q := PhysicsRayQueryParameters3D.create(from, far)
 		# ★ 方案 C：排除"看不见的碰撞盒"所在层（layer 4 = bit3），射线才落在真实物体/地形上
-		q.collision_mask = 0xFFFFFFFF & ~ray_ignore_layer_mask
+		q.collision_mask = (0xFFFFFFFF & ~ray_ignore_layer_mask) | prop_visual_layer_mask
 		q.exclude = [_player.get_rid()] if _player is CollisionObject3D else []
 		var hit := world.direct_space_state.intersect_ray(q)
 		if not hit.is_empty():
