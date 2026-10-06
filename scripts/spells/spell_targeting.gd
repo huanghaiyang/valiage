@@ -1335,7 +1335,18 @@ func _hide_decal() -> void:
 		_decal.visible = false
 
 
+## ★ 屏幕空间探测的重算频率：**每 2 帧一次**（= 当前帧率的一半 ✓，用户要求）
+##   · `_dirty` 为真（刚打开选点/换模式/切法术/半径变化…）时**永远立刻重算** ✓ → 不会迟滞 ✓
+##   · 其余帧只在"偶数帧"重算 ✓；被跳过的帧沿用上一帧的 uniform ✓
+##     （全屏面本身保持可见 ✓ → 观感上仍是连续高亮，只是参数每 2 帧跟新一次 ✓）
+const SP_UPDATE_EVERY := 2
+var _sp_frame := 0
+
+
 func _update_screen_pass() -> void:
+	_sp_frame += 1
+	if not _dirty and (_sp_frame % SP_UPDATE_EVERY) != 0:
+		return
 	if not use_screen_pass:
 		if _sp_quad != null and is_instance_valid(_sp_quad):
 			_sp_quad.visible = false
