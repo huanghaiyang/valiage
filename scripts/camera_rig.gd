@@ -70,8 +70,12 @@ const ISO_ZOOM_STEP := 0.12
 # ---- 遮挡穿透（相机被挡住时把挡路物体淡化）----
 @export var occlusion_fade := true       # 总开关
 ## 洞的半径 = 角色在屏幕上的高度 * 这个系数（越大抠得越多）
-@export var hole_radius_scale := 1.05
-@export var hole_min_radius := 0.06
+## ★ 角色的挖洞范围：**整体缩小一半** ✓（用户要求）
+##   原来 1.05 → 现在 0.525 ✓（radius = max(hole_min_radius, 角色像素高/屏高 × 本值) ✓）
+@export var hole_radius_scale := 0.525
+## 最小半径**同步减半** ✓（原来 0.06 → 0.03 ✓）—— 否则贴很近时会被这个下限顶住、
+## 看起来像"没缩小" ✗。想只改倍率就把本行改回 0.06 ✓。
+@export var hole_min_radius := 0.03
 @export var hole_softness := 0.035       # 洞边缘过渡宽度（UV）
 @export var hole_alpha := 0.08           # 洞内保留的不透明度（0=全透，1=不淡）
 @export var occlusion_probe_interval := 0.08   # 采样间隔（秒）
