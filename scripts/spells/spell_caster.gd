@@ -334,6 +334,8 @@ func _update_cast_anim(casting: bool) -> void:
 func _update_targeting(down: bool, just_pressed: bool) -> bool:
 	var has_t := jet != null and is_instance_valid(jet) \
 			and jet.has_method("has_targeting") and bool(jet.call("has_targeting"))
+	if selected.is_empty():
+		has_t = false          # ★ 施放后已清空选中 ✓ → 不进入选点模式 ✓（否则会靠残留 jet 再放 ✗）
 	if not has_t:
 		if _targeting != null and _targeting.is_active():
 			_targeting.end()
@@ -359,7 +361,11 @@ func _update_targeting(down: bool, just_pressed: bool) -> bool:
 	if _target_wait_release:
 		# ★ 玩法优化：一次性技能**只等"施法动作"演完**即可再施法 ✓（原来等 is_casting ✗ = 等整段效果 ✗ → 无法连发 ✓）
 		var anim_running := jet.has_method("wants_cast_anim") and bool(jet.call("wants_cast_anim"))
-		if not down and not anim_running:
+		# ★ 修复"施放完圆圈不回来、必须重开轮盘" ✗：
+		#   原来这里还要等 `wants_cast_anim()` 归零 ✗ —— 但该标志现在查的是**共享实例**
+		#   （真正施法的是独立实例 ✓），一旦它不归零，就永远不恢复选点 ✓
+		#   → 现在**鼠标一抬起就恢复** ✓（松开左键即可再次选点/连发 ✓）
+		if not down:
 			_target_wait_release = false
 		_update_cast_anim(jet.has_method("wants_cast_anim")
 				and bool(jet.call("wants_cast_anim")))
@@ -371,6 +377,10 @@ func _update_targeting(down: bool, just_pressed: bool) -> bool:
 	# ★ 必须带 _cast_armed：它表示"按下那一瞬没落在 UI 上"。
 	#   漏了它的话，**点圆盘选法术的那一下点击**会被当成在世界区按下 -> 圈还没落下
 	#   法术就自动放了（用户实测症状）。
+	if just_pressed and not _cast_armed:
+		print("[SpellCaster] 按下被挡 ✗ _cast_armed=false（上膛尚未完成：需要先**松开一次左键** ✓）")
+	if just_pressed and _cast_armed and _ui_blocks_cast():
+		print("[SpellCaster] 按下被挡 ✗ 被 UI 挡住（轮盘还开着 / 鼠标压在 UI 上 ✓）｜selected=%s" % selected)
 	if just_pressed and _cast_armed and not _ui_blocks_cast():
 		var c: Vector3 = _targeting.call("center")
 		var r: float = _targeting.call("radius")
@@ -397,6 +407,11 @@ func _update_targeting(down: bool, just_pressed: bool) -> bool:
 				print("[SpellCaster] %s：新独立实例已创建 ✓ %s" % [selected, inst.name])
 			(inst if inst != null else jet).call("cast_at", c, r)
 		_targeting.call("end")
+		# ★ 主动技（用户确认的玩法）：**施放一次后立即清空选中** ✓
+		#   → 圈圈消失 ✓、该技能不再"待发" ✓、必须重新打开轮盘选择才能再放 ✓
+		#   （"松开左键即解锁"的优化保留 ✓ → 重新选中后可以**立刻**再放 ✓，
+		#     不会被上一个法术的效果时长卡住 ✓；每次施法仍是独立实例 ✓ 互不影响 ✓）
+		select_spell("")
 		_target_wait_release = true
 	return true
 
