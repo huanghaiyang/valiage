@@ -15,12 +15,21 @@ var _cb: Callable = Callable()
 var last_paths := PackedStringArray()
 
 
-func setup(label: String, cb: Callable) -> void:
+## 可见性判定（收到右键选中的 paths，返回是否显示入口 ✓）
+var _show_if: Callable = Callable()
+
+
+## `show_if`：可选。不给则始终显示 ✓
+func setup(label: String, cb: Callable, show_if: Callable = Callable()) -> void:
 	_label = label
 	_cb = cb
+	_show_if = show_if
 
 
 func _popup_menu(paths: PackedStringArray) -> void:
 	last_paths = paths
+	# ★ 条件不满足 → **不加入右键菜单** ✓（这样文件夹/多选/其它类型右键时根本看不到入口 ✓）
+	if _show_if.is_valid() and not bool(_show_if.call(paths)):
+		return
 	if _cb.is_valid():
 		add_context_menu_item(_label, _cb)

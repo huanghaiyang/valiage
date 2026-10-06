@@ -56,15 +56,40 @@ func apply_tier(t: int) -> Dictionary:
 	out["mats"] = mats.size()
 	for m in mats:
 		var mat := m as BaseMaterial3D
-		if mat == null:
+		var sm := m as ShaderMaterial                  # ★ blend_tools 的 _blend_mat_* 等 ✓
+		if mat == null and sm == null:
 			continue
-		var id := mat.get_instance_id()
+		var id := (mat if mat != null else sm).get_instance_id()
 		if not _base.has(id):
 			_base[id] = {}
-		for prop in ["albedo_texture", "normal_texture"]:
-			var tex := mat.get(prop) as Texture2D
-			if tex == null:
+		# ★ 覆盖**全部贴图插槽**（与生成器的 12 个插槽对齐 ✓）：
+		#   之前只换 albedo/normal ✗ → 4K 的 roughness/metallic/ao/height/emission 等
+		#   仍然占着显存 ✗（例如 `..._rm.jpg` 4096 单独就 21MB ✗）。
+		#   没有分档的贴图会走 resolve_existing 回退到原图 ✓ → 不会白贴图 ✓
+		# ★ ShaderMaterial（如 `_blend_mat_石质墓园栅栏*.tres`）**也必须处理** ✗：
+		#   它的贴图是 shader 参数，参数名从 Object.get_property_list() 的
+		#   `shader_parameter/xxx` 前缀里取 ✓
+		#   （不要用 ShaderMaterial.get_shader_parameter_list() —— Godot 4.7 没有这个方法 ✗）
+		var props: Array = ["albedo_texture", "normal_texture", "roughness_texture", "metallic_texture",
+				"emission_texture", "ao_texture", "heightmap_texture", "rim_texture",
+				"clearcoat_texture", "anisotropy_texture", "detail_albedo", "detail_normal"]
+		if mat == null and sm != null:
+			props = []
+			for p in sm.get_property_list():
+				var pn := String(p.get("name", ""))
+				if pn.begins_with("shader_parameter/"):
+					props.append(pn.substr("shader_parameter/".length()))
+		for prop in props:
+			# ★ 先 is 再 as：shader 参数可能是 float/vec 等**非对象值** ✗
+			#   （`as` 对非对象值会报 "Invalid cast: can't convert a non-object value" ✗）
+			var cur: Variant = null
+			if mat != null:
+				cur = mat.get(prop)
+			else:
+				cur = sm.get_shader_parameter(String(prop))
+			if not (cur is Texture2D):
 				continue
+			var tex := cur as Texture2D
 			var src := String(tex.resource_path)
 			var orig := src
 			if _base[id].has(prop):
@@ -74,15 +99,17 @@ func apply_tier(t: int) -> Dictionary:
 				continue                      # 内嵌贴图：不碰 ✓
 			_base[id][prop] = orig
 			var want := QualityTiers.resolve_existing(orig, t)
-			# ★ 跨扩展名兜底：生成端对**数据类贴图**（法线/AO/粗糙度/金属度/高度）会强制存
-			#   **PNG**（有损 JPG 会让法线出现块状假凹凸 ✗），而 QualityTiers 只做
-			#   "同扩展名换后缀"→ 这里先试同扩展名，再试 .png/.jpg/.webp ✓
-			if want.is_empty() or not ResourceLoader.exists(want):
-				var stem := (want if want != "" else orig).get_basename()
+			# ★ 关键修正：`resolve_existing()` 在找不到本档位文件时会**回退到原图** ✓
+			#   → 此时 want == orig ✗，但磁盘上可能确实存在"本档位后缀 + 别的扩展名" ✓
+			#   （例如生成端对数据类贴图强制存 `..._rm_1k.png`，而本档位规则找的是
+			#     `..._rm_1k.jpg` ✗）—— 旧写法只判 "not exists" ✗ 会把这种情况漏掉 ✗，
+			#   表现就是"磁盘上明明有 _1k 文件，切档却没换" ✓
+			if want.is_empty() or want == orig or not ResourceLoader.exists(want):
+				var stem := QualityTiers.texture_for_tier(orig, t).get_basename()
 				want = ""
 				for e in [".png", ".jpg", ".jpeg", ".webp"]:
 					var cand := stem + String(e)
-					if ResourceLoader.exists(cand):
+					if cand != orig and ResourceLoader.exists(cand):
 						want = cand
 						break
 			if want.is_empty():
@@ -94,13 +121,21 @@ func apply_tier(t: int) -> Dictionary:
 			if nt == null:
 				out["missing"] = int(out["missing"]) + 1
 				continue
-			mat.set(prop, nt)
+			# ★ 写回也要分类型：BaseMaterial3D 用属性，ShaderMaterial 用 shader 参数
+			#   （blend 材质下 `mat` 是 null ✗，直接 mat.set(...) 会崩 ✓）
+			if mat != null:
+				mat.set(prop, nt)
+			else:
+				sm.set_shader_parameter(String(prop), nt)
 			out["changed"] = int(out["changed"]) + 1
 			out[prop] = int(out.get(prop, 0)) + 1        # 细分计数：albedo_texture / normal_texture ✓
 			# ★ 诊断：记录"被改的材质来自哪个资源文件"——这样日志里能直接看到
 			#   res://scenes/墓园/石质墓园栅栏_01.res 这种**打包在 .res 里**的材质也被换掉了 ✓
 			#   （材质是 load() 出来的共享实例 ✓ 只改内存 ✓ 不会写回 .res ✓）
-			var src_res := mat.resource_path
+			# ★ mat 在 ShaderMaterial 分支里是 null ✗ → 取非空的那个的 resource_path ✓
+			#   （三元表达式结果是 Variant ✗ 推断不出类型 → 先落到 Resource 再取 String ✓）
+			var owner_res: Resource = mat if mat != null else sm
+			var src_res := String(owner_res.resource_path)
 			if src_res != "":
 				var arr: Array = out.get("sources", [])
 				if not arr.has(src_res) and arr.size() < 8:
@@ -132,6 +167,20 @@ func _collect_materials() -> Array:
 						var m2 := mi.mesh.surface_get_material(i)
 						if m2 != null:
 							out.append(m2)
+		elif n is MultiMeshInstance3D:
+			# ★ 关键补充：`MultiMeshInstance3D` **不是** `MeshInstance3D` 的子类 ✗
+			#   （散置的围栏/草丛/石块常走它 ✓）→ 之前完全没被收集到 ✗
+			#   表现为"明明有 _1k 文件，切档却没换" ✓
+			var mmi := n as MultiMeshInstance3D
+			if _matches(mmi):
+				if mmi.material_override != null:
+					out.append(mmi.material_override)
+				var mm: MultiMesh = mmi.multimesh
+				if mm != null and mm.mesh != null:
+					for i in range(mm.mesh.get_surface_count()):
+						var m3 := mm.mesh.surface_get_material(i)
+						if m3 != null:
+							out.append(m3)
 		for c in n.get_children():
 			st.append(c)
 	return out

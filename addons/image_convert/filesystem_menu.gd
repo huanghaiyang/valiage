@@ -36,7 +36,18 @@ func _on_open(paths: Variant = null) -> void:
 		_dlg = ConvertDialog.new()
 		# 注意：EditorContextMenuPlugin 是 RefCounted，没有 add_child —— 必须挂到编辑器主控件
 		EditorInterface.get_base_control().add_child(_dlg)
-	_dlg.set_target(dir, ImageConv.is_image(String(p[0])) if p.size() > 0 else false)
+	# ★ 需求①②：选中的是**文件**时，只转这些文件 ✓
+	#   （旧行为：只传目录 → 把该文件夹里**全部**图片都转掉 ✗）；
+	#   选中的是**文件夹**时，picked 为空 → 按目录模式（可勾递归 = 文件夹内全部 ✓）
+	var picked := PackedStringArray()
+	var has_dir := false
+	for x in p:
+		var s := String(x)
+		if ImageConv.is_image(s):
+			picked.append(ProjectSettings.globalize_path(s))
+		elif DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(s)):
+			has_dir = true
+	_dlg.set_target(dir, not picked.is_empty() and not has_dir, picked)
 	_dlg.popup_centered()
 
 

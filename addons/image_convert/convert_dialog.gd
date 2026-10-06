@@ -96,11 +96,19 @@ func _init() -> void:
 	_paint(panel)
 
 
-func set_target(dir_abs: String, single_file: bool) -> void:
+## ★ 右键选中的具体文件（空 = 按目录模式 ✓）
+var _files: PackedStringArray = PackedStringArray()
+
+
+func set_target(dir_abs: String, single_file: bool, files: PackedStringArray = PackedStringArray()) -> void:
 	_dir = dir_abs
 	_single = single_file
-	_recursive.button_pressed = not single_file
-	_status.text = "目标：%s（%s）" % [dir_abs, "单文件" if single_file else "整个目录"]
+	_files = files
+	_recursive.button_pressed = not single_file and _files.is_empty()
+	if not _files.is_empty():
+		_status.text = "目标：选中的 %d 个文件" % _files.size()
+	else:
+		_status.text = "目标：%s（%s）" % [dir_abs, "单文件" if single_file else "整个目录"]
 
 
 func _paint(n: Node) -> void:
@@ -130,6 +138,8 @@ func _options() -> Dictionary:
 		"recursive": _recursive.button_pressed,
 		"out_dir": _out_edit.text.strip_edges(),
 		"variants": _variants.button_pressed,
+		# ★ 传给后台线程：有具体文件就只转这些 ✓（没有则按目录 ✓）
+		"files": Array(_files),
 	}
 
 
@@ -154,7 +164,14 @@ func _worker(dir_abs: String, opts: Dictionary, progress: Dictionary) -> Diction
 
 ## 「一键生成 2K+1K」：对每个图片生成 _2k / _1k 两份（命名与画质系统一致）
 func _worker_variants(dir_abs: String, opts: Dictionary, progress: Dictionary) -> Dictionary:
-	var files := ImageConv.find_images(dir_abs, bool(opts.get("recursive", false)))
+	# ★ 需求①②：有"具体选中的文件"就只转这些 ✓（不扫整个目录 ✗）
+	var files: Array = []
+	if opts.has("files"):
+		for f in (opts["files"] as Array):
+			if ImageConv.is_image(String(f)):
+				files.append(String(f))
+	else:
+		files = ImageConv.find_images(dir_abs, bool(opts.get("recursive", false)))
 	var lines := PackedStringArray()
 	var created: Array = []
 	var ok := 0

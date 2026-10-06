@@ -152,7 +152,16 @@ static func convert_file(src_abs: String, dst_abs: String, opts: Dictionary = {}
 ## 批量：对 dir 下的图片逐个转换（可递归）
 static func convert_dir(dir: String, opts: Dictionary = {}, progress: Dictionary = {}) -> Dictionary:
 	var recursive := bool(opts.get("recursive", false))
-	var files := find_images(dir, recursive)
+	# ★ 若调用方给的是"右键选中的具体文件"（opts.files ✓），就**只转这些** ✓，
+	#   不再扫描它们所属的文件夹（旧行为会把整个目录都转掉 ✗）；
+	#   没有 files 时才按目录（可递归）扫描 ✓
+	var files: Array = []
+	if opts.has("files"):
+		for f in (opts["files"] as Array):
+			if is_image(String(f)):
+				files.append(String(f))
+	else:
+		files = find_images(dir, recursive)
 	var lines := PackedStringArray()
 	var created: Array = []
 	var ok := 0

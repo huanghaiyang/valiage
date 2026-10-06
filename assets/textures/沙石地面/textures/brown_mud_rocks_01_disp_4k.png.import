@@ -3,21 +3,19 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://dlid0crbyiwmp"
-path.s3tc="res://.godot/imported/brown_mud_rocks_01_disp_4k.png-deb87af80cb3eaedc8594899fb5bb614.s3tc.ctex"
-path.etc2="res://.godot/imported/brown_mud_rocks_01_disp_4k.png-deb87af80cb3eaedc8594899fb5bb614.etc2.ctex"
+path="res://.godot/imported/brown_mud_rocks_01_disp_4k.png-deb87af80cb3eaedc8594899fb5bb614.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc", "etc2_astc"],
-"vram_texture": true
+"vram_texture": false
 }
 
 [deps]
 
 source_file="res://assets/textures/沙石地面/textures/brown_mud_rocks_01_disp_4k.png"
-dest_files=["res://.godot/imported/brown_mud_rocks_01_disp_4k.png-deb87af80cb3eaedc8594899fb5bb614.s3tc.ctex", "res://.godot/imported/brown_mud_rocks_01_disp_4k.png-deb87af80cb3eaedc8594899fb5bb614.etc2.ctex"]
+dest_files=["res://.godot/imported/brown_mud_rocks_01_disp_4k.png-deb87af80cb3eaedc8594899fb5bb614.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=0
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0
@@ -25,7 +23,7 @@ compress/rdo_quality_loss=0.0
 compress/hdr_compression=1
 compress/normal_map=0
 compress/channel_pack=0
-mipmaps/generate=true
+mipmaps/generate=false
 mipmaps/limit=-1
 roughness/mode=0
 roughness/src_normal=""

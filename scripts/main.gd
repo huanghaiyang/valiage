@@ -109,6 +109,20 @@ func _ready() -> void:
 	var pq := preload("res://scripts/quality/prop_texture_quality.gd").new()
 	pq.name = "PropTextureQuality"
 	add_child(pq)
+	# ★ 画质分级：**阴影绘制距离**（把 QualityTiers 里原本没人用的 shadow_quality 接上 ✓）
+	#   低/中/高/极高 → 40/70/110/160m，参数在 shadow_quality.gd 顶部 ✓
+	var sq := preload("res://scripts/quality/shadow_quality.gd").new()
+	sq.name = "ShadowQuality"
+	add_child(sq)
+	# ★ 性能（可选）：**墓园合批** —— 把一堆小件按材质合并成少数网格，降低 draw call。
+	#   默认关闭 ✓（ENABLED = false）：合并会改变节点结构（相机挖洞遮挡/逐件交互受影响 ✗），
+	#   要启用就把 prop_merge.gd 顶部的 ENABLED 改成 true ✓（不改 .tscn/.res ✓ 可随时关掉 ✓）
+	preload("res://scripts/world/prop_merge.gd").apply(self)
+	# ★ 画质分级：**草贴图**（素材本来就有 1k/2k/4k ✓，缺的是接线 ✗）
+	#   覆盖共用材质 `scenes/草/_blend_mat_grass_bermuda_01.tres` + SGT 节点的四个贴图槽 ✓
+	var gq := preload("res://scripts/quality/grass_quality.gd").new()
+	gq.name = "GrassQuality"
+	add_child(gq)
 	_setup_previews()
 	_setup_ui()
 	_setup_input_actions()

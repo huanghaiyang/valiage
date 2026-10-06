@@ -21,7 +21,10 @@ const RULES := preload("res://addons/texture_tier_baker/tier_rules.gd")
 const SIZE_OF := {"4k": 4096, "2k": 2048, "1k": 1024, "512": 512, "256": 256}
 const MENU_LABEL := "生成贴图分档…"
 const IMG_EXT := ["jpg", "jpeg", "png", "webp", "bmp", "tga"]
-const MODEL_EXT := ["glb", "gltf"]
+## 可解析的"资源文件"：glb/gltf 模型 + **tscn 场景** ✓
+## （右键 .tscn 时会加载该场景、遍历其材质引用的贴图 ✓；用 `.tscn` 的好处是
+##   场景里 instance 的 glb 也会被一起遍历到 ✓）
+const MODEL_EXT := ["glb", "gltf", "tscn"]
 
 var _ctx_scene: EditorContextMenuPlugin
 var _ctx_files: EditorContextMenuPlugin
@@ -38,11 +41,25 @@ var _stat: Label
 
 func _enter_tree() -> void:
 	_ctx_scene = CtxMenu.new()
-	_ctx_scene.setup(MENU_LABEL, _menu_scene_tree)
+	_ctx_scene.setup(MENU_LABEL, _menu_scene_tree)          # 场景树：始终显示 ✓
 	add_context_menu_plugin(EditorContextMenuPlugin.CONTEXT_SLOT_SCENE_TREE, _ctx_scene)
 	_ctx_files = CtxMenu.new()
-	_ctx_files.setup(MENU_LABEL, _menu_filesystem)
+	# ★ 文件系统入口**只在"恰好选中 1 个 .tscn / .glb"时出现** ✓
+	#   （文件夹 / 多选 / 其它类型 右键都看不到入口 ✓ 由 context_menu.gd 的 show_if 实现 ✓）
+	_ctx_files.setup(MENU_LABEL, _menu_filesystem, _show_for_single_model)
 	add_context_menu_plugin(EditorContextMenuPlugin.CONTEXT_SLOT_FILESYSTEM, _ctx_files)
+
+
+## 文件系统菜单的可见性：**恰好 1 个路径 + 是 .tscn 或 .glb 文件** ✓
+## （想要 .gltf 也出现入口，在这里加 `.gltf` 即可 ✓）
+func _show_for_single_model(paths: PackedStringArray) -> bool:
+	if paths.size() != 1:
+		return false
+	var s := String(paths[0])
+	if s.ends_with("/"):
+		return false                       # 文件夹 → 不显示 ✓
+	var low := s.to_lower()
+	return low.ends_with(".tscn") or low.ends_with(".glb")
 
 
 func _exit_tree() -> void:
