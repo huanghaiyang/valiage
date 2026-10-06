@@ -161,7 +161,13 @@ func start_cast() -> void:
 
 func _process(delta: float) -> void:
 	if casting:
-		_wave_t += delta
+		# ★ BUG 修复：「有时候前两个推进阶段不生效、直接从第三阶段开始」✗
+		#   火焰簇的成长动画按 `_wave_t` 算年龄（见 _apply_grow：age = _wave_t - kd*advance_time）
+		#   → `_wave_t` 只要**一次跳过头**（施法瞬间/卡顿帧的大 delta ✓ 或掉帧 ✓），
+		#     前几段簇的 age 一上来就超过成长时长 ✗ → 表现为"那两段没播" ✓
+		#   修法：给 delta 加上限（20fps = 50ms）→ 波前只**连续推进**、永不跳跃 ✓
+		#   （代价：极端卡顿时整体推进略慢，但阶段不会丢 ✓）
+		_wave_t += minf(delta, 0.05)
 		_ignite_pending()
 	super._process(delta)
 
@@ -478,7 +484,12 @@ func _apply_grow(_s: float) -> void:
 		var f: Node3D = _patches[i]
 		if f == null or not is_instance_valid(f):
 			continue
-		var age := _wave_t - float(_kd[i]) * advance_time
+		# ★ 双保险（用户要求）：把"簇年龄"上限夹到 burn_time ✓
+		#   原因：age > burn_time 会走下面的**余烬淡出**分支 → 卡顿跳时钟时，
+		#         早期簇一上来就被算成"已过燃烧期" ✗ → 表现为"前两段没播" ✓
+		#   夹住后：这类簇不再淡出，而是 **g 直接为 1、满状态出现** ✓（阶段不会丢 ✓）
+		#   代价：这些簇不播"从小长大"（因为它们的成长时间已经过去了 ✓）—— 可接受 ✓
+		var age := clampf(_wave_t - float(_kd[i]) * advance_time, 0.0, burn_time)
 		var g := 0.0
 		if age >= 0.0:
 			g = clampf(age / maxf(ignite_time, 0.01), 0.0, 1.0)          # 生成

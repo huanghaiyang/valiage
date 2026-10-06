@@ -73,6 +73,7 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	_sweep_instances()      # ★ 每帧清理"已演完"的独立实例 ✓（不加数量上限 ✓）
 	if not enabled:
 		# 控制器被关掉时不能把角色留在施法姿势上
 		_update_cast_anim(false)
@@ -222,6 +223,65 @@ func _find_staff(root: Node) -> Node3D:
 	return fallback
 
 
+## ★ 本次施法产生的**独立实例**（各自演完自己的效果 ✓，互不影响 ✓）
+##   用户确认：一次性技能"每次施法 = 一个新实例" ✓；**不加数量上限** ✓
+var _cast_instances: Array = []
+
+
+## 为**这一次施法**新建独立实例 ✓（初始化方式与共享 jet 一致 ✓）
+##   生命周期：它自己的 `is_casting()` 变回 false（= 这一发演完）时，由 _sweep_instances() 释放 ✓
+func _spawn_cast_instance() -> Node3D:
+	var script: GDScript = SPELLS.get(selected, null)
+	if script == null or _player == null or _staff == null:
+		# ★ 兜底（用户要求）：脚本/参数取不到时，用**共享实例的副本** ✓（副本状态独立 ✓）
+		#   —— 比"回退到共享实例"好得多 ✗（后者会让第二发被法术状态机忽略 ✗）
+		if jet != null and is_instance_valid(jet):
+			var d := jet.duplicate() as Node3D
+			if d != null:
+				d.name = "SpellCastCopy_" + selected
+				# 副本会带上原实例的当前状态 ✗ → 尽力复位到"未施法"
+				# （按约定：0 = ST_OFF ✓ / casting=false ✓ / 时钟清零 ✓）
+				for prop in ["_state", "_state_t", "casting", "_wave_t"]:
+					if prop in d:
+						d.set(prop, 0)
+				var parent: Node = _player.get_parent() if _player != null else jet.get_parent()
+				if parent != null:
+					parent.add_child(d)
+				_cast_instances.append(d)
+				push_warning("[SpellCaster] %s：走兜底 —— 用共享实例副本 ✓（已尽量复位状态 ✓）" % selected)
+				return d
+		return null
+	var inst: Node3D = script.new()
+	inst.name = "SpellCast_" + selected
+	_player.get_parent().add_child(inst)
+	inst.call("setup", _player, _staff)
+	# 沿用共享实例上已经算好的参数（advance_time / burn_time 等 ✓）
+	if jet != null and is_instance_valid(jet):
+		for prop in ["advance_time", "burn_time"]:
+			if prop in jet and prop in inst:
+				inst.set(prop, jet.get(prop))
+	_cast_instances.append(inst)
+	return inst
+
+
+## 清理已经演完的实例 ✓（**不加数量上限** ✓ —— 用户明确要求 ✓）
+func _sweep_instances() -> void:
+	if _cast_instances.is_empty():
+		return
+	var left: Array = []
+	for x in _cast_instances:
+		var n := x as Node3D
+		if n == null or not is_instance_valid(n):
+			continue
+		var busy := n.has_method("is_casting") and bool(n.call("is_casting"))
+		if busy:
+			left.append(n)          # 还在演 → 留着 ✓（绝不打断前一次施法 ✓）
+		else:
+			n.queue_free()          # 演完了 → 释放 ✓
+	if left.size() != _cast_instances.size():
+		_cast_instances = left
+
+
 func _ensure_jet() -> void:
 	if selected.is_empty() or _player == null or _staff == null:
 		return
@@ -297,8 +357,9 @@ func _update_targeting(down: bool, just_pressed: bool) -> bool:
 	# 刚放完法术：等鼠标抬起 **且法术演完** 再允许重新显示圆圈，
 	# 否则圆圈会立刻又冒出来（用户："施放技能后圈圈应该消失"）
 	if _target_wait_release:
-		var still_casting := jet.has_method("is_casting") and bool(jet.call("is_casting"))
-		if not down and not still_casting:
+		# ★ 玩法优化：一次性技能**只等"施法动作"演完**即可再施法 ✓（原来等 is_casting ✗ = 等整段效果 ✗ → 无法连发 ✓）
+		var anim_running := jet.has_method("wants_cast_anim") and bool(jet.call("wants_cast_anim"))
+		if not down and not anim_running:
 			_target_wait_release = false
 		_update_cast_anim(jet.has_method("wants_cast_anim")
 				and bool(jet.call("wants_cast_anim")))
@@ -322,9 +383,19 @@ func _update_targeting(down: bool, just_pressed: bool) -> bool:
 				ax = float(_targeting.call("axis"))
 			if _targeting.has_method("half_angle"):
 				ha = float(_targeting.call("half_angle"))
-			jet.call("cast_sector", c, r, ax, ha)
+			# ★ 状态隔离（用户要求）：这一次施法用**独立实例** ✓（造不出就退回共享实例 ✓）
+			var inst := _spawn_cast_instance()
+			(inst if inst != null else jet).call("cast_sector", c, r, ax, ha)
 		elif jet.has_method("cast_at"):
-			jet.call("cast_at", c, r)
+			# ★ 同上：独立实例 ✓
+			var inst := _spawn_cast_instance()
+			# ★ 诊断：独立实例没造出来时会回退共享实例 ✗
+			#   → 火焰灼烧的 cast_at 会被 `_state != ST_OFF` 静默忽略 ✗（第二发不生效 ✓）
+			if inst == null:
+				push_warning("[SpellCaster] %s：独立实例创建失败 ✗ 回退共享实例（第二发会被法术的状态机忽略 ✗）" % selected)
+			else:
+				print("[SpellCaster] %s：新独立实例已创建 ✓ %s" % [selected, inst.name])
+			(inst if inst != null else jet).call("cast_at", c, r)
 		_targeting.call("end")
 		_target_wait_release = true
 	return true
