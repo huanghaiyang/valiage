@@ -56,7 +56,10 @@ func _init() -> void:
 	r1.add_child(_fmt)
 	var l2 := Label.new(); l2.text = "   分辨率"; l2.clip_text = true; r1.add_child(l2)
 	_res = OptionButton.new()
-	for pair in [[0, "保持原样"], [4096, "4096"], [2048, "2048"], [1024, "1024"], [512, "512"]]:
+	# ★「自动尺寸」= 不统一强制尺寸 ✓：
+	#   · 普通转换：保持原尺寸（max_size = 0 ✓）
+	#   · 勾了「一键生成 2K+1K」：每个变体用自己的目标尺寸（_2k→2048 ✓ / _1k→1024 ✓）
+	for pair in [[0, "自动尺寸"], [4096, "4096"], [2048, "2048"], [1024, "1024"], [512, "512"]]:
 		_res.add_item(String(pair[1]), int(pair[0]))
 	r1.add_child(_res)
 
@@ -182,10 +185,27 @@ func _worker_variants(dir_abs: String, opts: Dictionary, progress: Dictionary) -
 	for f in files:
 		if not progress.is_empty():
 			progress["current"] = String(f).get_file()
+		# ★ 地面/地形贴图**也允许改尺寸** ✓（用户确认 ✓）
+		#   注意：Terrain3D 的多图层要求**整套尺寸与格式一致** ✓
+		#   → 对地表贴图请**同一批一起生成**（例如整目录一起出 2k/1k ✓），不要只做一半 ✓
 		for plan in ImageConv.plan_variants(String(f), ["2k", "1k"], int(opts.get("fmt", ImageConv.FMT_KEEP))):
 			var p: Dictionary = plan
 			var o := opts.duplicate()
 			o["fmt"] = int(opts.get("fmt", ImageConv.FMT_KEEP))
+			# ★ 必须把**本变体的目标尺寸**传下去 ✗
+			#   否则 convert_file() 会按 opts.max_size（对话框「保持原样」= 0 ✗）处理 → 完全没缩放 ✗
+			#   表现就是 "_2k 与 _1k 体积一模一样（都等于原图分辨率）" ✓（实测 bug ✓）
+			match String(p.get("suffix", "")):
+				"4k":
+					o["max_size"] = 4096
+				"2k":
+					o["max_size"] = 2048
+				"1k":
+					o["max_size"] = 1024
+				"512":
+					o["max_size"] = 512
+				"256":
+					o["max_size"] = 256
 			var r := ImageConv.convert_file(String(p["src"]), String(p["dst"]), o)
 			if bool(r.get("ok", false)):
 				ok += 1

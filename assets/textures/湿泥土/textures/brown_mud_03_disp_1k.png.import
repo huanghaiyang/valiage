@@ -2,9 +2,9 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://do2omeagtfby8"
-path.s3tc="res://.godot/imported/brown_mud_rocks_01_rough_4k.jpg-fefa4d509c85b6d01fd53a2c1d1a5089.s3tc.ctex"
-path.etc2="res://.godot/imported/brown_mud_rocks_01_rough_4k.jpg-fefa4d509c85b6d01fd53a2c1d1a5089.etc2.ctex"
+uid="uid://b5dgw1bhe38n7"
+path.bptc="res://.godot/imported/brown_mud_03_disp_1k.png-9a3aee6951dfcaa776742a0d6fdeeb0e.bptc.ctex"
+path.astc="res://.godot/imported/brown_mud_03_disp_1k.png-9a3aee6951dfcaa776742a0d6fdeeb0e.astc.ctex"
 metadata={
 "imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
@@ -12,13 +12,13 @@ metadata={
 
 [deps]
 
-source_file="res://assets/textures/沙石地面/textures/brown_mud_rocks_01_rough_4k.jpg"
-dest_files=["res://.godot/imported/brown_mud_rocks_01_rough_4k.jpg-fefa4d509c85b6d01fd53a2c1d1a5089.s3tc.ctex", "res://.godot/imported/brown_mud_rocks_01_rough_4k.jpg-fefa4d509c85b6d01fd53a2c1d1a5089.etc2.ctex"]
+source_file="res://assets/textures/湿泥土/textures/brown_mud_03_disp_1k.png"
+dest_files=["res://.godot/imported/brown_mud_03_disp_1k.png-9a3aee6951dfcaa776742a0d6fdeeb0e.bptc.ctex", "res://.godot/imported/brown_mud_03_disp_1k.png-9a3aee6951dfcaa776742a0d6fdeeb0e.astc.ctex"]
 
 [params]
 
 compress/mode=2
-compress/high_quality=false
+compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0

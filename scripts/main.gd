@@ -98,6 +98,23 @@ func _ready() -> void:
 	# 节点树 / 环境光照 / 世界布局（出生点·平台·聚落·道路·植被）全部声明在 scenes/main.tscn。
 	# 装配顺序：先接引用 → 生成世界（地形/平台/聚落/道路/植被/出生点）→ 再做依赖世界的
 	# 预览、UI、输入动作。预览与相机都依赖 terrain/buildings/player，必须排在世界之后。
+	# ★①② 画质分级：**提到最前面**（在任何绘制之前换掉材质里的贴图引用 ✓）
+	#   ① `_ready()` 发生在**首帧渲染之前** ✓ → 4K 大概率**从未被上传到显存** ✓
+	#      （只在加载瞬间存在于内存/解码 ✓ —— 这是"不改文件(B)"能达到的下限 ✓）
+	#   ② `_base` 只存**路径字符串**、绝不持有 Texture 引用 ✓ → 换掉后原图失去最后一个
+	#      外部引用，由引用计数自然释放 ✓（Godot 没有"强制卸载资源缓存"的 API ✗，只能不留引用 ✓）
+	#   ③ 项目**没有加载画面** ✗ —— 但因①，这段换引用本就发生在屏幕看不到的时机 ✓
+	#   ★ 下面原来那一段同名创建仍保留 ✓ → 会各实例化一次；两次 apply 是**幂等**的 ✓
+	#     （第二次看到的是已换过的贴图 → 找不到变体 → 空操作 ✓），代价只是多几个节点与一行日志 ✓
+	var pq0 := preload("res://scripts/quality/prop_texture_quality.gd").new()
+	pq0.name = "PropTextureQualityEarly"
+	add_child(pq0)
+	var sq0 := preload("res://scripts/quality/shadow_quality.gd").new()
+	sq0.name = "ShadowQualityEarly"
+	add_child(sq0)
+	var gq0 := preload("res://scripts/quality/grass_quality.gd").new()
+	gq0.name = "GrassQualityEarly"
+	add_child(gq0)
 	_wire_camera_rig()
 	var report := WorldBuilder.build(self, terrain, vegetation, buildings, roads, player, camera_rig)
 	# ★ 性能：给墓园/遗迹这类"远处小件聚集区"设可见距离（离开视野后不再绘制；

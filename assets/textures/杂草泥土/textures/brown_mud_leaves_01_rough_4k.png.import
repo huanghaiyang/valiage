@@ -2,9 +2,9 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://cl8otr8emkjgi"
-path.s3tc="res://.godot/imported/brown_mud_leaves_01_rough_4k.png-9370f1090c3c911445855d3382042dbf.s3tc.ctex"
-path.etc2="res://.godot/imported/brown_mud_leaves_01_rough_4k.png-9370f1090c3c911445855d3382042dbf.etc2.ctex"
+uid="uid://dykea0phm2r7n"
+path.bptc="res://.godot/imported/brown_mud_leaves_01_rough_4k.png-9370f1090c3c911445855d3382042dbf.bptc.ctex"
+path.astc="res://.godot/imported/brown_mud_leaves_01_rough_4k.png-9370f1090c3c911445855d3382042dbf.astc.ctex"
 metadata={
 "imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
@@ -13,12 +13,12 @@ metadata={
 [deps]
 
 source_file="res://assets/textures/杂草泥土/textures/brown_mud_leaves_01_rough_4k.png"
-dest_files=["res://.godot/imported/brown_mud_leaves_01_rough_4k.png-9370f1090c3c911445855d3382042dbf.s3tc.ctex", "res://.godot/imported/brown_mud_leaves_01_rough_4k.png-9370f1090c3c911445855d3382042dbf.etc2.ctex"]
+dest_files=["res://.godot/imported/brown_mud_leaves_01_rough_4k.png-9370f1090c3c911445855d3382042dbf.bptc.ctex", "res://.godot/imported/brown_mud_leaves_01_rough_4k.png-9370f1090c3c911445855d3382042dbf.astc.ctex"]
 
 [params]
 
 compress/mode=2
-compress/high_quality=false
+compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0

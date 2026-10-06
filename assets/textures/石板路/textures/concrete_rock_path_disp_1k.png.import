@@ -2,9 +2,9 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://j6c7kc2mwanw"
-path.bptc="res://.godot/imported/grass_bermuda_01_rough_1k.png-3dd33fcb3cc3ffa86ab20cb454754878.bptc.ctex"
-path.astc="res://.godot/imported/grass_bermuda_01_rough_1k.png-3dd33fcb3cc3ffa86ab20cb454754878.astc.ctex"
+uid="uid://bn15ap5bfllhc"
+path.bptc="res://.godot/imported/concrete_rock_path_disp_1k.png-93a47fa249a16aa36517800b1eb063a9.bptc.ctex"
+path.astc="res://.godot/imported/concrete_rock_path_disp_1k.png-93a47fa249a16aa36517800b1eb063a9.astc.ctex"
 metadata={
 "imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
@@ -12,8 +12,8 @@ metadata={
 
 [deps]
 
-source_file="res://assets/textures/绿草/textures/grass_bermuda_01_rough_1k.png"
-dest_files=["res://.godot/imported/grass_bermuda_01_rough_1k.png-3dd33fcb3cc3ffa86ab20cb454754878.bptc.ctex", "res://.godot/imported/grass_bermuda_01_rough_1k.png-3dd33fcb3cc3ffa86ab20cb454754878.astc.ctex"]
+source_file="res://assets/textures/石板路/textures/concrete_rock_path_disp_1k.png"
+dest_files=["res://.godot/imported/concrete_rock_path_disp_1k.png-93a47fa249a16aa36517800b1eb063a9.bptc.ctex", "res://.godot/imported/concrete_rock_path_disp_1k.png-93a47fa249a16aa36517800b1eb063a9.astc.ctex"]
 
 [params]
 
