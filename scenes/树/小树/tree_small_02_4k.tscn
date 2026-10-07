@@ -45,3 +45,4 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.1446259, 0.024031999, -0.7
 
 [node name="tree_small_02_LOD1" type="MeshInstance3D" parent="." unique_id=827061334]
 mesh = SubResource("ArrayMesh_ad1r2")
+metadata/allow_batch = true

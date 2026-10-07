@@ -41,7 +41,6 @@
 [ext_resource type="PackedScene" uid="uid://ky66elf75vg2" path="res://scenes/草/grass_bermuda_01_dead_b.tscn" id="35_augu2"]
 [ext_resource type="PackedScene" uid="uid://dv8violt7fhk1" path="res://scenes/草/grass_bermuda_01_medium_b.tscn" id="36_tm6hj"]
 [ext_resource type="PackedScene" uid="uid://b32ar7g7oha7e" path="res://scenes/草/grass_bermuda_01_flattened_a.tscn" id="37_kf5aa"]
-[ext_resource type="PackedScene" uid="uid://dfolob1l7jglk" path="res://scenes/树/小树/tree_small_02_4k.tscn" id="44_cjqg0"]
 
 [sub_resource type="ProceduralSkyMaterial" id="sky_mat"]
 sky_top_color = Color(0.7, 0.72, 0.56, 1)
@@ -130,7 +129,7 @@ normal_texture = ExtResource("13_jscy8")
 mesh_list = Array[Terrain3DMeshAsset]([SubResource("Terrain3DMeshAsset_jbj1t")])
 texture_list = Array[Terrain3DTextureAsset]([SubResource("Terrain3DTextureAsset_dp3eg")])
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_cjqg0"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_2cjbq"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -310,7 +309,7 @@ top_level = true
 metadata/_edit_lock_ = true
 
 [node name="SimpleGrassTextured" type="MultiMeshInstance3D" parent="." unique_id=494743626]
-material_override = SubResource("ShaderMaterial_cjqg0")
+material_override = SubResource("ShaderMaterial_2cjbq")
 cast_shadow = 0
 multimesh = SubResource("MultiMesh_2cjbq")
 script = ExtResource("19_jscy8")
@@ -2620,9 +2619,3 @@ transform = Transform3D(-14.638751, 0, -3.2721486, 0, 15, 0, 3.2721486, 0, -14.6
 
 [node name="cross_1" parent="." unique_id=2122225381 instance=ExtResource("23_og1vs")]
 transform = Transform3D(2.9588568, 0, -0.49514282, 0, 3, 0, 0.49514282, 0, 2.9588568, -9.690185, 1.3714155, -22.40274)
-
-[node name="tree_small_02_LOD1" parent="." unique_id=1871259475 instance=ExtResource("44_cjqg0")]
-transform = Transform3D(0.5475632, 0, -0.83676434, 0, 1, 0, 0.83676434, 0, 0.5475632, -14.41405, -0.05516243, -27.7973)
-
-[node name="tree_small_02_LOD2" parent="." unique_id=9950019 instance=ExtResource("44_cjqg0")]
-transform = Transform3D(-0.97591674, 0, -0.21814324, 0, 1, 0, 0.21814324, 0, -0.97591674, -17.243553, -0.33106577, -22.77073)
