@@ -41,6 +41,7 @@
 [ext_resource type="PackedScene" uid="uid://ky66elf75vg2" path="res://scenes/草/grass_bermuda_01_dead_b.tscn" id="35_augu2"]
 [ext_resource type="PackedScene" uid="uid://dv8violt7fhk1" path="res://scenes/草/grass_bermuda_01_medium_b.tscn" id="36_tm6hj"]
 [ext_resource type="PackedScene" uid="uid://b32ar7g7oha7e" path="res://scenes/草/grass_bermuda_01_flattened_a.tscn" id="37_kf5aa"]
+[ext_resource type="PackedScene" uid="uid://dfolob1l7jglk" path="res://scenes/树/小树/tree_small_02_4k.tscn" id="44_cjqg0"]
 
 [sub_resource type="ProceduralSkyMaterial" id="sky_mat"]
 sky_top_color = Color(0.7, 0.72, 0.56, 1)
@@ -2608,6 +2609,7 @@ transform = Transform3D(1.2661612, 0, -0.24909516, 0, 1.2904311, 0, 0.24909516, 
 
 [node name="StuckMonitor" type="Node3D" parent="." unique_id=2098627901]
 script = ExtResource("23_pm3ni")
+active = true
 player_path = NodePath("../Player")
 
 [node name="QualityTerrain" type="Node" parent="." unique_id=139714686]
@@ -2619,3 +2621,9 @@ transform = Transform3D(-14.638751, 0, -3.2721486, 0, 15, 0, 3.2721486, 0, -14.6
 
 [node name="cross_1" parent="." unique_id=2122225381 instance=ExtResource("23_og1vs")]
 transform = Transform3D(2.9588568, 0, -0.49514282, 0, 3, 0, 0.49514282, 0, 2.9588568, -9.690185, 1.3714155, -22.40274)
+
+[node name="tree_small_02_LOD2" parent="." unique_id=1871259475 instance=ExtResource("44_cjqg0")]
+transform = Transform3D(-0.82514954, 0, 1.0045537, 0, 1.3, 0, -1.0045537, 0, -0.82514954, -17.483994, 0.09114075, -23.500557)
+
+[node name="tree_small_02_LOD1" parent="." unique_id=695067553 instance=ExtResource("44_cjqg0")]
+transform = Transform3D(1.1303451, 0, -0.9860629, 0, 1.5, 0, 0.9860629, 0, 1.1303451, -14.158074, -0.12431383, -28.052896)

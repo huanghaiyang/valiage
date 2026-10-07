@@ -47,6 +47,11 @@ uniform float player_radius : hint_range(0.05, 3.0) = 0.55;
 uniform float player_bend : hint_range(0.0, 2.0) = 0.75;
 uniform float player_spread : hint_range(0.0, 1.5) = 0.30;
 uniform float player_move : hint_range(0.0, 1.0) = 0.0;
+// ★★ 角色影响的**绝对高度上限**（米 ✓）—— 这是"树"和"草"的关键区别 ✓
+//   草整株 ~0.2 m ✓ → 叶尖 h≈1 ✓ 角色倒伏作用在根部附近 ✓ 正确 ✓
+//   树冠离根 8 m ✓ → 没有这个上限时 ✗ → **整个树冠**都会吃 player_spread（左右分开）✗✗
+//   → 现在只影响离根 ≤ player_height_max 的部分 ✓（树冠只受风影响 ✓）
+uniform float player_height_max : hint_range(0.1, 8.0) = 1.2;
 
 // ---- 燃烧（语义与 grass_wind.gdshader 完全一致）----
 uniform float burn : hint_range(0.0, 1.0) = 0.0;
@@ -76,21 +81,27 @@ void vertex() {
 	}
 
 	if (player_move > 0.001) {
-		vec2 rel = VERTEX.xz - player_pos.xz;
-		float dd = length(rel);
-		float infl = 1.0 - clamp(dd / max(0.01, player_radius), 0.0, 1.0);
-		infl = infl * infl * (3.0 - 2.0 * infl) * clamp(player_move, 0.0, 1.0);
-		if (infl > 0.001) {
-			vec2 fw = normalize(player_forward.xz + vec2(0.0001));
-			vec2 rt = vec2(-fw.y, fw.x);
-			float along2 = dot(rel, fw);
-			float side = dot(rel, rt);
-			float front = smoothstep(-0.35, 0.45, along2);
-			float dirsign = 1.0;
-			if (side < 0.0) { dirsign = -1.0; }
-			vec2 push = rt * (dirsign * player_spread) - fw * (0.10 * front);
-			VERTEX.xz += push * (infl * h * (0.35 + 0.65 * front));
-			VERTEX.y -= infl * h * player_bend * (0.40 + 0.60 * front);
+		// ★ 高度上限：离模型根部越高，角色影响越弱 ✓ 超过 player_height_max 完全不受影响 ✓
+		//   （否则树冠会跟着角色左右分开 ✗ —— 用户实测 ✓）
+		float hb = VERTEX.y - base_y;
+		float capf = 1.0 - smoothstep(player_height_max * 0.6, player_height_max, hb);
+		if (capf > 0.001) {
+			vec2 rel = VERTEX.xz - player_pos.xz;
+			float dd = length(rel);
+			float infl = 1.0 - clamp(dd / max(0.01, player_radius), 0.0, 1.0);
+			infl = infl * infl * (3.0 - 2.0 * infl) * clamp(player_move, 0.0, 1.0) * capf;
+			if (infl > 0.001) {
+				vec2 fw = normalize(player_forward.xz + vec2(0.0001));
+				vec2 rt = vec2(-fw.y, fw.x);
+				float along2 = dot(rel, fw);
+				float side = dot(rel, rt);
+				float front = smoothstep(-0.35, 0.45, along2);
+				float dirsign = 1.0;
+				if (side < 0.0) { dirsign = -1.0; }
+				vec2 push = rt * (dirsign * player_spread) - fw * (0.10 * front);
+				VERTEX.xz += push * (infl * h * (0.35 + 0.65 * front));
+				VERTEX.y -= infl * h * player_bend * (0.40 + 0.60 * front);
+			}
 		}
 	}
 
