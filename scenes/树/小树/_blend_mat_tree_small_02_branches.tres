@@ -1,0 +1,14 @@
+[gd_resource type="StandardMaterial3D" format=3 uid="uid://b2reejr6vfr8f"]
+
+[ext_resource type="Texture2D" uid="uid://bhtn0ud8k1wvr" path="res://assets/textures/tree/small/textures/tree_small_02_branch_diff_4k.png" id="1_jq6wt"]
+[ext_resource type="Texture2D" uid="uid://mnhygqv3cna" path="res://assets/textures/tree/small/textures/tree_small_02_branch_nor_gl_4k.png" id="2_wn07b"]
+[ext_resource type="Texture2D" uid="uid://ffen6afpj53" path="res://assets/textures/tree/small/textures/tree_small_02_branch_rough_4k.png" id="3_tx0ds"]
+
+[resource]
+resource_name = "tree_small_02_branches"
+cull_mode = 2
+albedo_texture = ExtResource("1_jq6wt")
+roughness_texture = ExtResource("3_tx0ds")
+roughness_texture_channel = 4
+normal_enabled = true
+normal_texture = ExtResource("2_wn07b")

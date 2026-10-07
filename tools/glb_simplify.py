@@ -39,8 +39,25 @@ def run_npx(args, project_root, timeout=600):
     if npx is None:
         raise RuntimeError("找不到 npx：需要 Node.js/npm（降模靠 @gltf-transform/cli 里的 meshoptimizer）")
     env = dict(os.environ)
-    env.setdefault("npm_config_cache", os.path.join(project_root, ".runtime", "npm-cache"))
-    os.makedirs(env["npm_config_cache"], exist_ok=True)
+    # ★ 修复（实测复现 ✓）：原来直接
+    #       env.setdefault("npm_config_cache", project_root/.runtime/npm-cache)
+    #       os.makedirs(...)                       ← 这里会抛 PermissionError ✗
+    #   而 project_root 在 headless / 编辑器内调用时可能解析到**不可写位置** ✗
+    #   → 整个降模直接挂掉 ✗ → **输出 glb 根本没生成** ✓
+    #   → 上层读回时得到"空场景" ✓ → 表现为「低模里没找到网格」✓✓
+    #   现在：优先项目内 .runtime/npm-cache ✓ → 失败则退系统临时目录 ✓ → 再失败就不设缓存 ✓
+    #   并且**建目录失败不再抛异常** ✓（宁可让 npm 用它自己的默认缓存，也不能让降模整个失败 ✓）
+    if not env.get("npm_config_cache"):
+        # ★ 只写**项目内 .runtime/** ✓（用户要求：不要写到 C 盘 ✗）
+        #   原来第二个回退是系统临时目录（在 C 盘 ✗）→ 已去掉 ✓；
+        #   若项目内也建不了 → **不设缓存** ✓（交给 npm 用它自己的默认值 ✓），
+        #   但绝不因为建缓存目录失败就让整个降模失败 ✗
+        cand = os.path.join(project_root, ".runtime", "npm-cache")
+        try:
+            os.makedirs(cand, exist_ok=True)
+            env["npm_config_cache"] = cand
+        except Exception:
+            pass
     # 不要 text=True：npm 在中文 Windows 上输出 GBK，硬解码会 UnicodeDecodeError
     proc = subprocess.run(
         [npx, "--yes"] + args, cwd=project_root, env=env, timeout=timeout,

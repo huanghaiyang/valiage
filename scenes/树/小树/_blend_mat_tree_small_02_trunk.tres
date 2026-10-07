@@ -1,0 +1,8 @@
+[gd_resource type="StandardMaterial3D" format=3 uid="uid://2he2236qimht"]
+
+[ext_resource type="Texture2D" uid="uid://vuhj01gnu635" path="res://assets/textures/tree/small/textures/tree_small_02_diff_4k.jpg" id="1_3vf4i"]
+
+[resource]
+resource_name = "tree_small_02_trunk"
+cull_mode = 2
+albedo_texture = ExtResource("1_3vf4i")

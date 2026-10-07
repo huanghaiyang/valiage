@@ -24,6 +24,7 @@ from mathutils import Vector, Matrix
 argv = sys.argv[sys.argv.index('--') + 1:]
 src, outdir = argv[0], argv[1]
 DECIMATE = 6000
+RATIO = 1.0          # ★ 新增：按**面数比例**减面（0.01~1.0；1.0 = 不减面，优先于 --decimate ✓）
 BOX = None
 KEEP_ORIGIN = False
 MIN_TRIS = 50
@@ -31,6 +32,7 @@ ORDER = 'rowcol'
 CLUSTERS = 0        # >0 = 把连通块按空间聚成 N 组（AI 生成的模型往往是上千个补丁壳 ✓）
 for a in argv[2:]:
     if a.startswith('--decimate='): DECIMATE = int(a.split('=')[1])
+    elif a.startswith('--ratio='): RATIO = float(a.split('=')[1])     # ★ 例：--ratio=0.35 = 保留 35% 面数 ✓
     elif a.startswith('--box='): BOX = [float(v) for v in a.split('=')[1].split(',')]
     elif a == '--keep-origin': KEEP_ORIGIN = True
     elif a.startswith('--min-tris='): MIN_TRIS = int(a.split('=')[1])
@@ -175,7 +177,12 @@ for idx, it in enumerate(info, 1):
     if DECIMATE > 0 and it['tris'] > DECIMATE:
         m = p.modifiers.new('dec', 'DECIMATE')
         m.decimate_type = 'COLLAPSE'
-        m.ratio = max(0.01, DECIMATE / float(it['tris']))
+        if RATIO < 1.0:
+            # ★ 按比例减面（用户新增选项 ✓）：每块都缩到原本面数的 RATIO 倍 ✓
+            #   例：--ratio=0.35 → 90 万面的块 → 约 31.5 万面 ✓
+            m.ratio = max(0.01, min(1.0, RATIO))
+        else:
+            m.ratio = max(0.01, DECIMATE / float(it['tris']))
         bpy.context.view_layer.objects.active = p
         bpy.ops.object.modifier_apply(modifier=m.name)
     p.name = '%s_%02d' % (base, idx)

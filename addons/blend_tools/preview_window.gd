@@ -185,7 +185,10 @@ func _build_ui() -> void:
 	_tree.set_column_expand(0, true)
 	_tree.set_column_expand(1, false)
 	_tree.set_column_custom_minimum_width(0, 70)
-	_tree.set_column_custom_minimum_width(1, 40)
+	# ★ 「三角」列宽：原来是 40 ✗ —— 6~7 位数（如 495533 / 2062487）会被截断 ✓
+	#   （用户反馈："表头【三角】，数字过大时显示不全" ✓）
+	#   该列 `set_column_expand(1, false)` ✓ → 宽度固定，放宽它**不会挤压"对象"列** ✓
+	_tree.set_column_custom_minimum_width(1, 96)
 	_tree.item_edited.connect(_on_item_edited)
 	left.add_child(_tree)
 	var ltop := HFlowContainer.new()   # 用可换行容器：否则撑开的提示标签会把勾选框挤出可视区
@@ -225,6 +228,29 @@ func _build_ui() -> void:
 	lb2.pressed.connect(_on_export_dir)
 	lexp.add_child(lb2)
 	left.add_child(lexp)
+	# ★ 导出减面比例（方案 A ✓）：1.0 = 不降面 ✓；<1.0 时导出走
+	#   "节点树 → 临时 GLB → npx @gltf-transform/cli weld+simplify --ratio R → 读回" ✓
+	#   （工具不可用/失败 → 自动按未减面导出并给出提示 ✓ 不会把导出搞坏 ✓）
+	var drow := HBoxContainer.new()
+	var dlbl := Label.new()
+	# ★ 说明：底层工具（@gltf-transform/cli simplify --ratio R）的 R 是"**保留**面数比例" ✓
+	#   —— 0.35 = **只保留 35%** 面（= 减掉 65% ✓）；1.0 = 不降面 ✓
+	#   所以标签必须写成"保留"，否则很容易被当成"减掉多少" ✗（用户指出过 ✓）
+	dlbl.text = "保留面数比例"
+	drow.add_child(dlbl)
+	var dr := SpinBox.new()
+	dr.min_value = 0.05
+	dr.max_value = 1.0
+	dr.step = 0.05
+	dr.value = 1.0
+	# ★ 不要在这里设 tooltip_text ✗：在 Window 里它会弹独立小窗口 ✓
+	#   实测会把鼠标指针"盖没" ✗（用户反馈 ✓）→ 语义写在左边的标签上就够了 ✓
+	dr.mouse_default_cursor_shape = Control.CURSOR_ARROW   # 明确用普通箭头 ✓
+	# 值存在 self 的 meta 上 → _run_export() 直接读 ✓（不必再加成员变量 ✓）
+	set_meta("blend_dec_ratio", 1.0)
+	dr.value_changed.connect(func(v: float) -> void: set_meta("blend_dec_ratio", v))
+	drow.add_child(dr)
+	left.add_child(drow)
 	_status = Label.new()
 	_status.clip_text = true
 	left.add_child(_status)
@@ -1021,7 +1047,9 @@ func _run_export(nodes: Array, target: String, single: bool, view: int) -> void:
 	# 共用选项：两个面板都用顶部栏那一个勾选框
 	var chk := _wind_check
 	var init_wind := chk == null or chk.button_pressed
-	var r: Dictionary = BlendExport.export_nodes(nodes, target, single, init_wind, _shader_path)
+	# ★ 减面比例（来自导出区的 SpinBox ✓，通过 self 的 meta 传递 ✓；1.0 = 不降面 ✓）
+	var dec_ratio := float(get_meta("blend_dec_ratio", 1.0))
+	var r: Dictionary = BlendExport.export_nodes(nodes, target, single, init_wind, _shader_path, dec_ratio)
 	if view == 0:
 		_busy = false
 	else:
