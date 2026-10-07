@@ -59,9 +59,31 @@ def run_npx(args, project_root, timeout=600):
         except Exception:
             pass
     # 不要 text=True：npm 在中文 Windows 上输出 GBK，硬解码会 UnicodeDecodeError
+    # ★ 阶段标记（flush=True 必须 ✓）：供 Godot 侧"真进度条"解析 ✓
+    #   调用方用 `python -u` 且非阻塞读 stdio ✓ → 这些行会**实时**到达 ✓
+    tag = args[1] if len(args) > 1 else "?"      # ★ args[0]=@gltf-transform/cli ✓ args[1]=weld/simplify ✓
+    print("[stage] 开始 %s" % tag, flush=True)
+    # ★★ 同时写"阶段文件" ✓（C2 进度条用 ✓）：
+    #   路径 = <project_root>/.runtime/blend_decimate/stage.txt ✓
+    #   Godot 侧传 `--project <项目根>` ✓ → 两边路径一致 ✓（不依赖环境变量 ✓ 不需要新参数 ✓）
+    stage_dir = os.path.join(project_root, ".runtime", "blend_decimate")
+    stage_file = os.path.join(stage_dir, "stage.txt")
+    try:
+        os.makedirs(stage_dir, exist_ok=True)
+        with open(stage_file, "w", encoding="utf-8") as fh:
+            fh.write("run:%s" % tag)
+    except Exception:
+        stage_file = None
     proc = subprocess.run(
         [npx, "--yes"] + args, cwd=project_root, env=env, timeout=timeout,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    print("[stage] 完成 %s (rc=%d)" % (tag, proc.returncode), flush=True)
+    if stage_file:
+        try:
+            with open(stage_file, "w", encoding="utf-8") as fh:
+                fh.write("done:%s:%d" % (tag, proc.returncode))
+        except Exception:
+            pass
     return proc.returncode, proc.stdout.decode("utf-8", "replace")
 
 

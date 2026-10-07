@@ -93,6 +93,9 @@ static func _build_scene(nodes: Array, src_dir: String, out_dir: String, mat_cac
 		if _ratio > 0.0 and _ratio < 1.0:
 			# ★ 把**预览里那个真实节点** mi 一起传进去 ✓（借它导出临时 glb ✓，不自建游离子树 ✗）
 			src_mesh = _decimate_mesh(src_mesh, _ratio, mi)
+		# ★ 叶片抽稀 ✓（与减面**独立** ✓ —— 薄片只有"整片丢"才能降面 ✓，两者可同时用 ✓）
+		if leaf_thin > 0.0 and leaf_thin < 1.0:
+			src_mesh = _thin_leaf_mesh(src_mesh, leaf_thin)
 		# 复制网格再改材质（不复制的话，原地 surface_set_material 会把预览一起改掉）
 		var mesh: Mesh = (src_mesh as Mesh).duplicate(true)
 		# 材质：按源材质缓存成"导出用共享材质"
@@ -483,6 +486,14 @@ static var _cutout_shader_ok := true
 
 
 static func _decimate_mesh(src: Mesh, ratio: float, mi: MeshInstance3D = null) -> Mesh:
+	# ★★ 缓存优先 ✓：左栏「试看减面」跑完的结果会存进 trial_cache ✓
+	#    → 导出时命中即**直接复用** ✓ → **跳过几十秒的外部减面** ✓✓（导出瞬间完成 ✓）
+	#    推荐流程：左栏「试看减面」✓（非阻塞 ✓ 能看进度 ✓ 能取消 ✓）→ 满意后「导出」✓
+	if use_trial_cache and mi != null and is_instance_valid(mi):
+		var hit = trial_cache.get(_cache_key(mi, ratio), null)
+		if hit != null and hit is Mesh:
+			print("[BlendExport] 命中试看缓存 ✓ → 跳过外部减面（导出瞬间完成 ✓）")
+			return hit
 	if src == null or ratio <= 0.0 or ratio >= 1.0:
 		return src
 	# ★ 借**预览窗口里那个真实 MeshInstance3D** 导出临时 glb ✓
@@ -492,7 +503,16 @@ static func _decimate_mesh(src: Mesh, ratio: float, mi: MeshInstance3D = null) -
 	if mi == null or not is_instance_valid(mi):
 		push_warning("[BlendExport] 减面需要预览里的 MeshInstance3D ✗ → 按原网格导出 ✓")
 		return src
-	var bare: Mesh = (src as Mesh).duplicate(true)
+	# ★★ 只把**实心面**送去减面 ✓（薄片面减面无效且会破形 ✗ —— 叶子被切掉一块 ✓）
+	var parts := _solid_only(src)
+	var solid_idx: Array = parts["solid_idx"]
+	var thin_idx: Array = parts["thin_idx"]
+	if solid_idx.is_empty():
+		print("[BlendExport] 全是薄片面 ✓ → 跳过减面（交给薄片抽稀 ✓，形状分毫不变 ✓）")
+		return src
+	print("[BlendExport] 面分类 ✓ 实心 %d 个 → 送去减面 ✓ ｜ 薄片 %d 个 → 跳过减面 ✓ 原样保留 ✓"
+			% [solid_idx.size(), thin_idx.size()])
+	var bare: Mesh = (parts["mesh"] as Mesh).duplicate(true)
 	for s in range(bare.get_surface_count()):
 		bare.surface_set_material(s, null)   # 摘掉材质 → glb 里不会有贴图 ✓
 	var prev_mesh: Mesh = mi.mesh            # 记住原来的（预览那份带贴图的副本 ✓）
@@ -602,19 +622,32 @@ static func _decimate_mesh(src: Mesh, ratio: float, mi: MeshInstance3D = null) -
 	print("[BlendExport] 网格减面 ✓ ratio=%.3f ｜ surface %d→%d ｜ 顶点 %d→%d（%.1f%%）"
 			% [ratio, src.get_surface_count(), got.get_surface_count(),
 			v0, v1, (100.0 * v1 / float(v0)) if v0 > 0 else 0.0])
-	# ★★ 关键：把**原网格的材质**按 surface 序号装回低模 ✓
-	#   低模是用"摘掉材质"的网格去减面的 ✗ → 回来时没有任何材质 ✓
-	#   不装回去的话，_build_scene 会按 null 材质建出默认白材质 ✗
-	#   → 文件名 `_blend_mat__unnamed__.tres` ✗ + **白模** ✓（用户实测 ✓）
-	#   材质本身仍由 _build_scene → _build_material() 生成 .res 引用贴图 ✓（这条路没变 ✓）
-	for s2 in range(got.get_surface_count()):
+	# ★★ 材质回填：按"**实心面**序号表"对齐 ✓（拆分后序号不再一一对应 ✗）
+	for i in range(got.get_surface_count()):
 		var mat: Material = null
-		if s2 < src.get_surface_count():
-			mat = src.surface_get_material(s2)
-		got.surface_set_material(s2, mat)
-		# ★ 详细日志：逐个 surface 打出"拿到了哪个材质" ✓
-		#   —— 树干对、树叶丢 这类问题，一眼就能看出是**序号错位**还是**材质名丢失** ✓
-		print("[BlendExport]   surface %d ← %s" % [s2, _mat_key(mat) if mat != null else "__null__ ✗"])
+		if i < solid_idx.size():
+			mat = src.surface_get_material(int(solid_idx[i]))
+		if mat == null:
+			# ★★ 兜底：绝不留 null 材质 ✗（否则 → `_blend_mat__unnamed__.tres` + 白模 ✓）
+			for s_fb in range(src.get_surface_count()):
+				var m_fb2: Material = src.surface_get_material(s_fb)
+				if m_fb2 != null:
+					mat = m_fb2
+					break
+			print("[BlendExport] 警告：solid %d 无对应材质 ✗ → 已用原网格首个材质兜底 ✓" % i)
+		got.surface_set_material(i, mat)
+		print("[BlendExport]   solid %d ← %s" % [i, _mat_key(mat) if mat != null else "__null__ ✗"])
+	# ★★★ 把**原始薄片面原样接回** ✓（形状 100% 不变 ✓ —— 叶子再也不会被割 ✗→✓）
+	if not thin_idx.is_empty():
+		var merged := ArrayMesh.new()
+		for i in range(got.get_surface_count()):
+			merged.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, got.surface_get_arrays(i))
+			merged.surface_set_material(merged.get_surface_count() - 1, got.surface_get_material(i))
+		for s3 in thin_idx:
+			merged.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, src.surface_get_arrays(int(s3)))
+			merged.surface_set_material(merged.get_surface_count() - 1, src.surface_get_material(int(s3)))
+		print("[BlendExport]   薄片面 %d 个原样接回 ✓（未参与减面 ✓ 形状不变 ✓）" % thin_idx.size())
+		got = merged
 	# ★ 属性对比日志：UV / 顶点色 是否存在、长度多少 ✓
 	#   —— "树叶纹理消失"这类问题，多半是**UV 塌缩**（薄片被减面压坏 ✗）
 	#      或 **COLOR_0/alpha 丢失** ✓，这两行能直接判定 ✓
@@ -722,6 +755,466 @@ static func _has_vertex_color(m: Mesh) -> bool:
 			if (a[Mesh.ARRAY_COLOR] as PackedColorArray).size() > 0:
 				return true
 	return false
+
+
+## ★★ 叶片抽稀比例 ✓（0 = 不动 ✓；0.5 = 每片叶子只留一半 ✓）
+##   由预览窗口直接设置：BlendExport.leaf_thin = 值 ✓（与 ratio 独立 ✓，可同时用 ✓）
+##
+## 为什么要它（实测 ✓）：tree_small_02_LOD1 的叶子 = 386,574 三角 /
+##   **175,899 个连通块** / 平均 **2.20 三角/块** → 每片叶子只 2~3 面、互不共享顶点 ✓
+##   → 减面（边塌陷）需要"块内共享边" ✗ → 对叶子**数学上无效** ✓
+##   → 唯一有效办法：**整片整片地丢**（= 抽稀 ✓），面数随比例线性下降 ✓
+static var leaf_thin := 0.0
+
+
+static func _uf_find(parent: PackedInt32Array, x: int) -> int:
+	var r := x
+	while parent[r] != r:
+		r = parent[r]
+	while parent[x] != r:
+		var nx := parent[x]
+		parent[x] = r
+		x = nx
+	return r
+
+
+static func _uf_union(parent: PackedInt32Array, a: int, b: int) -> void:
+	var ra := _uf_find(parent, a)
+	var rb := _uf_find(parent, b)
+	if ra != rb:
+		parent[rb] = ra
+
+
+## 并查集把三角按"共享顶点"分块 ✓；返回 { "gof": 每三角的块号, "count": 块数 }
+static func _tri_groups(arrays: Array, tris: int) -> Dictionary:
+	var vtx_n := 0
+	if arrays.size() > Mesh.ARRAY_VERTEX and arrays[Mesh.ARRAY_VERTEX] != null:
+		vtx_n = (arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+	var have_idx := arrays.size() > Mesh.ARRAY_INDEX and arrays[Mesh.ARRAY_INDEX] != null
+	var idx := (arrays[Mesh.ARRAY_INDEX] as PackedInt32Array) if have_idx else PackedInt32Array()
+	var parent := PackedInt32Array()
+	parent.resize(maxi(vtx_n, 1))
+	for i in range(parent.size()):
+		parent[i] = i
+	for t in range(tris):
+		var v0 := idx[t * 3] if have_idx else t * 3
+		var v1 := idx[t * 3 + 1] if have_idx else t * 3 + 1
+		var v2 := idx[t * 3 + 2] if have_idx else t * 3 + 2
+		_uf_union(parent, v0, v1)
+		_uf_union(parent, v0, v2)
+	var gof := PackedInt32Array()
+	gof.resize(tris)
+	var ids := {}
+	var n_groups := 0
+	for t in range(tris):
+		var v0 := idx[t * 3] if have_idx else t * 3
+		var r := _uf_find(parent, v0)
+		if not ids.has(r):
+			ids[r] = n_groups
+			n_groups += 1
+		gof[t] = int(ids[r])
+	return {"gof": gof, "count": n_groups}
+
+
+## ★ 叶片抽稀：对"薄片特征"的 surface 按**整片**随机保留 keep 比例 ✓
+##   判据：V/T ≥ 1.5（顶点几乎不共享 ✓）且 三角 ≥ 64 且 连通块 ≥ 16 ✓
+##   并做**顶点重映射** ✓（只留用到的顶点 ✓ 否则体积不降 ✗）
+static func _thin_leaf_mesh(src: Mesh, keep: float) -> Mesh:
+	if src == null or keep <= 0.0 or keep >= 1.0:
+		return src
+	var out := ArrayMesh.new()
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20240607                      # ★ 固定种子 ✓ → 每次导出结果一致 ✓
+	for s in range(src.get_surface_count()):
+		var arrays: Array = src.surface_get_arrays(s)
+		var vtx_n := 0
+		if arrays.size() > Mesh.ARRAY_VERTEX and arrays[Mesh.ARRAY_VERTEX] != null:
+			vtx_n = (arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+		var have_idx := arrays.size() > Mesh.ARRAY_INDEX and arrays[Mesh.ARRAY_INDEX] != null
+		var idx := (arrays[Mesh.ARRAY_INDEX] as PackedInt32Array) if have_idx else PackedInt32Array()
+		var tris := int(idx.size() / 3) if have_idx else int(vtx_n / 3)
+		var mat: Material = src.surface_get_material(s)
+		var vt := float(vtx_n) / maxf(1.0, float(tris))
+		var g := _tri_groups(arrays, tris)
+		var gof: PackedInt32Array = g["gof"]
+		var n_groups: int = int(g["count"])
+		if tris < 64 or vt < 1.5 or n_groups < 16:
+			# 非薄片（树干/枝 ✓）：原样搬过去 ✓（补齐索引表 ✓）
+			var keep_all := PackedInt32Array()
+			keep_all.resize(tris * 3)
+			for t in range(tris):
+				for k in range(3):
+					keep_all[t * 3 + k] = idx[t * 3 + k] if have_idx else t * 3 + k
+			var a2: Array = arrays.duplicate()
+			a2[Mesh.ARRAY_INDEX] = keep_all
+			out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, a2)
+			out.surface_set_material(out.get_surface_count() - 1, mat)
+			continue
+		var keep_group := PackedByteArray()
+		keep_group.resize(n_groups)
+		var kept_n := 0
+		for gi in range(n_groups):
+			if rng.randf() < keep:
+				keep_group[gi] = 1
+				kept_n += 1
+		var src_v: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		var src_u := PackedVector2Array()
+		if arrays.size() > Mesh.ARRAY_TEX_UV and arrays[Mesh.ARRAY_TEX_UV] != null:
+			src_u = arrays[Mesh.ARRAY_TEX_UV]
+		var src_n := PackedVector3Array()
+		if arrays.size() > Mesh.ARRAY_NORMAL and arrays[Mesh.ARRAY_NORMAL] != null:
+			src_n = arrays[Mesh.ARRAY_NORMAL]
+		var src_t := PackedFloat32Array()      # ★ Godot 的 ARRAY_TANGENT 是 PackedFloat32Array ✗→✓（每顶点 4 float ✓）
+		if arrays.size() > Mesh.ARRAY_TANGENT and arrays[Mesh.ARRAY_TANGENT] != null:
+			src_t = arrays[Mesh.ARRAY_TANGENT]
+		var src_c := PackedColorArray()
+		if arrays.size() > Mesh.ARRAY_COLOR and arrays[Mesh.ARRAY_COLOR] != null:
+			src_c = arrays[Mesh.ARRAY_COLOR]
+		var remap := {}
+		var nv := PackedVector3Array()
+		var nu := PackedVector2Array()
+		var nn := PackedVector3Array()
+		var nt := PackedFloat32Array()
+		var nc := PackedColorArray()
+		var new_idx := PackedInt32Array()
+		for t in range(tris):
+			if keep_group[gof[t]] == 0:
+				continue
+			for k in range(3):
+				var ov := idx[t * 3 + k] if have_idx else t * 3 + k
+				var nvi: int = int(remap.get(ov, -1))
+				if nvi < 0:
+					nvi = nv.size()
+					remap[ov] = nvi
+					nv.append(src_v[ov])
+					if src_u.size() > ov:
+						nu.append(src_u[ov])
+					if src_n.size() > ov:
+						nn.append(src_n[ov])
+					if src_t.size() >= (ov + 1) * 4:
+						nt.append(src_t[ov * 4])
+						nt.append(src_t[ov * 4 + 1])
+						nt.append(src_t[ov * 4 + 2])
+						nt.append(src_t[ov * 4 + 3])
+					if src_c.size() > ov:
+						nc.append(src_c[ov])
+				new_idx.append(nvi)
+		var a3: Array = []
+		a3.resize(Mesh.ARRAY_MAX)
+		a3[Mesh.ARRAY_VERTEX] = nv
+		if nn.size() > 0:
+			a3[Mesh.ARRAY_NORMAL] = nn
+		if nt.size() > 0:
+			a3[Mesh.ARRAY_TANGENT] = nt
+		if nu.size() > 0:
+			a3[Mesh.ARRAY_TEX_UV] = nu
+		if nc.size() > 0:
+			a3[Mesh.ARRAY_COLOR] = nc
+		a3[Mesh.ARRAY_INDEX] = new_idx
+		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, a3)
+		out.surface_set_material(out.get_surface_count() - 1, mat)
+		print("[BlendExport] 叶片抽稀 ✓ surface %d：%d 片 → %d 片 ｜ 三角 %d → %d"
+				% [s, n_groups, kept_n, tris, int(new_idx.size() / 3)])
+	return out
+
+
+## ★★ 按"薄片面 / 实心面"拆开网格 ✓（判据与 _thin_leaf_mesh 完全一致 ✓）
+##   返回 { "mesh": 只含实心面的 Mesh, "solid_idx": Array, "thin_idx": Array }
+##
+## 为什么要拆（不是树专用 ✓，是一类**几何特征** ✓）：
+##   薄片面 = 大量"独立小连通块"（每块 1~4 三角、V/T ≥ 1.5 ✓）
+##     —— 树/灌木叶片 ✓、草 ✓、花瓣 ✓、栅栏铁艺 ✓、布料 ✓、绳链 ✓、羽毛卡片 ✓
+##   边塌陷减面对它**数学上无效** ✗，而且会把 3~4 面的叶子**砍成 1~2 面** ✗
+##     → 视觉上就是"叶片被割掉一块" ✓（用户实测 ✓）
+##   所以：**减面只喂实心面** ✓；薄片面原样保留（或交给"薄片抽稀" ✓）
+static func _solid_only(src: Mesh) -> Dictionary:
+	var out := ArrayMesh.new()
+	var solid_idx: Array = []
+	var thin_idx: Array = []
+	for s in range(src.get_surface_count()):
+		var arrays: Array = src.surface_get_arrays(s)
+		var vtx_n := 0
+		if arrays.size() > Mesh.ARRAY_VERTEX and arrays[Mesh.ARRAY_VERTEX] != null:
+			vtx_n = (arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+		var have_idx := arrays.size() > Mesh.ARRAY_INDEX and arrays[Mesh.ARRAY_INDEX] != null
+		var idx := (arrays[Mesh.ARRAY_INDEX] as PackedInt32Array) if have_idx else PackedInt32Array()
+		var tris := int(idx.size() / 3) if have_idx else int(vtx_n / 3)
+		var vt := float(vtx_n) / maxf(1.0, float(tris))
+		var g := _tri_groups(arrays, tris)
+		var n_groups: int = int(g["count"])
+		if tris >= 64 and vt >= 1.5 and n_groups >= 16:
+			thin_idx.append(s)              # 薄片 ✓ 不参与减面 ✓
+			continue
+		solid_idx.append(s)
+		var a2: Array = arrays.duplicate()
+		if not have_idx:                    # 补一份索引表 ✓（外部工具与读回都更稳 ✓）
+			var mk := PackedInt32Array()
+			mk.resize(tris * 3)
+			for t in range(tris):
+				for k in range(3):
+					mk[t * 3 + k] = t * 3 + k
+			a2[Mesh.ARRAY_INDEX] = mk
+		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, a2)
+		out.surface_set_material(out.get_surface_count() - 1, null)
+	return {"mesh": out, "solid_idx": solid_idx, "thin_idx": thin_idx}
+
+
+## ★★★ 导出前预估 ✓（C 方案第 1 步）：逐 surface 分类 + 面数预估 ✓
+##   返回 { "rows": [ {node,surf,tris,vt,comps,thin,mat,est} ], "before": int, "after": int }
+##   规则与真实导出一致 ✓：
+##     薄片面（三角≥64 且 V/T≥1.5 且 连通块≥16 ✓）→ **不参与减面** ✓，只按「薄片抽稀」比例 ✓
+##     实心面 → 按「保留面数比例」✓
+##   注：这里只做**内存估算** ✓（1~3 秒 ✓）；真实减面要跑外部工具（几十秒~几分钟 ✗）
+static func estimate_export(nodes: Array, ratio: float, thin: float) -> Dictionary:
+	var rows: Array = []
+	var before := 0
+	var after := 0
+	for n in nodes:
+		if not (n is MeshInstance3D):
+			continue
+		var mi := n as MeshInstance3D
+		if mi.mesh == null:
+			continue
+		for s in range(mi.mesh.get_surface_count()):
+			var arrays: Array = mi.mesh.surface_get_arrays(s)
+			var vtx_n := 0
+			if arrays.size() > Mesh.ARRAY_VERTEX and arrays[Mesh.ARRAY_VERTEX] != null:
+				vtx_n = (arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+			var have_idx := arrays.size() > Mesh.ARRAY_INDEX and arrays[Mesh.ARRAY_INDEX] != null
+			var idx := (arrays[Mesh.ARRAY_INDEX] as PackedInt32Array) if have_idx else PackedInt32Array()
+			var tris := int(idx.size() / 3) if have_idx else int(vtx_n / 3)
+			var vt := float(vtx_n) / maxf(1.0, float(tris))
+			var g := _tri_groups(arrays, tris)
+			var comps: int = int(g["count"])
+			var is_thin := tris >= 64 and vt >= 1.5 and comps >= 16
+			var keep := 1.0
+			if is_thin:
+				keep = thin if thin > 0.0 else 1.0      # 薄片：不参与减面 ✓（0 = 不抽稀 ✓）
+			else:
+				keep = ratio if ratio > 0.0 else 1.0    # 实心：按减面比例 ✓
+			var mat: Material = mi.mesh.surface_get_material(s)
+			var mn := "(无)"
+			if mat != null:
+				mn = String(mat.resource_name) if not mat.resource_name.is_empty() else String(mat.resource_path).get_file()
+			var est := int(round(float(tris) * clampf(keep, 0.0, 1.0)))
+			rows.append({"node": String(mi.name), "surf": s, "tris": tris, "vt": vt,
+					"comps": comps, "thin": is_thin, "mat": mn, "est": est})
+			before += tris
+			after += est
+	return {"rows": rows, "before": before, "after": after}
+
+
+## ══════════ C2：非阻塞"试看完整效果" ✓（只服务预览 ✓ 不碰导出路径 ✓）══════════
+##   ① 分类 + 写临时 glb（同步 ~1s ✓ 10%）→ ② `python -u` **非阻塞**启动 ✓
+##   ③ 每帧读"阶段文件"推进进度 ✓（工具侧写 stage.txt ✓ 见 glb_simplify.py ✓）
+##   ④ 进程结束 → 读回低模 + 接回薄片面 ✓ → 交给预览 ✓
+##   取消：OS.kill(pid) ✓
+const TRIAL_IDLE := 0
+const TRIAL_RUNNING := 1
+const TRIAL_DONE := 2
+const TRIAL_FAILED := 3
+const TRIAL_CANCELLED := 4
+
+static var trial_state := TRIAL_IDLE
+static var trial_progress := 0.0
+static var trial_log := ""
+static var trial_mesh: Mesh = null
+static var _tr_pid := 0
+static var _tr_mi: MeshInstance3D = null
+static var _tr_prev: Mesh = null
+static var _tr_src: Mesh = null
+static var _tr_solid: Array = []
+static var _tr_thin: Array = []
+static var _tr_raw := ""
+static var _tr_low := ""
+static var _tr_stage := ""
+static var _tr_last := ""
+static var trial_ratio := 1.0            # ★ 本次试看用的比例 ✓（缓存键要用它 ✓）
+
+
+static func trial_dir() -> String:
+	return ProjectSettings.globalize_path("res://.runtime/blend_decimate")
+
+
+static func trial_begin(src: Mesh, ratio: float, mi: MeshInstance3D) -> bool:
+	trial_state = TRIAL_IDLE
+	trial_progress = 0.0
+	trial_log = ""
+	trial_mesh = null
+	_tr_pid = 0
+	_tr_last = ""
+	_tr_src = src
+	trial_ratio = ratio
+	_tr_mi = mi
+	if src == null or mi == null or ratio <= 0.0 or ratio >= 1.0:
+		trial_state = TRIAL_FAILED
+		trial_log = "比例要在 0~1 之间（1.0 = 不减面 ✓）"
+		return false
+	var parts := _solid_only(src)
+	_tr_solid = parts["solid_idx"]
+	_tr_thin = parts["thin_idx"]
+	if _tr_solid.is_empty():
+		trial_state = TRIAL_FAILED
+		trial_log = "全是薄片面 ✓ → 减面无意义 ✓ 请直接调「薄片抽稀」"
+		return false
+	var d := trial_dir()
+	DirAccess.make_dir_recursive_absolute(d)
+	_tr_raw = d.path_join("trial_raw.glb")
+	_tr_low = d.path_join("trial_low.glb")
+	_tr_stage = d.path_join("stage.txt")
+	var bare: Mesh = (parts["mesh"] as Mesh).duplicate(true)
+	for s in range(bare.get_surface_count()):
+		bare.surface_set_material(s, null)
+	_tr_prev = mi.mesh
+	mi.mesh = bare
+	var doc := GLTFDocument.new()
+	var st := GLTFState.new()
+	var ok := doc.append_from_scene(mi, st) == OK and doc.write_to_filesystem(st, _tr_raw) == OK
+	mi.mesh = _tr_prev                                   # ★ 立刻还原预览 ✓
+	if not ok or FileAccess.get_file_as_bytes(_tr_raw).size() < 2048:
+		trial_state = TRIAL_FAILED
+		trial_log = "临时 glb 写出失败 ✗"
+		return false
+	trial_progress = 10.0
+	trial_log = "① 临时 glb 就绪 ✓ %.1f MB（只含实心面 ✓ 薄片已排除 ✓）" % (
+			FileAccess.get_file_as_bytes(_tr_raw).size() / 1048576.0)
+	if FileAccess.file_exists(_tr_stage):
+		DirAccess.remove_absolute(_tr_stage)
+	var script_abs := ProjectSettings.globalize_path("res://tools/glb_simplify.py")
+	var proj_abs := ProjectSettings.globalize_path("res://")
+	_tr_pid = OS.create_process("python", ["-u", script_abs, "--in", _tr_raw, "--out", _tr_low,
+			"--ratio", "%.4f" % clampf(ratio, 0.01, 1.0), "--project", proj_abs])
+	if _tr_pid <= 0:
+		trial_state = TRIAL_FAILED
+		trial_log += "\n② 无法启动 python ✗（检查 python 是否在 PATH）"
+		return false
+	trial_state = TRIAL_RUNNING
+	trial_log += "\n② 已启动减面 ✓ pid=%d（可随时取消 ✓）" % _tr_pid
+	return true
+
+
+## 每帧调用 ✓；进度与日志从静态变量读 ✓
+static func trial_poll() -> int:
+	if trial_state != TRIAL_RUNNING:
+		return trial_state
+	if FileAccess.file_exists(_tr_stage):
+		var txt := FileAccess.get_file_as_string(_tr_stage).strip_edges()
+		if txt != "" and txt != _tr_last:
+			_tr_last = txt
+			trial_log += "\n   · " + txt
+			if txt.begins_with("run:weld"):
+				trial_progress = 30.0
+			elif txt.begins_with("done:weld"):
+				trial_progress = 45.0
+			elif txt.begins_with("run:simplify"):
+				trial_progress = 70.0
+			elif txt.begins_with("done:simplify"):
+				trial_progress = 88.0
+	if _tr_pid > 0 and not OS.is_process_running(_tr_pid):
+		var rc := OS.get_process_exit_code(_tr_pid)
+		_tr_pid = 0
+		if rc != 0 or not FileAccess.file_exists(_tr_low) or FileAccess.get_file_as_bytes(_tr_low).size() < 256:
+			trial_state = TRIAL_FAILED
+			trial_log += "\n③ 减面失败 ✗ rc=%d" % rc
+			return trial_state
+		trial_progress = 95.0
+		var doc2 := GLTFDocument.new()
+		var st2 := GLTFState.new()
+		if doc2.append_from_file(_tr_low, st2, 0, _tr_low.get_base_dir()) != OK:
+			trial_state = TRIAL_FAILED
+			trial_log += "\n③ 读回低模失败 ✗"
+			return trial_state
+		var imported: Node = doc2.generate_scene(st2)
+		var got: Mesh = null
+		if imported != null:
+			var stack: Array = [imported]
+			while not stack.is_empty() and got == null:
+				var x = stack.pop_back()
+				var mm = x.get("mesh") if x is Node3D else null
+				if mm is Mesh:
+					got = mm as Mesh
+				elif mm != null and mm.has_method("get_mesh"):
+					var conv = mm.call("get_mesh")
+					if conv is Mesh:
+						got = conv
+				for c in x.get_children():
+					stack.append(c)
+			imported.free()
+		if got == null:
+			trial_state = TRIAL_FAILED
+			trial_log += "\n③ 低模里没找到网格 ✗"
+			return trial_state
+		for i in range(got.get_surface_count()):
+			var mv: Material = null
+			if i < _tr_solid.size():
+				# ★★ 材质必须取**预览那份带贴图的网格** ✓（`_tr_prev` ✓）
+				#   ✗ 不能取原始 blend 网格的材质：它没有 resource_path / 贴图链接 ✓
+				#     → 换上去就会"**贴图没了**" ✓（用户实测 ✓）
+				#   几何用原始 ✓、材质用预览 ✓ —— 两者分工不同 ✓
+				if _tr_prev != null and int(_tr_solid[i]) < _tr_prev.get_surface_count():
+					mv = _tr_prev.surface_get_material(int(_tr_solid[i]))
+				if mv == null:
+					mv = _tr_src.surface_get_material(int(_tr_solid[i]))
+			if mv == null:
+				for s_fb in range(_tr_src.get_surface_count()):
+					var m_fb: Material = null
+					if _tr_prev != null and s_fb < _tr_prev.get_surface_count():
+						m_fb = _tr_prev.surface_get_material(s_fb)
+					if m_fb == null:
+						m_fb = _tr_src.surface_get_material(s_fb)
+					if m_fb != null:
+						mv = m_fb
+						break
+				print("[BlendExport] 警告：试看低模 solid %d 无对应材质 ✗ → 已用首个材质兜底 ✓" % i)
+			got.surface_set_material(i, mv)
+		if not _tr_thin.is_empty():
+			var merged := ArrayMesh.new()
+			for i in range(got.get_surface_count()):
+				merged.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, got.surface_get_arrays(i))
+				merged.surface_set_material(merged.get_surface_count() - 1, got.surface_get_material(i))
+			for s3 in _tr_thin:
+				merged.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, _tr_src.surface_get_arrays(int(s3)))
+				# ★ 薄片面的材质同样优先取**预览那份** ✓（否则贴图也会没 ✗）
+				var mt3: Material = null
+				if _tr_prev != null and int(s3) < _tr_prev.get_surface_count():
+					mt3 = _tr_prev.surface_get_material(int(s3))
+				if mt3 == null:
+					mt3 = _tr_src.surface_get_material(int(s3))
+				merged.surface_set_material(merged.get_surface_count() - 1, mt3)
+			got = merged
+		trial_mesh = got
+		trial_progress = 100.0
+		trial_state = TRIAL_DONE
+		# ★★ 写进缓存 ✓ → 导出时命中它就能**跳过外部减面** ✓（导出瞬间完成 ✓✓）
+		if _tr_mi != null and is_instance_valid(_tr_mi):
+			trial_cache[_cache_key(_tr_mi, trial_ratio)] = got      # ★ 用 trial_ratio ✓（trial_begin 里已赋值 ✓）
+			print("[BlendExport] 试看结果已缓存 ✓（导出时将直接复用 ✓ 不再跑外部工具 ✓）")
+		trial_log += "\n④ 试看就绪 ✓（低模 + 原薄片面 ✓ 形状不变 ✓）"
+	return trial_state
+
+
+static func trial_cancel() -> void:
+	if _tr_pid > 0 and OS.is_process_running(_tr_pid):
+		OS.kill(_tr_pid)
+		trial_log += "\n已取消 ✓（进程已终止 ✓）"
+	_tr_pid = 0
+	trial_state = TRIAL_CANCELLED
+
+
+## ★★ 试看结果缓存 ✓（node instance_id → 低模 Mesh ✓）
+##   用途：**导出时命中缓存 → 直接用它 ✓ → 跳过那几十秒的外部减面 ✓✓**
+##   于是推荐流程变成：左栏「试看减面」✓（非阻塞 ✓ 有进度 ✓）→「导出」✓（瞬间完成 ✓）
+##   缓存由 trial_poll() 在完成时写入 ✓；键 = 节点 id + 比例 ✓（比例不同则重算 ✓）
+static var trial_cache := {}
+## ★★ 是否允许导出复用"试看结果" ✓（**默认 false** ✗）
+##   用户实测：试看之后导出结果不对 ✗（试看会污染导出 ✓）
+##   → 默认关闭 ✓：**导出永远走干净独立的完整路径** ✓✓
+##   想要"导入瞬间完成"时，再把它改成 true ✓（缓存仍会被写入 ✓ 不会浪费 ✓）
+static var use_trial_cache := false
+
+
+static func _cache_key(mi: MeshInstance3D, ratio: float) -> String:
+	return "%d@%.4f" % [mi.get_instance_id(), ratio]
 
 
 static func _load_tex(p: String) -> Texture2D:
