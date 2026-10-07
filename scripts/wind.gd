@@ -143,7 +143,11 @@ func _register(m: ShaderMaterial) -> int:
 		return 0
 	var path := String(m.shader.resource_path)
 	# 我们的草：shader 现在住在 assets/shaders/grass_wind.gdshader（blend_alpha 是旧名，兼容保留）
-	var is_ours := path.contains("grass_wind") or path.contains("blend_alpha")
+	# ★★ 追加（用户反馈 ✓）：**燃烧后的树叶** 用的是 `tree_leaves_burn*.gdshader` ✗
+	#   它的路径不含 `grass_wind` ✗ → 之前**不被注册** → 叶子换成燃烧材质后就**不受风** ✓✓
+	#   （`tree_burn_keep*` 是木质 ✓ sway_amt=0 ✓ 注册也无位移 ✓ 一并纳入便于统一管理 ✓）
+	var is_ours := path.contains("grass_wind") or path.contains("blend_alpha") \
+			or path.contains("tree_leaves_burn") or path.contains("tree_burn_keep")
 	var is_sgt := path.contains("simplegrasstextured")
 	if not (is_ours or is_sgt):
 		return 0

@@ -18,7 +18,10 @@ shader_type spatial;
 //   ② 去掉 `depth_prepass_alpha` → **省掉一整个几何预通道** ✓
 //      叶片用 ALPHA_SCISSOR（裁剪 ✓ 不是混合 ✗）→ **渲染顺序无所谓** ✓ → 预通道纯开销 ✗✗
 //   另外 fragment 里**不再采样 rough_tex** ✓（每像素采样 3 → 1 ✓ overdraw 优化 ✓）
-render_mode world_vertex_coords;
+// ★★ 改成**双面渲染** ✓（用户要求：从不同角度都能看到叶子 ✓）
+//   原来是我为性能去掉的 `cull_disabled` ✗ → 背面不画 ✓ 另一侧看就"没了/发黑" ✗✓
+//   ★ 双面**必须同时翻背面法线**（见 fragment ✓）否则背面受光错误 → **发黑** ✓✓
+render_mode world_vertex_coords, cull_disabled;
 
 // ---- 天气系统会驱动的这 5 个 ----
 uniform vec2 wind_direction = vec2(1.0, 0.0);

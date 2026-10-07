@@ -66,6 +66,9 @@ static func export_nodes(nodes: Array, out_path: String, single_file: bool, init
 
 	if files.is_empty():
 		return {"ok": false, "message": "没有写出任何文件", "files": []}
+	# ★ 用户要求：**不在导出里做燃烧接线** ✗
+	#   燃烧改由「材质检查器」里的复选框控制 ✓（addons/burn_toggle ✓）
+	#   导出保持"干净"：只产出普通材质 ✓
 	return {"ok": true, "message": "已导出 %d 个文件（共享材质 %d 个）" % [files.size(), mat_cache.size()], "files": files}
 
 
@@ -1217,6 +1220,12 @@ static func _cache_key(mi: MeshInstance3D, ratio: float) -> String:
 	return "%d@%.4f" % [mi.get_instance_id(), ratio]
 
 
+## ★★ B 方案（用户选择 ✓）：导出后**自动**把"树/灌木"的材质换成燃烧专用 shader ✓
+##   —— 只在**已写出的 .tres 路径上重新保存** ✓，**完全不改**原有材质生成逻辑 ✓
+##   判据：该对象**同时**含薄片面（叶子 ✓）与实心面（枝/干 ✓）
+##        → 建筑/岩石只有实心面 ✗ 不受影响 ✓；纯薄片（栅栏/布）也不受影响 ✓
+##   映射：薄片面 → tree_leaves_burn（从下往上烧 ✓ 烧完消失 ✓）
+##         实心面 → tree_burn_keep （烧完**保留焦黑** ✓ 不消失 ✓）
 static func _load_tex(p: String) -> Texture2D:
 	if p == "" or not ResourceLoader.exists(p):
 		return null

@@ -1,14 +1,40 @@
-[gd_resource type="StandardMaterial3D" format=3 uid="uid://b2reejr6vfr8f"]
+[gd_resource type="ShaderMaterial" format=3 uid="uid://b2reejr6vfr8f"]
 
 [ext_resource type="Texture2D" uid="uid://bhtn0ud8k1wvr" path="res://assets/textures/tree/small/textures/tree_small_02_branch_diff_4k.png" id="1_jq6wt"]
+[ext_resource type="Shader" uid="uid://khpjg3le5et" path="res://assets/shaders/tree_burn_keep_ds.gdshader" id="1_wn07b"]
 [ext_resource type="Texture2D" uid="uid://mnhygqv3cna" path="res://assets/textures/tree/small/textures/tree_small_02_branch_nor_gl_4k.png" id="2_jq6wt"]
 [ext_resource type="Texture2D" uid="uid://ffen6afpj53" path="res://assets/textures/tree/small/textures/tree_small_02_branch_rough_4k.png" id="3_wn07b"]
 
 [resource]
 resource_name = "tree_small_02_branches"
-cull_mode = 2
-albedo_texture = ExtResource("1_jq6wt")
-roughness_texture = ExtResource("3_wn07b")
-roughness_texture_channel = 4
-normal_enabled = true
-normal_texture = ExtResource("2_jq6wt")
+render_priority = 0
+shader = ExtResource("1_wn07b")
+shader_parameter/albedo_tex = ExtResource("1_jq6wt")
+shader_parameter/use_mask = false
+shader_parameter/mask_channel = 3
+shader_parameter/scissor = 0.35
+shader_parameter/scissor_enabled = true
+shader_parameter/force_opaque = false
+shader_parameter/base_color = Color(1, 1, 1, 1)
+shader_parameter/burn = 0.0
+shader_parameter/ash = 0.0
+shader_parameter/char_color = Color(0.06, 0.05, 0.045, 1)
+shader_parameter/ember_color = Color(1, 0.34, 0.05, 1)
+shader_parameter/ember_width = 0.035
+shader_parameter/ember_gain = 0.5
+shader_parameter/overlay_mode = false
+shader_parameter/noise_scale = 1.4
+shader_parameter/sway_amt = 0.12
+shader_parameter/sway_freq = 1.4
+shader_parameter/phase = 0.0
+shader_parameter/height_ref = 8.2
+shader_parameter/use_albedo = true
+shader_parameter/use_uv = true
+shader_parameter/normal_tex = ExtResource("2_jq6wt")
+shader_parameter/has_normal = true
+shader_parameter/rough_tex = ExtResource("3_wn07b")
+shader_parameter/has_rough = true
+metadata/burn_mode = "wood"
+metadata/burn_height = 8.2
+metadata/cull_mode = 2
+metadata/cull_shader = "ds(双面)"

@@ -1,8 +1,36 @@
-[gd_resource type="StandardMaterial3D" format=3 uid="uid://2he2236qimht"]
+[gd_resource type="ShaderMaterial" format=3 uid="uid://2he2236qimht"]
 
 [ext_resource type="Texture2D" uid="uid://vuhj01gnu635" path="res://assets/textures/tree/small/textures/tree_small_02_diff_4k.jpg" id="1_246jv"]
+[ext_resource type="Shader" uid="uid://khpjg3le5et" path="res://assets/shaders/tree_burn_keep_ds.gdshader" id="1_ariwn"]
 
 [resource]
 resource_name = "tree_small_02_trunk"
-cull_mode = 2
-albedo_texture = ExtResource("1_246jv")
+render_priority = 0
+shader = ExtResource("1_ariwn")
+shader_parameter/albedo_tex = ExtResource("1_246jv")
+shader_parameter/use_mask = false
+shader_parameter/mask_channel = 3
+shader_parameter/scissor = 0.35
+shader_parameter/scissor_enabled = true
+shader_parameter/force_opaque = false
+shader_parameter/base_color = Color(1, 1, 1, 1)
+shader_parameter/burn = 0.0
+shader_parameter/ash = 0.0
+shader_parameter/char_color = Color(0.06, 0.05, 0.045, 1)
+shader_parameter/ember_color = Color(1, 0.34, 0.05, 1)
+shader_parameter/ember_width = 0.035
+shader_parameter/ember_gain = 0.5
+shader_parameter/overlay_mode = false
+shader_parameter/noise_scale = 1.4
+shader_parameter/sway_amt = 0.03
+shader_parameter/sway_freq = 1.4
+shader_parameter/phase = 0.0
+shader_parameter/height_ref = 8.2
+shader_parameter/use_albedo = true
+shader_parameter/use_uv = true
+shader_parameter/has_normal = false
+shader_parameter/has_rough = false
+metadata/burn_mode = "wood"
+metadata/burn_height = 8.2
+metadata/cull_mode = 2
+metadata/cull_shader = "ds(双面)"

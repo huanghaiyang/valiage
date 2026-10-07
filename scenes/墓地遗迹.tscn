@@ -875,7 +875,7 @@ metadata/concave_tuner_src_faces = 8887
 
 [node name="StaticBody3D" type="StaticBody3D" parent="ROOT/tripo_part_46" parent_id_path=PackedInt32Array(1392677579) index="0" unique_id=536418190]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.30794275, 0.11492856, -0.17962785)
-collision_layer = 4
+collision_layer = 0
 collision_mask = 0
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="ROOT/tripo_part_46/StaticBody3D" index="0" unique_id=370545353]
@@ -893,7 +893,7 @@ metadata/concave_tuner_src_faces = 5149
 
 [node name="StaticBody3D" type="StaticBody3D" parent="ROOT/tripo_part_48" parent_id_path=PackedInt32Array(152846226) index="0" unique_id=1568474955]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.13292192, 0.10859287, -0.068644024)
-collision_layer = 4
+collision_layer = 0
 collision_mask = 0
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="ROOT/tripo_part_48/StaticBody3D" index="0" unique_id=504298543]
@@ -910,7 +910,7 @@ metadata/concave_tuner_src_faces = 4989
 
 [node name="StaticBody3D" type="StaticBody3D" parent="ROOT/tripo_part_50" parent_id_path=PackedInt32Array(1289490056) index="0" unique_id=1242365862]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.16119047, 0.106746644, 0.12944683)
-collision_layer = 4
+collision_layer = 0
 collision_mask = 0
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="ROOT/tripo_part_50/StaticBody3D" index="0" unique_id=370653738]
@@ -973,7 +973,7 @@ shape = SubResource("ConvexPolygonShape3D_0avaw")
 
 [node name="StaticBody3D" type="StaticBody3D" parent="ROOT/tripo_part_65" parent_id_path=PackedInt32Array(209965168) index="0" unique_id=239458003]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.23388499, 0.0791005, 0.043067526)
-collision_layer = 4
+collision_layer = 0
 collision_mask = 0
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="ROOT/tripo_part_65/StaticBody3D" index="0" unique_id=430696176]

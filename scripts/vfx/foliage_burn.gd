@@ -16,7 +16,12 @@ extends Node3D
 const SHADER := "res://assets/shaders/burn_foliage.gdshader"
 const NOISE := "res://assets/textures/法术特效/Noise1_tiled.png"
 
-@export var burn_time := 2.4          ## 斑点扩大所需时间
+@export var burn_time := 7.0          ## 斑点扩大所需时间（草/花用 ✓ 用户要求：草可以快 ✓）
+@export var burn_time_tree := 18.0    ## ★ 树的燃烧全程（用户定稿 ✓）：**18 秒**
+									  ##   （此前 26→52 太慢 ✓ 导致"树干还没烧到中间，树叶都烧完了"✗）
+									  ##   判据：材质带 `burn_mode == "wood"`（插件写的 ✓）
+									  ##   或 shader 是 tree_burn_keep* ✓ → 走这个时长 ✓
+@export var ash_time_tree := 8.0      ## ★ 树烧完后的消失时长（同样更慢 ✓）
 @export var char_hold := 0.7          ## 全焦黑后停留
 @export var ash_time := 3.3           ## 缩到消失所需时间（用户要求：原来 1.1 秒 ×3）
 ## ★ 烧透之后多久长回来（秒）。0 = 永久烧毁（不再恢复）。
@@ -24,7 +29,7 @@ const NOISE := "res://assets/textures/法术特效/Noise1_tiled.png"
 ##   ★ 必须**大于火焰本身的时长**：单株草约 6.4 秒烧完（burn 2.4 + 保持 0.7 + 消失 3.3），
 ##     而「火焰灼烧」整体约 9.55 秒。原来设 8 秒 -> 火还在烧、草就开始长回来
 ##     （实测：火里长草）。所以默认给 18 秒，等火灭了再慢慢恢复。
-@export var regrow_time := 18.0
+@export var regrow_time := 18.0       ## 烧毁后"缓缓长回来"的时长（见 _process 里的 regrow 逻辑 ✓）
 @export var spark_count := 18         ## 火星数量
 @export var spark_lifetime := 1.1
 @export var spark_size := 0.03
@@ -99,6 +104,31 @@ func _ready() -> void:
 
 ## 点着一株植被。返回是否成功（找不到网格就失败）
 func burn_node(n: Node3D, delay: float = 0.0) -> bool:
+	# ★★ 按目标分档燃烧时长（用户要求 ✓）：**草可以快 ✓ 树要慢慢慢 ✓**
+	#   判据复用 `_target_is_keep()` ✓：材质带 `burn_mode == "wood"` ✓（插件写的 ✓）
+	#   或 shader 是 `tree_burn_keep*` ✓ → 走 burn_time_tree / ash_time_tree ✓
+	#   （草是 MultiMesh ✓ 判据返回 false ✓ → 保持 burn_time 快节奏 ✓）
+	_target = n
+	# ★★ 防重入（修复"树枝闪烁"✗）：同一目标**已有燃烧在跑**时直接跳过 ✓
+	#   重复施法会在同一棵树上叠加多个燃烧器 ✓ → 每帧互相覆盖 burn/ash → **闪烁** ✓✓
+	if n != null and n.has_meta("burning"):
+		print("[燃烧] 该目标已在燃烧中 ✓ 跳过重复点燃：%s" % n.name)
+		return false
+	# ★★★ 已烧毁（用户要求 ✓）：**直接跳过** ✗ 不再播一遍燃烧 ✓
+	#   为什么要跳 ✗：第二次施法会**从网格原始材质重新复制一份** ✓（burn=0 ✓）
+	#   → 看上去"树叶树枝树干又还原了" ✓✓（用户实测 ✓）
+	#   跳过之后，节点上仍挂着第一次冻结好的焦黑材质 ✓ → **保持焦黑** ✓✓
+	#   状态记在节点 meta 上 ✓（本次运行内有效 ✓ 场景重载会重置 ✓ 需要持久化再说 ✓）
+	if n != null and n.has_meta("burned_out"):
+		print("[燃烧] 该目标**已烧毁** ✓ 不再燃烧（保持焦黑）：%s" % n.name)
+		return false
+	if n != null:
+		n.set_meta("burning", true)
+	if _target_is_keep():
+		burn_time = burn_time_tree
+		ash_time = ash_time_tree
+		print("[燃烧] 树/木质 ✓ 时长 = %.1fs（烧）+ %.1fs（消失）｜ %s" % [
+				burn_time, ash_time, n.name])
 	if n == null or not is_instance_valid(n):
 		return false
 	_target = n
@@ -504,6 +534,29 @@ func _apply_in_shader_burn() -> void:
 			var dup := base.duplicate() as ShaderMaterial
 			if dup == null:
 				continue
+			# ★★ 保险：把**外观参数**从原材质显式抄一遍 ✓
+			#   否则 shader 材质（如树的 tree_burn_keep / tree_leaves_burn ✓）在被接管后
+			#   会掉成"白模" ✓ —— 症状正是"编辑器里正常 ✓ 游戏内发白" ✓（用户实测 ✓）
+			var src_sm := base as ShaderMaterial
+			if src_sm != null:
+				for pn in ["albedo_tex", "alpha_tex", "base_color", "use_albedo", "use_mask",
+						"mask_channel", "scissor", "scissor_enabled", "force_opaque", "use_uv",
+						"has_normal", "normal_tex", "has_rough", "rough_tex", "overlay_mode"]:
+					var pv: Variant = src_sm.get_shader_parameter(pn)
+					if pv != null:
+						dup.set_shader_parameter(pn, pv)
+			# ★★★ 自动量树高（用户要求 ✓）：用该网格**局部 AABB 的顶部**当 height_ref ✓
+			#   为什么必须自动 ✓：shader 的 `v_hgt` 就是**模型空间**的 y ✓
+			#     → height_ref 必须是**这个网格自己坐标系里的高度** ✓
+			#   手填的风险 ✓：材质写着 8.2 ✗ 而树实际只有 **4.56 米** ✗
+			#     → 前沿 `burn × 8.2 × 1.15` 在 burn≈0.43 就**越过树顶** ✗
+			#     → 火焰只用前 43% 时间扫完 ✓ 看着"飞快/闪烁"✓ 之后整棵**瞬间全黑**✓（用户实测 ✓）
+			if mi.mesh != null:
+				var ab: AABB = mi.mesh.get_aabb()
+				var top := ab.position.y + ab.size.y
+				if top > 0.05:
+					dup.set_shader_parameter("height_ref", top)
+					print("[燃烧] 自动量高 ✓ height_ref = %.2f 米（%s）" % [top, mi.name])
 			dup.set_shader_parameter("burn", 0.0)
 			dup.set_shader_parameter("ash", 0.0)
 			dup.set_shader_parameter("burn_phase", _phase)
@@ -817,6 +870,40 @@ func _update_sparks(delta: float, burn: float) -> void:
 		mm.set_instance_transform(i, Transform3D(b, _sp[i]))
 
 
+## ★★ 目标是否"保留型"（木质：烧完**留下焦黑** ✓ 不消失 ✓）
+##   用户要求：叶子靠**材质 alpha 淡出**到透明 ✓ → 同一节点上的枝干必须**不被隐藏** ✓
+##   判定依据（任一 ✓）：材质 shader 是 tree_burn_keep ✓ ／ 资源 meta burn_mode == "wood" ✓
+func _target_is_keep() -> bool:
+	if _target == null or not is_instance_valid(_target):
+		return false
+	var mi := _target as MeshInstance3D
+	if mi == null or mi.mesh == null:
+		for c in _target.get_children():
+			var cmi := c as MeshInstance3D
+			if cmi != null and cmi.mesh != null:
+				mi = cmi
+				break
+		if mi == null:
+			return false
+	for s in range(mi.mesh.get_surface_count()):
+		var m: Material = mi.mesh.surface_get_material(s)
+		if m == null:
+			m = mi.get_surface_override_material(s)
+		if m == null:
+			continue
+		if m is ShaderMaterial:
+			var sm := m as ShaderMaterial
+			# ★ 修正（方案 A ✓）：原来用 `ends_with("tree_burn_keep.gdshader")` ✗
+			#   而材质实际引用的是 `tree_burn_keep_ds.gdshader` ✗ → 这条判断**一直是失效的** ✓
+			#   → 之前只靠材质的 `burn_mode == "wood"` meta 生效 ✓
+			#   改用 contains ✓：任何变体（_ds / 无后缀 / 以后改名）都能认出来 ✓
+			if sm.shader != null and String(sm.shader.resource_path).contains("tree_burn_keep"):
+				return true
+		if String(m.get_meta("burn_mode", "")) == "wood":
+			return true
+	return false
+
+
 func _finish() -> void:
 	_done = true
 	set_process(false)
@@ -829,11 +916,45 @@ func _finish() -> void:
 	# ★ MultiMesh（addon 的一整片草）**绝不能隐藏**：那是一片/整张地图的草，
 	#   隐藏 = "整个地图的草都烧没了"（用户实测）。它只做视觉燃烧、不消失。
 	if _target != null and is_instance_valid(_target):
+		# ★ 清掉"燃烧中"标记 ✓（配合 burn_node 的防重入 ✓）
+		if _target.has_meta("burning"):
+			_target.remove_meta("burning")
 		if _multimeshes.is_empty():
-			_target.visible = false      # 单体道具：烧尽 -> 消失
+			# ★★ 保留型（树干/枝 ✓）：**不隐藏** ✓ —— 叶子已由材质 alpha 缓慢淡出到透明 ✓
+			#    → 同一节点上也能做到"叶子没了、枝干焦黑留下" ✓ 不需要拆节点 ✓
+			if not _target_is_keep():
+				_target.visible = false      # 普通植被（草等）：烧尽 -> 消失 ✓
 		elif _mat != null:
 			_mat.set_shader_parameter("burn", 0.0)
 			_mat.set_shader_parameter("ash", 0.0)
+	# ★★ 保留型（树干/枝/整棵树 ✓）：**不还原材质** ✗→✓，而是**定在全焦黑** ✓
+	#   原因（用户实测 ✓）：还原 = 烧过的树**恢复原样、变绿** ✗✓
+	#   需求：烧过的树要保持"焦黑树架" ✓（再烧也还是焦的 ✓）
+	if _target_is_keep():
+		# ★★★ 记下"已烧毁"终态（用户要求 ✓）：第二次施法**直接跳过** ✗（见 burn_node 的检查 ✓）
+		#   否则第二次会从原始材质重新复制 → 看起来"又还原了" ✓✓（用户实测 ✓）
+		_target.set_meta("burned_out", true)
+		# ★★ 分类冻结（修复"烧完又长回来"✗）：
+		#   之前一律设 `ash = 0` ✗ → 连**叶片**的 ash 也被清零 ✓
+		#   → 已经淡出消失的叶子**又变回原样** ✓✓（用户实测"烧完有长回来了"✓）
+		#   现在：木质 → 焦黑留存（burn=1 / ash=0 ✓）
+		#         叶片等 → 保持"烧尽"（burn=1 / **ash=1** ✓ 淡出到底 ✓ 不再长回来 ✓）
+		for m in _shader_mats:
+			if m == null or not is_instance_valid(m):
+				continue
+			var sm := m as ShaderMaterial
+			if sm == null:
+				continue
+			var is_wood := sm.shader != null \
+					and String(sm.shader.resource_path).contains("tree_burn_keep")
+			sm.set_shader_parameter("burn", 1.0)
+			if is_wood:
+				sm.set_shader_parameter("ash", 0.0)
+			else:
+				sm.set_shader_parameter("ash", 1.0)
+		print("[燃烧] 保留型 ✓ 已冻结（木质=焦黑 / 叶片=消失）：%s" % [
+				_target.name if _target != null else "?"])
+		return
 	# 还原材质，避免这株被复用（对象池/重生）时还带着焦黑
 	for d in _prev_override:
 		var nd = d["n"]

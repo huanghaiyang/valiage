@@ -94,7 +94,91 @@ var roof_eave := 1.0
 var _probe_t := 0.0
 var _capture_frames := 0
 
+## ★ 启动埋点（用户要求 ✓）：等各系统（分级/植被/风/燃烧控制器）装配完，再打一遍材质快照 ✓
+##   只看**树**相关（名字含 tree ✓）以免刷屏；要看全量就把过滤那段删掉 ✓
+##   关键：它会打印"材质来源 / 类型 / 资源路径 / albedo 是否为空" ✓
+##   → "编辑器正常 ✓ 游戏内发白"这类问题，哪一步换掉了材质一看就知道 ✓
+func _dump_materials_deferred(wait_s: float = 2.0, tag: String = "") -> void:
+	await get_tree().create_timer(wait_s).timeout
+	print("[材质埋点] ===== %s（+%.1fs）=====" % [tag, wait_s])
+	var n_shader := 0
+	var n_std := 0
+	var n_bad := 0
+	# ★★ 修正（用户反馈 ✓）：原来看名字过滤 ✗ → **可能漏掉真正的白树** ✓
+	#   现在**不过滤** ✓：凡是 MeshInstance3D（含 glTF 的 ImporterMeshInstance3D ✓ 它是子类 ✓）
+	#   就全部打印 ✓ —— "发白 + 镂空"的那个节点一定会出现 ✓
+	for n in find_children("*", "MeshInstance3D", true, false):
+		var mi := n as MeshInstance3D
+		if mi == null or mi.mesh == null:
+			continue
+		# ★ 只打"可疑"的 ✓（用户反馈日志爆量 ✗）：name_hit = false → 只有命中 mat_hit 才打印 ✓
+		#   （打印交给下面命中后的那行 ✓ 它带节点名 ✓ → 全部日志只剩十几行 ✓）
+		var name_hit := false
+		var mat_hit := false
+		for s0 in range(mi.mesh.get_surface_count()):
+			var m0: Material = mi.get_surface_override_material(s0)
+			if m0 == null:
+				m0 = mi.mesh.surface_get_material(s0)
+			if m0 == null:
+				mat_hit = true
+				break
+			if m0 is BaseMaterial3D and (m0 as BaseMaterial3D).albedo_texture == null:
+				mat_hit = true
+				break
+			if m0 is ShaderMaterial:
+				var tv0: Variant = (m0 as ShaderMaterial).get_shader_parameter("albedo_tex")
+				if not (tv0 is Texture2D):
+					mat_hit = true
+					break
+		if not (name_hit or mat_hit):
+			continue
+		for s in range(mi.mesh.get_surface_count()):
+			var m: Material = mi.get_surface_override_material(s)
+			var src := "surface_override"
+			if m == null:
+				m = mi.mesh.surface_get_material(s)
+				src = "网格自带"
+			if m == null:
+				n_bad += 1
+				print("[材质埋点] %s surface=%d ｜ 材质=**无 ✗**" % [mi.name, s])
+				continue
+			var info := ""
+			if m is ShaderMaterial:
+				n_shader += 1
+				var sm := m as ShaderMaterial
+				var atv: Variant = sm.get_shader_parameter("albedo_tex")
+				var ats := "**无 ✗**"
+				if atv is Texture2D:
+					ats = (atv as Texture2D).resource_path
+				else:
+					n_bad += 1
+				info = "shader=%s ｜ use_albedo=%s ｜ albedo_tex=%s ｜ base_color=%s" % [
+						sm.shader.resource_path.get_file() if sm.shader != null else "**无 ✗**",
+						str(sm.get_shader_parameter("use_albedo")), ats,
+						str(sm.get_shader_parameter("base_color"))]
+			elif m is BaseMaterial3D:
+				n_std += 1
+				var b := m as BaseMaterial3D
+				if b.albedo_texture == null:
+					n_bad += 1
+				info = "albedo_texture=%s" % [
+						b.albedo_texture.resource_path if b.albedo_texture != null else "**无 ✗**"]
+			print("[材质埋点] %s surface=%d ｜ 来源=%s ｜ 类型=%s ｜ 资源=%s ｜ %s" % [
+					mi.name, s, src, m.get_class(),
+					String(m.resource_path) if not String(m.resource_path).is_empty() else "（内存实例）",
+					info])
+	print("[材质埋点] 汇总 ✓ ShaderMaterial=%d ｜ BaseMaterial3D=%d ｜ 可疑(无贴图)=%d" % [
+			n_shader, n_std, n_bad])
+
+
 func _ready() -> void:
+	# ★★ 启动埋点（用户要求 ✓）：**打两次**快照 ✓
+	#   第 1 次 2 秒（各系统刚装配完 ✓）／第 2 次 8 秒（世界重建/分级/植被/流式都跑过之后 ✓）
+	#   目的：如果"一进游戏就白" ✓ 而 2 秒快照又是正常的 ✓
+	#     → 说明是**2~8 秒之间**有系统动了材质 ✓ 两次对比就能抓到它 ✓
+	_dump_materials_deferred(2.0, "第一次(2s)")
+	_dump_materials_deferred(8.0, "第二次(8s)")
+
 	# 节点树 / 环境光照 / 世界布局（出生点·平台·聚落·道路·植被）全部声明在 scenes/main.tscn。
 	# 装配顺序：先接引用 → 生成世界（地形/平台/聚落/道路/植被/出生点）→ 再做依赖世界的
 	# 预览、UI、输入动作。预览与相机都依赖 terrain/buildings/player，必须排在世界之后。
@@ -106,6 +190,7 @@ func _ready() -> void:
 	#   ③ 项目**没有加载画面** ✗ —— 但因①，这段换引用本就发生在屏幕看不到的时机 ✓
 	#   ★ 下面原来那一段同名创建仍保留 ✓ → 会各实例化一次；两次 apply 是**幂等**的 ✓
 	#     （第二次看到的是已换过的贴图 → 找不到变体 → 空操作 ✓），代价只是多几个节点与一行日志 ✓
+	# ★ 已恢复（排查结束 ✓ 与分级无关 ✓）
 	var pq0 := preload("res://scripts/quality/prop_texture_quality.gd").new()
 	pq0.name = "PropTextureQualityEarly"
 	add_child(pq0)
@@ -625,7 +710,37 @@ func _setup_previews() -> void:
 	tree_mi.name = "TreePreview"
 	var tsc := buildings.tree_scene_at()
 	if tsc != null:
-		tree_mi.mesh = _extract_mesh_merged(tsc)
+		var mmesh := _extract_mesh_merged(tsc)
+		if mmesh != null:
+			# ★★ 修复（用户实测 ✓）：合并出的网格**没有材质** ✗ → Godot 用内置**默认白材质**渲染 ✓
+			#   → 运行时会出现一棵"参天白树" ✓（编辑器里看不到 ✓ 因为幽灵是运行时创建的 ✓）
+			#   这里按 surface 顺序，把源场景的材质抄回来 ✓
+			#   ★ 先 duplicate()：合并函数可能返回**共享网格** ✗，直接改会污染所有使用它的实例 ✓
+			mmesh = mmesh.duplicate()
+			# ★ 正确做法（上一版写错了 ✗）：PackedScene **不是 Node** ✗
+			#   → 必须先 instantiate() 拿到节点树，才能 find_children ✓
+			#   → 用完 free()（未入树 ✓ 立即释放 ✓；free 比 queue_free 更干净 ✓）
+			var src_mats: Array = []
+			var src_root: Node = tsc.instantiate()
+			if src_root != null:
+				for c in src_root.find_children("*", "MeshInstance3D", true, false):
+					var cmi := c as MeshInstance3D
+					if cmi == null or cmi.mesh == null:
+						continue
+					for s2 in range(cmi.mesh.get_surface_count()):
+						src_mats.append(cmi.mesh.surface_get_material(s2))
+				src_root.free()
+			var n_copy := mini(src_mats.size(), mmesh.get_surface_count())
+			for i2 in range(n_copy):
+				var mm: Material = src_mats[i2]
+				if mm != null:
+					mmesh.surface_set_material(i2, mm)
+			if n_copy == 0:
+				print("[预览埋点] TreePreview 源场景没有可抄的材质 ✗（tsc=%s）" % tsc.resource_path)
+			else:
+				print("[预览埋点] TreePreview 已抄入材质 %d/%d ✓（源=%s）" % [
+						n_copy, mmesh.get_surface_count(), tsc.resource_path])
+		tree_mi.mesh = mmesh
 		tree_mi.scale = Vector3.ONE * buildings.tree_base_scale()
 	preview_place.add_child(tree_mi)
 	furniture_mi.scale = Vector3.ONE
