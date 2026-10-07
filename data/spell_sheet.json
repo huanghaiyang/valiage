@@ -56,16 +56,27 @@
     },
     "blue_tornado": {
       "name": "蓝色龙卷风",
-      "one_shot": false,
-      "mana_cost": 0,
+      "one_shot": true,
+      "mana_cost": 20,
       "mana_per_sec": 0,
       "cast_climb": 0.0,
       "cast_veil": 0.0,
       "cast_time": 0.0,
-      "duration": 0.0,
-      "fade_time": 0.0,
-      "total_time": 0.0,
-      "note": "现状未改。此表位置预留"
+      "duration": 8.0,
+      "fade_time": 0.8,
+      "total_time": 8.0,
+      "note": "一次性：前摇 0 / 耗蓝 20 / 持续 8.0s / 圈内敌人每秒扣 20 血；操作同火焰灼烧（圈选选点）",
+      "targeting": {
+        "_说明": "通用施法区域选择器参数（与 flame_scorch 同一套）",
+        "enabled": true,
+        "diameter_min": 5.0,
+        "diameter_max": 10.0,
+        "range_min": 1.0,
+        "range_max": 12.0,
+        "wheel_step": 0.4,
+        "texture": "res://assets/textures/法术特效/kenney/particle-pack/circle_02.png",
+        "damage_per_sec": 20.0
+      }
     },
     "detect_pulse": {
       "name": "物体探测",
