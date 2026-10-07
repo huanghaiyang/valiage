@@ -28,6 +28,10 @@ const SHEET_ID := "blue_tornado"
 @export var fade_time_sheet := 0.8     ## 收尾淡出 ✓
 @export var total_time := 8.0          ## 整体时长 ✓
 @export var damage_per_sec := 20.0     ## 圈内每秒扣血 20 ✓
+## ★★★ 进阶：局部风场（用户需求 ✓ 龙卷风影响周围植被的风速与风向）
+@export var wind_radius_mul := 1.8     ## 风场半径 = 圈半径 × 这个系数 ✓（想影响更远 → 调大 ✓）
+@export var wind_strength_add := 0.6   ## 局部风速的增量 ✓（越大越剧烈 ✓）
+@export var swirl_ccw := false         ## 环流方向：**false = 顺时针** ✓（与龙卷风模型一致 ✓ 用户要求）
 ## ★ 圈选选择器状态（由 spell_targeting 通过 cast_at() 写入 ✓）
 var _center := Vector3.ZERO
 var _radius := 2.5
@@ -134,6 +138,10 @@ func _process(delta: float) -> void:
 
 	_place()
 	_life_t += delta
+	# ★★★ 进阶（用户需求 ✓）：广播**局部风场**给植被 shader ✓
+	#   机制同 camera_rig 的 occ_player_uv ✓：RenderingServer.global_shader_parameter_set ✓
+	#   植被 shader 里 `global uniform vec3 tornado_pos;` 等声明后即可就地使用 ✓
+	_publish_wind(clampf(1.0 - _life_t / maxf(total_time, 0.01), 0.0, 1.0))
 	# ★★★ 圈内每秒扣血 20（用户需求 ✓）：持续阶段每帧调用 ✓（按 delta 累积成整数伤害 ✓）
 	_apply_damage(delta)
 
@@ -142,6 +150,7 @@ func _process(delta: float) -> void:
 		print("[蓝色龙卷风] 整体 %.1fs 到点 ✓ 结束" % total_time)
 		casting = false
 		_set_visible(false)
+		_clear_wind()          # ★ 局部风场归零 ✓（否则植被会一直以为旁边有龙卷风 ✗）
 		return
 
 	# 兼容：表里 mana_per_sec 若改回 >0（持续耗蓝型）则保留原逻辑 ✓；现在为 0 不会扣 ✓
@@ -220,6 +229,32 @@ func _place() -> void:
 	#   范围夹在 0.5~3.0 倍 ✓（防止极端缩放出问题 ✓）
 	var mul := clampf(_radius / 2.5, 0.5, 3.0)
 	global_transform = Transform3D(Basis.IDENTITY.scaled(Vector3.ONE * mul), pos)
+
+
+## ★★★ 广播局部风场（用户需求 ✓ 进阶：龙卷风影响周围植被的风速与风向）
+##   用**全局着色器参数**（无需注册材质 ✓ 所有用到的 shader 都能读到 ✓）
+##   植被 shader 侧需声明（见 tree_leaves_burn_ds / tree_burn_keep_ds / grass_wind*）：
+##     global uniform vec3  tornado_pos;       // 龙卷风中心（世界坐标）
+##     global uniform float tornado_radius;    // 影响半径（米）
+##     global uniform float tornado_strength;  // 局部风速强度（0 = 无风 ✓ 结束时会归零 ✓）
+##     global uniform float tornado_swirl;     // 环流方向：+1 逆时针 / -1 顺时针
+func _publish_wind(decay: float) -> void:
+	var r := RenderingServer
+	# 影响半径 = 圆半径 × 系数（默认 1.8 ✓ 想影响更远就调大 wind_radius_mul ✓）
+	var rad := _radius * wind_radius_mul
+	# 强度 = 基础强度 × 衰减（越接近尾声越弱 ✓）× 圆越大越强（半径/2.5 ✓）
+	var strg := wind_strength_add * decay * clampf(_radius / 2.5, 0.5, 3.0)
+	r.global_shader_parameter_set("tornado_pos", global_position)
+	r.global_shader_parameter_set("tornado_radius", rad)
+	r.global_shader_parameter_set("tornado_strength", strg)
+	r.global_shader_parameter_set("tornado_swirl", 1.0 if swirl_ccw else -1.0)
+
+
+## 结束/销毁时**必须归零** ✓（否则植被会一直以为旁边有龙卷风 ✓）
+func _clear_wind() -> void:
+	var r := RenderingServer
+	r.global_shader_parameter_set("tornado_strength", 0.0)
+	r.global_shader_parameter_set("tornado_radius", 0.0)
 
 
 func _set_visible(v: bool) -> void:

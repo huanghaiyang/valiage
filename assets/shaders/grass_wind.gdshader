@@ -1,4 +1,9 @@
 shader_type spatial;
+// ★★★ 局部风场（进阶需求 ✓）：由 scripts/spells/blue_tornado.gd 每帧广播 ✓
+global uniform vec3 tornado_pos;         // 龙卷风中心（世界坐标 ✓）
+global uniform float tornado_radius;     // 影响半径（米 ✓）
+global uniform float tornado_strength;   // 局部风速强度（0 = 无 ✓）
+global uniform float tornado_swirl;      // 环流方向：+1 逆时针 / -1 顺时针 ✓
 // 带 alpha 遮罩 + 风动 + 角色倒伏 的草材质。
 //
 // ★★ 两个关键决定，都是为了"实例被随机旋转后方向依然正确" ★★
@@ -78,6 +83,25 @@ void vertex() {
 		vec2 sway = dir * along + vec2(-dir.y, dir.x) * (across * 0.25);
 		float dist = (VERTEX.y - base_y) * wind_sway_scale * amp;
 		VERTEX.xz += sway * (dist * lev);
+		// ★★★ 局部风场（龙卷风 ✓ 进阶需求）：绕中心的切向环流 ✓ 越靠中心越强 ✓
+		if (tornado_strength > 0.001) {
+			float t_base = MODEL_MATRIX[3].y;
+			float t_h = clamp((VERTEX.y - t_base) / max(0.001, wind_height_ref), 0.0, 1.0);
+			vec2 t_rel = VERTEX.xz - tornado_pos.xz;
+			float t_d = length(t_rel);
+			if (t_d < tornado_radius) {
+				float t_k = 1.0 - t_d / max(tornado_radius, 0.001);
+				t_k = t_k * t_k;
+				vec2 t_out = normalize(t_rel + vec2(0.0001));
+				vec2 t_tan = vec2(-t_out.y, t_out.x) * tornado_swirl;
+		// ★★ 收敛幅度（用户反馈"太难看了"✗）：位移改用**植被自身尺度** ✓
+		//   原来 ≈ 3~4 米 → 把整片草按平 ✗；现在 草≈0.1 米 / 树顶≈0.5 米 ✓
+		float t_scale = min(wind_height_ref, 1.5) * 1.2;   // ★ 只做"强倾斜" ✓ 不按平 ✗
+		float t_swing = sin(TIME * 3.0);              // ★ 正负交替 = 来回"卷" ✓
+		vec2 t_loc = t_tan * t_swing - t_out * 0.15;
+		VERTEX.xz += t_loc * (tornado_strength * t_k * t_scale * t_h);
+			}
+		}
 	}
 
 	// 角色倒伏：**全部在世界空间算** -> 实例怎么旋转都不会把方向带歪

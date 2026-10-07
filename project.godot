@@ -123,6 +123,22 @@ renderer/anti_aliasing/quality/msaa_3d=1
 
 [shader_globals]
 
+tornado_pos={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
+}
+tornado_radius={
+"type": "float",
+"value": 0.0
+}
+tornado_strength={
+"type": "float",
+"value": 0.0
+}
+tornado_swirl={
+"type": "float",
+"value": 1.0
+}
 wind_direction={
 "type": "vec2",
 "value": Vector2(1, 0)

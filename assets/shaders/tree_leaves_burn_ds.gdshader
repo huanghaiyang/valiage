@@ -1,4 +1,11 @@
 shader_type spatial;
+// ★★★ 局部风场（进阶需求 ✓）：由 `scripts/spells/blue_tornado.gd` 每帧广播 ✓
+//   机制与 camera_rig 的 occ_player_uv 相同：RenderingServer.global_shader_parameter_set ✓
+//   strength = 0 时完全无影响 ✓（龙卷风结束/不存在时它是 0 ✓）
+global uniform vec3 tornado_pos;         // 龙卷风中心（世界坐标 ✓）
+global uniform float tornado_radius;     // 影响半径（米 ✓）
+global uniform float tornado_strength;   // 局部风速强度（0 = 无 ✓）
+global uniform float tornado_swirl;      // 环流方向：+1 逆时针 / -1 顺时针 ✓
 // 【树叶专用】从下往上烧 ✓ → 烧到就消失 ✓
 //
 // ★ 与花草用的 burn_foliage.gdshader **完全独立** ✓（花草逻辑一行未改 ✓）
@@ -60,6 +67,9 @@ uniform float player_radius : hint_range(0.05, 3.0) = 0.55;
 uniform float player_bend : hint_range(0.0, 2.0) = 0.75;
 uniform float player_spread : hint_range(0.0, 1.5) = 0.30;
 uniform float player_move : hint_range(0.0, 1.0) = 0.0;
+// ★★★ 角色身高上限（从 grass_wind_cull **移动过来** ✓ 用户要求：应该放在**叶片** ✓）
+//   离模型根部越高，角色影响越弱 ✓ 超过它就完全不受影响 ✓（保护树冠只被风吹 ✓）
+uniform float player_height_max : hint_range(0.1, 8.0) = 1.2;
 
 uniform sampler2D noise_tex : hint_default_black;
 
@@ -89,15 +99,33 @@ void vertex() {
 		vec2 sway = dir * along + vec2(-dir.y, dir.x) * (across * 0.25);
 		float dist = (VERTEX.y - base_y) * wind_sway_scale * amp;
 		VERTEX.xz += sway * (dist * lev) * alive;
+		// ★★★ 局部风场（龙卷风 ✓ 进阶需求）：把风改成**绕中心的切向环流** ✓
+		//   越靠中心越强（k² 衰减 ✓）、带一点向内吸（0.25 ✓）、方向由 tornado_swirl 决定 ✓
+		if (tornado_strength > 0.001) {
+			vec2 rel = VERTEX.xz - tornado_pos.xz;
+			float d = length(rel);
+			if (d < tornado_radius) {
+				float k = 1.0 - d / max(tornado_radius, 0.001);
+				k = k * k;                                   // 中心更强 ✓
+				vec2 outw = normalize(rel + vec2(0.0001));
+				vec2 tang = vec2(-outw.y, outw.x) * tornado_swirl;
+				float t_scale2 = min(wind_height_ref, 1.5) * 1.2;
+			float t_swing2 = sin(TIME * 3.0);
+			vec2 local = tang * t_swing2 - outw * 0.15;      // 切向环流 + 向内吸 ✓
+				VERTEX.xz += local * (tornado_strength * k * t_scale2 * hw) * alive;
+			}
+		}
 	}
 	// 角色走过时的倒伏 / 左右分开（同样照草 ✓）
 	if (player_move > 0.001) {
 		float base_y2 = MODEL_MATRIX[3].y;
 		float h2 = clamp((VERTEX.y - base_y2) / max(0.001, wind_height_ref), 0.0, 1.0);
+		// ★ 身高上限：离根越高角色影响越弱 ✓ 超过 player_height_max 完全不受影响 ✓
+		float capf = 1.0 - smoothstep(player_height_max * 0.6, player_height_max, VERTEX.y - base_y2);
 		vec2 rel = VERTEX.xz - player_pos.xz;
 		float dd = length(rel);
 		float infl = 1.0 - clamp(dd / max(0.01, player_radius), 0.0, 1.0);
-		infl = infl * infl * (3.0 - 2.0 * infl) * clamp(player_move, 0.0, 1.0);
+		infl = infl * infl * (3.0 - 2.0 * infl) * clamp(player_move, 0.0, 1.0) * capf;   // ★ × 身高上限 ✓
 		if (infl > 0.001) {
 			vec2 fw = normalize(player_forward.xz + vec2(0.0001));
 			vec2 rt = vec2(-fw.y, fw.x);

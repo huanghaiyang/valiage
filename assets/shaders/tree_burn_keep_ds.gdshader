@@ -1,4 +1,9 @@
 shader_type spatial;
+// ★★★ 局部风场（进阶需求）：由 scripts/spells/blue_tornado.gd 每帧广播
+global uniform vec3 tornado_pos;
+global uniform float tornado_radius;
+global uniform float tornado_strength;
+global uniform float tornado_swirl;
 // 【树干 / 枝 专用】燃烧但**烧完不消失** ✓ —— 保留焦黑效果 ✓
 //
 // 与 assets/shaders/burn_foliage.gdshader 的关系：
@@ -98,6 +103,23 @@ void vertex() {
 		vec2 sway = dir * along + vec2(-dir.y, dir.x) * (across * 0.25);
 		float dist = (VERTEX.y - base_y) * wind_sway_scale * amp;
 		VERTEX.xz += sway * (dist * lev) * 0.45 * alive;
+		// ★★★ 局部风场（龙卷风）：绕中心的切向环流，越靠中心越强
+		if (tornado_strength > 0.001) {
+			float t_base = MODEL_MATRIX[3].y;
+			float t_h = clamp((VERTEX.y - t_base) / max(0.001, wind_height_ref), 0.0, 1.0);
+			vec2 t_rel = VERTEX.xz - tornado_pos.xz;
+			float t_d = length(t_rel);
+			if (t_d < tornado_radius) {
+				float t_k = 1.0 - t_d / max(tornado_radius, 0.001);
+				t_k = t_k * t_k;
+				vec2 t_out = normalize(t_rel + vec2(0.0001));
+				vec2 t_tan = vec2(-t_out.y, t_out.x) * tornado_swirl;
+				float t_scale = min(wind_height_ref, 1.5) * 1.2;
+				float t_swing = sin(TIME * 3.0);
+				vec2 t_loc = t_tan * t_swing - t_out * 0.15;
+				VERTEX.xz += t_loc * (tornado_strength * t_k * t_scale * t_h);
+			}
+		}
 	}
 	// ★ 这里**没有** `VERTEX *= 1.0 - ash * 0.35` ✓ —— 烧完不收缩 ✓（与 burn_foliage 的关键区别 ✓）
 }
