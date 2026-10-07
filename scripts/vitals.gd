@@ -142,6 +142,12 @@ func refill(stat: int = -1) -> void:
 # ---------------------------------------------------------------- 血量对外接口
 ## 以后接伤害源（摔落/受击/怪物）时调这两个即可，UI 不用动
 func damage(amount: float) -> void:
+	# ★★ 金色守护：**100% 抵挡**（用户需求 ✓）
+	#   判据：本节点自身或其**父节点**（玩家）带 meta `gold_guard` ✓
+	#   meta 由 `scripts/spells/gold_body.gd` 施放时设置 ✓、效果结束时清除 ✓
+	#   → 护盾期间任何伤害**直接返回** ✓（不扣血、不触发受击表现 ✓）
+	if get_meta("gold_guard", false) or (get_parent() != null and get_parent().has_meta("gold_guard")):
+		return
 	add(Stat.HP, -absf(amount))
 
 

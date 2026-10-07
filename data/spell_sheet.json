@@ -135,16 +135,16 @@
     },
     "gold_body": {
       "name": "金色守护",
-      "one_shot": false,
-      "mana_cost": 0,
-      "mana_per_sec": 30,
-      "cast_climb": 0.55,
+      "one_shot": true,
+      "mana_cost": 20,
+      "mana_per_sec": 0,
+      "cast_climb": 0.0,
       "cast_veil": 0.0,
-      "cast_time": 0.55,
-      "duration": 0.0,
+      "cast_time": 0.0,
+      "duration": 9.1,
       "fade_time": 0.9,
-      "total_time": 1.45,
-      "note": "现状未改（gather 0.55 / shatter 0.9）。此表位置预留"
+      "total_time": 10.0,
+      "note": "一次性：前摇 0 / 耗蓝 20（单次）/ 总体 10.0s（护盾 9.1 + 碎裂 0.9，抵挡覆盖全程 10s）/ 100% 抵挡；生效期间同一目标不可重复施放"
     }
   }
 }

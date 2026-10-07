@@ -41,7 +41,6 @@
 [ext_resource type="PackedScene" uid="uid://ky66elf75vg2" path="res://scenes/草/grass_bermuda_01_dead_b.tscn" id="35_augu2"]
 [ext_resource type="PackedScene" uid="uid://dv8violt7fhk1" path="res://scenes/草/grass_bermuda_01_medium_b.tscn" id="36_tm6hj"]
 [ext_resource type="PackedScene" uid="uid://b32ar7g7oha7e" path="res://scenes/草/grass_bermuda_01_flattened_a.tscn" id="37_kf5aa"]
-[ext_resource type="PackedScene" uid="uid://dfolob1l7jglk" path="res://scenes/树/小树/tree_small_02_4k.tscn" id="42_2cjbq"]
 
 [sub_resource type="ProceduralSkyMaterial" id="sky_mat"]
 sky_top_color = Color(0.7, 0.72, 0.56, 1)
@@ -2607,6 +2606,174 @@ transform = Transform3D(0.6038006, 0, 0.8944294, 0, 1.0791566, 0, -0.8944294, 0,
 [node name="BlendExport795" parent="WorldBrushInstances/墓地周围草丛" unique_id=2142741485 instance=ExtResource("28_bjg73")]
 transform = Transform3D(1.2661612, 0, -0.24909516, 0, 1.2904311, 0, 0.24909516, 0, 1.2661612, -5.9869432, 1.2062143, -19.398998)
 
+[node name="grass_bermuda_01_dead_a" type="Node3D" parent="WorldBrushInstances" unique_id=2055931709 groups=["burnable"] instance=ExtResource("26_ty1g6")]
+transform = Transform3D(-1.4054954, 0, -0.018520286, 0, 1.4056174, 0, 0.018520286, 0, -1.4054954, -2.5935822, -2.1193933, -16.416363)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a2" type="Node3D" parent="WorldBrushInstances" unique_id=781071815 groups=["burnable"] instance=ExtResource("19_2cjbq")]
+transform = Transform3D(-0.6179301, 0, 0.5651544, 0, 0.837399, 0, -0.5651544, 0, -0.6179301, -5.743614, -2.1193933, -13.121975)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a3" type="Node3D" parent="WorldBrushInstances" unique_id=419195738 groups=["burnable"] instance=ExtResource("23_txyw0")]
+transform = Transform3D(1.297787, 0, -0.39932853, 0, 1.3578343, 0, 0.39932853, 0, 1.297787, -5.5089493, -2.1193933, -10.025753)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a4" type="Node3D" parent="WorldBrushInstances" unique_id=61751144 groups=["burnable"] instance=ExtResource("24_vc5cj")]
+transform = Transform3D(0.7289565, 0, -0.65752316, 0, 0.98168945, 0, 0.65752316, 0, 0.7289565, -1.9406204, -2.1193933, -9.3258705)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a5" type="Node3D" parent="WorldBrushInstances" unique_id=750799208 groups=["burnable"] instance=ExtResource("21_cjqg0")]
+transform = Transform3D(-0.17978674, 0, 1.4557693, 0, 1.4668291, 0, -1.4557693, 0, -0.17978674, -8.10862, -2.1193933, -10.2140465)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a6" type="Node3D" parent="WorldBrushInstances" unique_id=497921815 groups=["burnable"] instance=ExtResource("23_txyw0")]
+transform = Transform3D(-0.716404, 0, 0.40681395, 0, 0.8238521, 0, -0.40681395, 0, -0.716404, -6.5012436, -2.1193933, -7.09544)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a7" type="Node3D" parent="WorldBrushInstances" unique_id=1392292241 groups=["burnable"] instance=ExtResource("29_bu4jf")]
+transform = Transform3D(0.64272213, 0, 0.4903882, 0, 0.80843824, 0, -0.4903882, 0, 0.64272213, -8.846519, -2.1193933, -6.211994)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a8" type="Node3D" parent="WorldBrushInstances" unique_id=572551931 groups=["burnable"] instance=ExtResource("20_chjal")]
+transform = Transform3D(-1.3691466, 0, -0.5387305, 0, 1.4713235, 0, 0.5387305, 0, -1.3691466, -9.36927, -2.1193933, -12.086765)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a9" type="Node3D" parent="WorldBrushInstances" unique_id=550376625 groups=["burnable"] instance=ExtResource("34_1v6qk")]
+transform = Transform3D(-1.1675512, 0, 0.2599538, 0, 1.1961403, 0, -0.2599538, 0, -1.1675512, -14.490654, -2.1193933, -12.387913)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a10" type="Node3D" parent="WorldBrushInstances" unique_id=443376574 groups=["burnable"] instance=ExtResource("30_o7ddy")]
+transform = Transform3D(-0.53789985, 0.0957442, 1.1398891, 0.61098295, 1.0889444, 0.19685028, -0.96706456, 0.6347309, -0.5096598, -9.977892, -1.4769909, -15.724394)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a11" type="Node3D" parent="WorldBrushInstances" unique_id=689330509 groups=["burnable"] instance=ExtResource("29_bu4jf")]
+transform = Transform3D(0.4837526, 0, -1.1749556, 0, 1.2706444, 0, 1.1749556, 0, 0.4837526, -17.262772, -2.1193933, -10.197544)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a12" type="Node3D" parent="WorldBrushInstances" unique_id=1615584763 groups=["burnable"] instance=ExtResource("31_0loja")]
+transform = Transform3D(0.18661572, 0, 1.0037274, 0, 1.020928, 0, -1.0037274, 0, 0.18661572, -13.505417, -2.1193933, -5.899723)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a13" type="Node3D" parent="WorldBrushInstances" unique_id=1779968296 groups=["burnable"] instance=ExtResource("37_kf5aa")]
+transform = Transform3D(-0.6474801, 0, 0.49458143, 0, 0.8147645, 0, -0.49458143, 0, -0.6474801, -14.525444, -2.1193933, -11.297092)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a14" type="Node3D" parent="WorldBrushInstances" unique_id=988910342 groups=["burnable"] instance=ExtResource("27_j2jfr")]
+transform = Transform3D(1.1348963, 0, -0.09874451, 0, 1.1391839, 0, 0.09874451, 0, 1.1348963, -15.505989, -2.1193933, -13.077396)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a15" type="Node3D" parent="WorldBrushInstances" unique_id=1366604353 groups=["burnable"] instance=ExtResource("36_tm6hj")]
+transform = Transform3D(-0.8616303, 0, -0.10564007, 0, 0.86808217, 0, 0.10564007, 0, -0.8616303, -12.735954, -2.1193933, -10.958118)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a16" type="Node3D" parent="WorldBrushInstances" unique_id=2004578365 groups=["burnable"] instance=ExtResource("24_vc5cj")]
+transform = Transform3D(0.5779459, 0, -0.9448297, 0, 1.107576, 0, 0.9448297, 0, 0.5779459, -21.44291, -2.1193933, -8.900898)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a17" type="Node3D" parent="WorldBrushInstances" unique_id=2069689061 groups=["burnable"] instance=ExtResource("18_5poiv")]
+transform = Transform3D(-1.0947115, 0, -0.6232864, 0, 1.259714, 0, 0.6232864, 0, -1.0947115, -21.91523, -2.1193933, -14.381062)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a18" type="Node3D" parent="WorldBrushInstances" unique_id=658411758 groups=["burnable"] instance=ExtResource("19_2cjbq")]
+transform = Transform3D(1.1565238, 0, 0.27583742, 0, 1.1889633, 0, -0.27583742, 0, 1.1565238, -17.243614, -2.1193933, -8.278042)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a19" type="Node3D" parent="WorldBrushInstances" unique_id=1790177561 groups=["burnable"] instance=ExtResource("33_dnhof")]
+transform = Transform3D(-0.84975845, 0, -1.2394403, 0, 1.5027647, 0, 1.2394403, 0, -0.84975845, -16.147362, -2.1193933, -9.319889)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a20" type="Node3D" parent="WorldBrushInstances" unique_id=69835529 groups=["burnable"] instance=ExtResource("31_0loja")]
+transform = Transform3D(0.7683615, 0, -1.1894422, 0, 1.416034, 0, 1.1894422, 0, 0.7683615, -18.644081, -2.1193933, -9.513355)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a21" type="Node3D" parent="WorldBrushInstances" unique_id=1480094711 groups=["burnable"] instance=ExtResource("18_5poiv")]
+transform = Transform3D(-0.09516486, 0, -0.9651608, 0, 0.96984106, 0, 0.9651608, 0, -0.09516486, -23.090828, -2.1193933, -15.632351)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a22" type="Node3D" parent="WorldBrushInstances" unique_id=1942263777 groups=["burnable"] instance=ExtResource("30_o7ddy")]
+transform = Transform3D(0.14487712, 0, 1.293213, 0, 1.3013029, 0, -1.293213, 0, 0.14487712, -20.052757, -2.1193933, -9.23502)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a23" type="Node3D" parent="WorldBrushInstances" unique_id=1767367948 groups=["burnable"] instance=ExtResource("30_o7ddy")]
+transform = Transform3D(-0.60960627, 0, -0.6942966, 0, 0.9239413, 0, 0.6942966, 0, -0.60960627, -19.69757, -2.1193933, -16.011417)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a24" type="Node3D" parent="WorldBrushInstances" unique_id=1305270068 groups=["burnable"] instance=ExtResource("21_cjqg0")]
+transform = Transform3D(1.3023368, 0, -0.4641572, 0, 1.3825784, 0, 0.4641572, 0, 1.3023368, -23.897484, -2.1193933, -19.11369)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a25" type="Node3D" parent="WorldBrushInstances" unique_id=320653040 groups=["burnable"] instance=ExtResource("28_bjg73")]
+transform = Transform3D(1.0826185, -0.027491942, 0.49945146, 0.03901559, 1.1918005, -0.018968994, -0.49868363, 0.03355938, 1.0828015, -16.428356, -1.4524207, -19.182451)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a26" type="Node3D" parent="WorldBrushInstances" unique_id=1897087986 groups=["burnable"] instance=ExtResource("20_chjal")]
+transform = Transform3D(0.25991127, 0, -0.91075575, 0, 0.9471166, 0, 0.91075575, 0, 0.25991127, -20.278938, -2.1193933, -21.607426)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a27" type="Node3D" parent="WorldBrushInstances" unique_id=272488938 groups=["burnable"] instance=ExtResource("37_kf5aa")]
+transform = Transform3D(0.024615258, 0, 1.1995003, 0, 1.1997528, 0, -1.1995003, 0, 0.024615258, -22.933258, -2.1193933, -19.54639)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
+[node name="grass_bermuda_01_dead_a28" type="Node3D" parent="WorldBrushInstances" unique_id=1291312617 groups=["burnable"] instance=ExtResource("34_1v6qk")]
+transform = Transform3D(0.18064758, 0, 1.0050368, 0, 1.0211427, 0, -1.0050368, 0, 0.18064758, -18.24662, -2.1193933, -20.992634)
+metadata/world_brush_instance = true
+metadata/world_brush_source_scene_path = "res://scenes/草/grass_bermuda_01_dead_a.tscn"
+metadata/vt_done = true
+
 [node name="StuckMonitor" type="Node3D" parent="." unique_id=2098627901]
 script = ExtResource("23_pm3ni")
 player_path = NodePath("../Player")
@@ -2620,6 +2787,3 @@ transform = Transform3D(-14.638751, 0, -3.2721486, 0, 15, 0, 3.2721486, 0, -14.6
 
 [node name="cross_1" parent="." unique_id=2122225381 instance=ExtResource("23_og1vs")]
 transform = Transform3D(2.9588568, 0, -0.49514282, 0, 3, 0, 0.49514282, 0, 2.9588568, -9.690185, 1.3714155, -22.40274)
-
-[node name="tree_small_02_LOD1" parent="." unique_id=1390106201 groups=["burnable"] instance=ExtResource("42_2cjbq")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -7.308257, 0.024031999, -14.544705)
