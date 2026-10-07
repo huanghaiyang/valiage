@@ -22,7 +22,7 @@ extends Node3D
 ## 自检：屏幕上显示一行状态（谁被当成角色、半径多高、采样/命中数量），
 ## 同时写到 user://stuck_monitor_log.txt。查不出问题先看这一行。
 
-@export var active := true             ## 监测开关（快捷键 L 切换）
+@export var active := false             ## 监测开关（快捷键 L 切换）
 @export var toggle_action := "stuck_monitor_toggle"
 @export var toggle_key := KEY_L
 @export var scan_radius := 12.0
