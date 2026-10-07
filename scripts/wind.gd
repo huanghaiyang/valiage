@@ -125,16 +125,38 @@ func _scan() -> void:
 
 func _take_from_mesh(mi: MeshInstance3D) -> int:
 	var got := 0
+	# ★★★ 模型**实际渲染高度**（用户要求 ✓）
+	#   `get_aabb()` 给的是**世界空间**包围盒 ✓（已含节点缩放 ✓ 不含父级动画的另一层 ✗）
+	#   → size.y 就是它在画面里占据的真实高度（米 ✓）
+	#   → 注册成功时写进 `wind_height_ref` ✓
+	#     让 shader 的高度权重用**真实高度**，而不是我在材质里手填的常数 ✓
+	var mh: float = 0.0
+	if mi.mesh != null:
+		mh = mi.get_aabb().size.y
 	if mi.material_override is ShaderMaterial:
-		got += _register(mi.material_override as ShaderMaterial)
+		got += _register_h(mi.material_override as ShaderMaterial, mh)
 	if mi.mesh != null:
 		for s in range(mi.mesh.get_surface_count()):
 			var ov: Material = mi.get_surface_override_material(s)
 			if ov is ShaderMaterial:
-				got += _register(ov as ShaderMaterial)
+				got += _register_h(ov as ShaderMaterial, mh)
 			var sm: Material = mi.mesh.surface_get_material(s)
 			if sm is ShaderMaterial:
-				got += _register(sm as ShaderMaterial)
+				got += _register_h(sm as ShaderMaterial, mh)
+	return got
+
+
+## ★★★ 注册 + 写入**该网格的实际渲染高度**（用户要求 ✓）
+##   草 / 叶 / 木三个 shader 的高度 uniform 都叫 `wind_height_ref` ✓
+##   （写到不存在的 uniform 上是无害的 ✓ → 对 SGT 等其它 shader 也安全 ✓）
+func _register_h(m: ShaderMaterial, h: float) -> int:
+	var got := _register(m)
+	if got > 0 and m != null and h > 0.0001:
+		m.set_shader_parameter("wind_height_ref", h)
+		var nm := "?"
+		if m.shader != null:
+			nm = String(m.shader.resource_path.get_file())
+		print("[Wind] 实际高度 ✓ %s ｜ %.3f 米 → wind_height_ref" % [nm, h])
 	return got
 
 

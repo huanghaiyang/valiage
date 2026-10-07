@@ -109,10 +109,14 @@ void vertex() {
 				k = k * k;                                   // 中心更强 ✓
 				vec2 outw = normalize(rel + vec2(0.0001));
 				vec2 tang = vec2(-outw.y, outw.x) * tornado_swirl;
-				float t_scale2 = min(wind_height_ref, 1.5) * 1.2;
+				float t_scale2 = wind_height_ref * 1.40; // ★ x2（用户要求 ✓） // ★ 按真实高度 ✓ 去掉旧上限 ✓
 			float t_swing2 = sin(TIME * 3.0);
-			vec2 local = tang * t_swing2 - outw * 0.15;      // 切向环流 + 向内吸 ✓
-				VERTEX.xz += local * (tornado_strength * k * t_scale2 * hw) * alive;
+			// ★★★ 物理化（用户要求）：悬臂梁单向偏转 δ∝h² + 30% 高度峰值颤动
+			float t_w30 = (hw / 0.3) * exp(1.0 - hw / 0.3);
+			float t_flut = sin(TIME * 24.0 + VERTEX.x * 7.0 + VERTEX.z * 5.0);
+			vec2 local = tang * 0.9 - outw * 0.15;
+			VERTEX.xz += local * (tornado_strength * k * t_scale2 * hw * hw) * alive;
+			VERTEX.xz += tang * (tornado_strength * k * t_scale2 * 0.15 * t_flut * t_w30) * alive;
 			}
 		}
 	}

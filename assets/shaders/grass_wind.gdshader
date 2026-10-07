@@ -96,10 +96,20 @@ void vertex() {
 				vec2 t_tan = vec2(-t_out.y, t_out.x) * tornado_swirl;
 		// ★★ 收敛幅度（用户反馈"太难看了"✗）：位移改用**植被自身尺度** ✓
 		//   原来 ≈ 3~4 米 → 把整片草按平 ✗；现在 草≈0.1 米 / 树顶≈0.5 米 ✓
-		float t_scale = min(wind_height_ref, 1.5) * 1.2;   // ★ 只做"强倾斜" ✓ 不按平 ✗
-		float t_swing = sin(TIME * 3.0);              // ★ 正负交替 = 来回"卷" ✓
-		vec2 t_loc = t_tan * t_swing - t_out * 0.15;
-		VERTEX.xz += t_loc * (tornado_strength * t_k * t_scale * t_h);
+		float t_scale = wind_height_ref * 12.0;  // ★ x2（用户要求 ✓）   // ★ 加强：真实高度 × 6.0（草很软 ✓ 弯得多 ✓）   // ★ 草：按**自身高度**放大 ✓（原来被 min(...,1.5) 压住 ✗ 看不见 ✓）   // ★ 只做"强倾斜" ✓ 不按平 ✗
+		// ★★★ 物理化（用户要求：实际物理特性 + 查算法）
+		//   依据：A Simulation on Grass Swaying with Dynamic Wind Force (ACM)
+		//         + 对马岛之魂草地做法（Godot 实现：2Retr0/GodotGrass）
+		//   ① 悬臂梁静力偏转 δ ∝ h²（均布载荷）→ 单向 ✓ 不回摆 ✗
+		//      风压 = tornado_strength → 衰减时偏转同步减小；
+		//      strength = 0（龙卷风停止）→ 自动回位 ✓ 即"除非龙卷风停止"
+		//   ② 高频颤动：单峰权重 w(h)=(h/h0)*e^(1-h/h0)，h0=0.3
+		//      → h=0.3 峰值（用户要的 30% 最抖）/ h=0 为 0（根部渐弱 ✓）
+		float t_w30 = (t_h / 0.3) * exp(1.0 - t_h / 0.3);
+		float t_flut = sin(TIME * 24.0 + VERTEX.x * 7.0 + VERTEX.z * 5.0);
+		vec2 t_loc = t_tan * 0.9 - t_out * 0.15;
+		VERTEX.xz += t_loc * (tornado_strength * t_k * t_scale * t_h * t_h);
+		VERTEX.xz += t_tan * (tornado_strength * t_k * t_scale * 0.15 * t_flut * t_w30);
 			}
 		}
 	}
