@@ -1,4 +1,4 @@
-﻿shader_type spatial;
+shader_type spatial;
 // 【树干 / 枝 专用】燃烧但**烧完不消失** ✓ —— 保留焦黑效果 ✓
 //
 // 与 assets/shaders/burn_foliage.gdshader 的关系：
@@ -46,6 +46,24 @@ uniform float noise_scale : hint_range(0.1, 6.0) = 1.4;
 uniform float sway_amt : hint_range(0.0, 0.5) = 0.0;
 uniform float sway_freq : hint_range(0.0, 6.0) = 1.8;
 uniform float phase = 0.0;
+// ★★★ 与树叶**同步摆动**（用户要求 ✓）：用**同一套风参数** ✓
+//   由 `scripts/wind.gd` 每帧写入 ✓（风向 ✓ 风强 ✓ 阵风 ✓ 湍流 ✓ 角色倒伏 ✓）
+//   → 树枝与树叶**相位/方向完全一致** ✓（树枝幅度更小 ✓ 见 vertex 里的 0.45 系数）
+uniform vec2 wind_direction = vec2(1.0, 0.0);
+uniform float wind_strength = 0.18;
+uniform float wind_gust = 0.15;
+uniform float wind_speed = 1.4;
+uniform float wind_turbulence = 0.30;
+uniform bool wind_enabled = false;
+uniform float wind_height_ref : hint_range(0.01, 30.0) = 8.0;
+uniform float wind_height_power : hint_range(0.5, 4.0) = 1.8;
+uniform float wind_sway_scale : hint_range(0.0, 2.0) = 0.22;
+uniform vec3 player_pos = vec3(0.0, -100000.0, 0.0);
+uniform vec3 player_forward = vec3(0.0, 0.0, -1.0);
+uniform float player_radius : hint_range(0.05, 3.0) = 0.55;
+uniform float player_bend : hint_range(0.0, 2.0) = 0.75;
+uniform float player_spread : hint_range(0.0, 1.5) = 0.30;
+uniform float player_move : hint_range(0.0, 1.0) = 0.0;
 uniform float height_ref : hint_range(0.05, 20.0) = 6.0;
 uniform bool use_albedo = true;
 uniform bool use_uv = true;
@@ -64,11 +82,23 @@ void vertex() {
 	v_hgt = VERTEX.y;         // ★ 模型空间高度 ✓（插值到像素 ✓ 比逐像素重建世界坐标稳定得多 ✓）
 	float h = clamp(VERTEX.y / max(height_ref, 0.01), 0.0, 1.5);
 	float alive = 1.0 - clamp(burn, 0.0, 1.0) * 0.75;
-	float t = TIME * sway_freq + phase;
-	float ax = sin(t) * 0.6 + sin(t * 1.73 + phase * 2.1) * 0.4;
-	float az = cos(t * 1.21 + phase * 1.7) * 0.6 + cos(t * 2.3 + phase) * 0.4;
-	VERTEX.x += ax * sway_amt * h * alive;
-	VERTEX.z += az * sway_amt * h * alive;
+	// ★★★ 与树叶**同步**（用户要求 ✓）：用**同一套风**（阵风/沿线/湍流/高度加权 ✓）
+	//   相位、方向、风速与叶子**完全一致** ✓ → 两者一起摆 ✓（不再各摆各的 ✗）
+	//   树枝幅度 ×0.45 ✓（比叶子更硬 ✓ 叶子摆得最凶 ✓）；× alive（烧得越深越不摆 ✓）
+	if (wind_enabled) {
+		float base_y = MODEL_MATRIX[3].y;
+		float hw = clamp((VERTEX.y - base_y) / max(0.001, wind_height_ref), 0.0, 1.0);
+		float lev = pow(hw, wind_height_power);
+		float gust = 1.0 + wind_gust * 2.2
+				* (0.5 + 0.5 * sin(TIME * wind_speed * 0.37 + VERTEX.x * 0.013 + VERTEX.z * 0.011));
+		float amp = wind_strength * gust;
+		vec2 dir = normalize(wind_direction + vec2(0.0001));
+		float along = sin(TIME * wind_speed + VERTEX.x * 0.35 + VERTEX.z * 0.28) * 0.35 + 0.65;
+		float across = cos(TIME * wind_speed * 0.83 + VERTEX.x * 0.23 - VERTEX.z * 0.31) * wind_turbulence;
+		vec2 sway = dir * along + vec2(-dir.y, dir.x) * (across * 0.25);
+		float dist = (VERTEX.y - base_y) * wind_sway_scale * amp;
+		VERTEX.xz += sway * (dist * lev) * 0.45 * alive;
+	}
 	// ★ 这里**没有** `VERTEX *= 1.0 - ash * 0.35` ✓ —— 烧完不收缩 ✓（与 burn_foliage 的关键区别 ✓）
 }
 
