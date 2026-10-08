@@ -53,10 +53,16 @@ extends Node
 ##   radial：径向"分开"位移（米，叶尖量级）
 ##   bend：沿移动方向"倒伏"位移（米，叶尖量级）
 ##   debug_sgt_player：每 0.5 秒把这条链的数值打到日志（确认有没有生效）
-@export var sgt_player_bend_radius := 1.4
-@export var sgt_player_radial := 1.20
-@export var sgt_player_bend := 1.00
-@export var debug_sgt_player := true
+## ★ SGT 草的人物倒伏/分开强度
+##   ⚠ Wind 是**脚本型 autoload**（[autoload] Wind="*res://scripts/wind.gd"），
+##     编辑器场景树里没有节点 → @export 在 Inspector 里看不到。
+##     所以这些参数以**项目设置**为准：项目设置 → Wind → SGT 草人物交互，改完立即生效。
+##     （@export 仍保留，作为代码里的默认值 / 供测试直接 new 出来用）
+@export var sgt_player_bend_radius := 1.4        ## 影响半径（米）
+@export var sgt_player_radial := 1.20            ## 径向"分开"位移（米级手柄）
+@export var sgt_player_bend := 1.00              ## 沿移动方向"倒伏"位移（米级手柄）
+@export var sgt_player_gain := 0.10              ## 位移总增益（收敛量级）
+@export var debug_sgt_player := true             ## 移动时每秒打一条日志（确认链路用）
 
 ## ★ 当前风（供火焰/其他 VFX 读取，不必去翻材质）。每次写材质前同步更新。
 var cur_dir := Vector2(1.0, 0.0)
@@ -87,6 +93,7 @@ var _dbg_player_t := 0.0
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	_ensure_project_settings()
 	_scan()
 
 
@@ -286,6 +293,74 @@ func _find_player() -> Node3D:
 
 # ---------------------------------------------------------------- SGT 人物倒伏
 
+## ★ 把参数注册成项目设置（脚本型 autoload 的 @export 在 Inspector 里看不到）
+##   项目设置 → Wind → sgt_player → bend_radius_m / radial / bend / gain / debug_log
+##   ⚠ 键名必须用 ASCII：中文键名在 Godot 读取 project.godot 时会失配（实测 has_setting=false）。
+##   中文说明走 Godot 原生的 `_doc` 前缀字段，在项目设置里会显示成说明文字。
+const SGT_SET_PREFIX := "Wind/sgt_player/"
+const SGT_SET_KEYS: Dictionary = {
+	"bend_radius_m": "影响半径（米）：以玩家为圆心多大范围内动草",
+	"radial": "径向分开（米级手柄）：以玩家为圆心往外推的力度",
+	"bend": "沿移动倒伏（米级手柄）：顺着行走方向的倒伏力度（站着只剩 25%）",
+	"gain": "位移总增益：最终位移 = 手柄 × 增益 × 权重(0~1)",
+	"debug_log": "打印调试日志：移动时每秒输出一条链路日志",
+}
+
+func _ensure_project_settings() -> void:
+	var defaults: Dictionary = {
+		"bend_radius_m": sgt_player_bend_radius,
+		"radial": sgt_player_radial,
+		"bend": sgt_player_bend,
+		"gain": sgt_player_gain,
+		"debug_log": debug_sgt_player,
+	}
+	for k in defaults:
+		var key: String = SGT_SET_PREFIX + String(k)
+		if not ProjectSettings.has_setting(key):
+			ProjectSettings.set_setting(key, defaults[k])
+		var doc: String = key + "_doc"
+		if not ProjectSettings.has_setting(doc):
+			ProjectSettings.set_setting(doc, String(SGT_SET_KEYS.get(k, "")))
+
+
+## 读一条设置（传短键名，如 "radial"；没有 / 类型不对就退回 @export 默认值）
+## ★ 必须逐类型判断：ProjectSettings 里可能存着非数值，
+##   直接 float(x) 会抛 "Nonexistent 'float' constructor" 并且每帧刷屏。
+func _sgt_setting(short_key: String, fallback: Variant) -> Variant:
+	var key := SGT_SET_PREFIX + short_key
+	if not ProjectSettings.has_setting(key):
+		return fallback
+	var v: Variant = ProjectSettings.get_setting(key)
+	if v is float or v is int:
+		return v
+	if v is bool:
+		return v
+	if v is String or v is StringName:
+		var s := String(v).strip_edges()
+		if s.is_valid_float():
+			return s.to_float()
+	# 类型不认识：退回默认值，不再尝试构造函数转换
+	return fallback
+
+
+## 从设置里取一个数字（内部用，绝不做危险的构造转换）
+func _sgt_num(short_key: String, fallback: float) -> float:
+	var v: Variant = _sgt_setting(short_key, fallback)
+	if v is float or v is int:
+		return float(v)
+	return fallback
+
+
+## 从设置里取一个开关（内部用）
+func _sgt_bool(short_key: String, fallback: bool) -> bool:
+	var v: Variant = _sgt_setting(short_key, fallback)
+	if v is bool:
+		return v
+	if v is float or v is int:
+		return float(v) != 0.0
+	return fallback
+
+
 ## ★ SGT 草的人物倒伏参数：玩家世界坐标 + 每帧水平位移
 ##   位置优先取 SimpleGrass.player_position（插件文档推荐项目每帧调 set_player_position），
 ##   但本项目 game/player 脚本并没有调它 -> 兜底直接读 "player" 组节点的 global_position。
@@ -388,15 +463,20 @@ func _write_sgt(dir2: Vector2, strength: float, gust: float, turb: float, ppos: 
 		m.set_shader_parameter("sgt_wind_turbulence", turb)
 		m.set_shader_parameter("sgt_wind_movement", _movement)
 		# 玩家（倒伏 + 分开）：位置 + 这一帧的水平位移
+	# 强度从**项目设置**实时读取（Wind/sgt_player/*），改完立刻生效，不必重启编辑器
+		var p_radius := _sgt_num("bend_radius_m", sgt_player_bend_radius)
+		var p_radial := _sgt_num("radial", sgt_player_radial)
+		var p_bend := _sgt_num("bend", sgt_player_bend)
+		var p_gain := _sgt_num("gain", sgt_player_gain)
 		m.set_shader_parameter("sgt_player_pos", _sgt_player_pos)
 		m.set_shader_parameter("sgt_player_mov", _sgt_player_step)
 		# 走着时倒伏明显、站着时基本回弹（避免出生点一圈草永远是倒的）
-		m.set_shader_parameter("sgt_player_bend", sgt_player_bend * lerpf(0.25, 1.0, _move_amt))
-		m.set_shader_parameter("sgt_player_radial", sgt_player_radial)
-		m.set_shader_parameter("sgt_player_bend_radius", sgt_player_bend_radius)
-		m.set_shader_parameter("sgt_player_gain", 0.10)
-	# ★ 诊断台账（debug_sgt_player 打开时）：只在"确实在动"且每秒最多一次时打出来
-	if not debug_sgt_player:
+		m.set_shader_parameter("sgt_player_bend", p_bend * lerpf(0.25, 1.0, _move_amt))
+		m.set_shader_parameter("sgt_player_radial", p_radial)
+		m.set_shader_parameter("sgt_player_bend_radius", p_radius)
+		m.set_shader_parameter("sgt_player_gain", p_gain)
+	# ★ 诊断台账（打印调试日志 打开时）：只在"确实在动"且每秒最多一次时打出来
+	if not _sgt_bool("debug_log", debug_sgt_player):
 		return
 	_dbg_player_t += get_process_delta_time()
 	if _dbg_player_t > 1.0:
@@ -405,5 +485,7 @@ func _write_sgt(dir2: Vector2, strength: float, gust: float, turb: float, ppos: 
 		if step_len > 0.002:
 			print("[Wind] SGT 人物倒伏: 材质 %d 个 ｜ 玩家 %s ｜ 位移 %.3f ｜ radius=%.2f radial=%.2f bend=%.2f" % [
 					_mats_sgt.size(), str(_sgt_player_pos), step_len,
-					sgt_player_bend_radius, sgt_player_radial,
-					sgt_player_bend * lerpf(0.25, 1.0, _move_amt)])
+					_sgt_num("bend_radius_m", sgt_player_bend_radius),
+					_sgt_num("radial", sgt_player_radial),
+					_sgt_num("bend", sgt_player_bend)
+					* lerpf(0.25, 1.0, _move_amt)])

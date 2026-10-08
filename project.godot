@@ -32,6 +32,14 @@ Shortcuts/density_decrement=Object(Shortcut,"resource_local_to_scene":false,"res
 ],"script":null)
 
 
+[Wind]
+
+sgt_player/bend_radius_m=2.0
+sgt_player/radial=2.0
+sgt_player/bend=2.0
+sgt_player/gain=0.2
+sgt_player/debug_log=true
+
 [animation]
 
 compatibility/default_parent_skeleton_in_mesh_instance_3d=true

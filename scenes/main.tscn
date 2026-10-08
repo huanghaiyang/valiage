@@ -11,6 +11,8 @@
 [ext_resource type="Script" uid="uid://cxpmrb7he55xh" path="res://scripts/ui/minimap.gd" id="9_minimap"]
 [ext_resource type="Script" uid="uid://scie1w7vnhq0" path="res://scripts/world/features/spawn_point.gd" id="10_spawn"]
 [ext_resource type="Script" uid="uid://bat1f5j1msndx" path="res://scripts/world/features/terrain_platform.gd" id="11_platform"]
+[ext_resource type="Texture2D" uid="uid://b46r88ixa2w13" path="res://assets/textures/岩石杂草/textures/file_ph-assets_Textures_jpg_4k_rocky_terrain_03_rocky_terrain_03_diff_4k.jpg" id="12_ty1g6"]
+[ext_resource type="Texture2D" uid="uid://cf8jy6txskhih" path="res://assets/textures/岩石杂草/textures/file_ph-assets_Textures_exr_4k_rocky_terrain_03_rocky_terrain_03_nor_gl_4k.png" id="13_j2jfr"]
 [ext_resource type="Shader" uid="uid://bi3o8elbtqoni" path="res://addons/simplegrasstextured/shaders/grass.gdshader" id="16_0ld40"]
 [ext_resource type="PackedScene" uid="uid://t3fe3p7rsc5r" path="res://scenes/草/grass_bermuda_01_medium_d.tscn" id="18_5poiv"]
 [ext_resource type="Script" uid="uid://d3wqowrjurdbv" path="res://scripts/quality/terrain_quality.gd" id="19_0ld40"]
@@ -45,6 +47,8 @@
 [ext_resource type="MultiMesh" uid="uid://bstym0lm8qejb" path="res://maps/main_g0_9c19cbf5_grass.res" id="41_2cjbq"]
 [ext_resource type="MultiMesh" uid="uid://cuv3hr1uw3jts" path="res://maps/main_g1_ef636ebd_grass.res" id="41_vchkt"]
 [ext_resource type="MultiMesh" uid="uid://g01gxtwx73kx" path="res://maps/main_g0_bf7c89c7_grass.res" id="43_vchkt"]
+[ext_resource type="Texture2D" uid="uid://bry1m6v3aok7m" path="res://assets/textures/草地/花草-11.png" id="46_vc5cj"]
+[ext_resource type="MultiMesh" uid="uid://bpx5tubcj6m65" path="res://maps/main_g4_f661c7d8_grass.res" id="47_nvyfr"]
 
 [sub_resource type="ProceduralSkyMaterial" id="sky_mat"]
 sky_top_color = Color(0.7, 0.72, 0.56, 1)
@@ -105,7 +109,6 @@ _shader_parameters = {
 &"projection_threshold": null
 }
 world_background = 0
-show_checkered = true
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_jkv2x"]
 transparency = 4
@@ -125,10 +128,20 @@ last_lod = 0
 last_shadow_lod = 0
 lod0_range = 128.0
 
+[sub_resource type="Terrain3DTextureAsset" id="Terrain3DTextureAsset_bjg73"]
+name = "file_ph-assets_Textures_jpg_4k_rocky_terrain_03_rocky_terrain_03_diff_4k"
+albedo_texture = ExtResource("12_ty1g6")
+normal_texture = ExtResource("13_j2jfr")
+normal_depth = 0.64
+ao_strength = 0.802
+roughness = 0.086
+uv_scale = 0.2
+
 [sub_resource type="Terrain3DAssets" id="Terrain3DAssets_dp3eg"]
 mesh_list = Array[Terrain3DMeshAsset]([SubResource("Terrain3DMeshAsset_jbj1t")])
+texture_list = Array[Terrain3DTextureAsset]([SubResource("Terrain3DTextureAsset_bjg73")])
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_vchkt"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_ty1g6"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -155,20 +168,20 @@ shader_parameter/interactive_mode = true
 shader_parameter/interactive_level_xz = 3.0
 shader_parameter/interactive_level_y = 0.3
 shader_parameter/sgt_player_pos = Vector3(1000000000, 1000000000, 1000000000)
-shader_parameter/sgt_player_bend_radius = 1.25
-shader_parameter/sgt_player_bend = 0.06
-shader_parameter/sgt_player_radial = 0.3
-shader_parameter/sgt_player_edge = 1.6
+shader_parameter/sgt_player_bend_radius = 1.4
+shader_parameter/sgt_player_bend = 1.0
+shader_parameter/sgt_player_radial = 1.2
+shader_parameter/sgt_player_gain = 0.1
 shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
-shader_parameter/sgt_wind_strength = 0.207
-shader_parameter/sgt_wind_turbulence = 0.3
-shader_parameter/sgt_wind_movement = Vector3(1000.61725, 0, 0)
+shader_parameter/sgt_wind_strength = 0.15
+shader_parameter/sgt_wind_turbulence = 1.0
+shader_parameter/sgt_wind_movement = Vector3(0, 0, 0)
 shader_parameter/burn_char_color = Color(0.06, 0.05, 0.045, 1)
 shader_parameter/burn_ember_color = Color(1, 0.32, 0.05, 1)
 shader_parameter/burn_ember_gain = 0.5
 metadata/SimpleGrassTexturedMaterial = "2.1.0"
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_txyw0"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_j2jfr"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -195,10 +208,10 @@ shader_parameter/interactive_mode = true
 shader_parameter/interactive_level_xz = 3.0
 shader_parameter/interactive_level_y = 0.3
 shader_parameter/sgt_player_pos = Vector3(1000000000, 1000000000, 1000000000)
-shader_parameter/sgt_player_bend_radius = 1.25
-shader_parameter/sgt_player_bend = 0.24
-shader_parameter/sgt_player_radial = 0.3
-shader_parameter/sgt_player_edge = 1.6
+shader_parameter/sgt_player_bend_radius = 1.4
+shader_parameter/sgt_player_bend = 1.0
+shader_parameter/sgt_player_radial = 1.2
+shader_parameter/sgt_player_gain = 0.1
 shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
 shader_parameter/sgt_wind_strength = 0.15
 shader_parameter/sgt_wind_turbulence = 1.0
@@ -208,7 +221,7 @@ shader_parameter/burn_ember_color = Color(1, 0.32, 0.05, 1)
 shader_parameter/burn_ember_gain = 0.5
 metadata/SimpleGrassTexturedMaterial = "2.1.0"
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_vc5cj"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_bjg73"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -235,10 +248,10 @@ shader_parameter/interactive_mode = true
 shader_parameter/interactive_level_xz = 3.0
 shader_parameter/interactive_level_y = 0.3
 shader_parameter/sgt_player_pos = Vector3(1000000000, 1000000000, 1000000000)
-shader_parameter/sgt_player_bend_radius = 1.25
-shader_parameter/sgt_player_bend = 0.24
-shader_parameter/sgt_player_radial = 0.3
-shader_parameter/sgt_player_edge = 1.6
+shader_parameter/sgt_player_bend_radius = 1.4
+shader_parameter/sgt_player_bend = 1.0
+shader_parameter/sgt_player_radial = 1.2
+shader_parameter/sgt_player_gain = 0.1
 shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
 shader_parameter/sgt_wind_strength = 0.15
 shader_parameter/sgt_wind_turbulence = 1.0
@@ -248,7 +261,7 @@ shader_parameter/burn_ember_color = Color(1, 0.32, 0.05, 1)
 shader_parameter/burn_ember_gain = 0.5
 metadata/SimpleGrassTexturedMaterial = "2.1.0"
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_nvyfr"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_bu4jf"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -275,10 +288,50 @@ shader_parameter/interactive_mode = true
 shader_parameter/interactive_level_xz = 3.0
 shader_parameter/interactive_level_y = 0.3
 shader_parameter/sgt_player_pos = Vector3(1000000000, 1000000000, 1000000000)
-shader_parameter/sgt_player_bend_radius = 1.25
-shader_parameter/sgt_player_bend = 0.24
-shader_parameter/sgt_player_radial = 0.3
-shader_parameter/sgt_player_edge = 1.6
+shader_parameter/sgt_player_bend_radius = 1.4
+shader_parameter/sgt_player_bend = 1.0
+shader_parameter/sgt_player_radial = 1.2
+shader_parameter/sgt_player_gain = 0.1
+shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
+shader_parameter/sgt_wind_strength = 0.15
+shader_parameter/sgt_wind_turbulence = 1.0
+shader_parameter/sgt_wind_movement = Vector3(0, 0, 0)
+shader_parameter/burn_char_color = Color(0.06, 0.05, 0.045, 1)
+shader_parameter/burn_ember_color = Color(1, 0.32, 0.05, 1)
+shader_parameter/burn_ember_gain = 0.5
+metadata/SimpleGrassTexturedMaterial = "2.1.0"
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_o7ddy"]
+render_priority = 0
+shader = ExtResource("16_0ld40")
+shader_parameter/albedo = Color(1, 1, 1, 1)
+shader_parameter/texture_albedo = ExtResource("46_vc5cj")
+shader_parameter/texture_frames = Vector2(1, 1)
+shader_parameter/light_mode = 1
+shader_parameter/alpha_scissor_threshold = 0.5
+shader_parameter/normal_scale = 1.0
+shader_parameter/metallic = 0.0
+shader_parameter/metallic_texture_channel = Vector4(1, 0, 0, 0)
+shader_parameter/roughness = 1.0
+shader_parameter/roughness_texture_channel = Vector4(1, 0, 0, 0)
+shader_parameter/specular = 0.5
+shader_parameter/scale_h = 1.0
+shader_parameter/scale_w = 1.0
+shader_parameter/scale_var = -0.25
+shader_parameter/grass_strength = 0.55
+shader_parameter/optimization_by_distance = false
+shader_parameter/optimization_level = 7.0
+shader_parameter/optimization_dist_min = 10.0
+shader_parameter/optimization_dist_max = 50.0
+shader_parameter/grass_size_y = 1.0
+shader_parameter/interactive_mode = true
+shader_parameter/interactive_level_xz = 3.0
+shader_parameter/interactive_level_y = 0.3
+shader_parameter/sgt_player_pos = Vector3(1000000000, 1000000000, 1000000000)
+shader_parameter/sgt_player_bend_radius = 1.4
+shader_parameter/sgt_player_bend = 1.0
+shader_parameter/sgt_player_radial = 1.2
+shader_parameter/sgt_player_gain = 0.1
 shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
 shader_parameter/sgt_wind_strength = 0.15
 shader_parameter/sgt_wind_turbulence = 1.0
@@ -422,7 +475,6 @@ data_directory = "res://maps"
 material = SubResource("Terrain3DMaterial_jkv2x")
 assets = SubResource("Terrain3DAssets_dp3eg")
 collision_mode = 4
-show_checkered = true
 top_level = true
 metadata/_edit_lock_ = true
 
@@ -2886,7 +2938,7 @@ transform = Transform3D(-14.97661, 0, 0.83732337, 0, 15, 0, -0.83732337, 0, -14.
 transform = Transform3D(2.9588568, 0, -0.49514282, 0, 3, 0, 0.49514282, 0, 2.9588568, -9.690185, 1.3714155, -22.40274)
 
 [node name="绿草笔刷" type="MultiMeshInstance3D" parent="." unique_id=1759320175]
-material_override = SubResource("ShaderMaterial_vchkt")
+material_override = SubResource("ShaderMaterial_ty1g6")
 multimesh = ExtResource("38_cjqg0")
 script = ExtResource("19_jscy8")
 texture_albedo = ExtResource("37_chjal")
@@ -2908,7 +2960,7 @@ metadata/SimpleGrassTextured = "2.0.5"
 metadata/sgt_external_id = "g0_9c1a4284"
 
 [node name="紫花笔刷" type="MultiMeshInstance3D" parent="." unique_id=1471402708]
-material_override = SubResource("ShaderMaterial_txyw0")
+material_override = SubResource("ShaderMaterial_j2jfr")
 multimesh = ExtResource("41_vchkt")
 script = ExtResource("19_jscy8")
 texture_albedo = ExtResource("40_cjqg0")
@@ -2930,7 +2982,7 @@ metadata/SimpleGrassTextured = "2.0.5"
 metadata/sgt_external_id = "g1_ef636ebd"
 
 [node name="小红花笔刷" type="MultiMeshInstance3D" parent="." unique_id=1678475211]
-material_override = SubResource("ShaderMaterial_vc5cj")
+material_override = SubResource("ShaderMaterial_bjg73")
 multimesh = ExtResource("43_vchkt")
 script = ExtResource("19_jscy8")
 texture_albedo = ExtResource("37_5poiv")
@@ -2952,7 +3004,7 @@ metadata/SimpleGrassTextured = "2.0.5"
 metadata/sgt_external_id = "g0_bf7c89c7"
 
 [node name="小黄花笔刷" type="MultiMeshInstance3D" parent="." unique_id=612807907]
-material_override = SubResource("ShaderMaterial_nvyfr")
+material_override = SubResource("ShaderMaterial_bu4jf")
 multimesh = ExtResource("41_2cjbq")
 script = ExtResource("19_jscy8")
 texture_albedo = ExtResource("37_c6pm6")
@@ -2972,3 +3024,25 @@ sgt_tool_shape = {
 metadata/_custom_type_script = "uid://2juaclm8gc1n"
 metadata/SimpleGrassTextured = "2.0.5"
 metadata/sgt_external_id = "g0_9c19cbf5"
+
+[node name="铃兰笔刷" type="MultiMeshInstance3D" parent="." unique_id=912381575]
+material_override = SubResource("ShaderMaterial_o7ddy")
+multimesh = ExtResource("47_nvyfr")
+script = ExtResource("19_jscy8")
+texture_albedo = ExtResource("46_vc5cj")
+sgt_radius = 2.0
+sgt_density = 25
+sgt_scale = 1.0
+sgt_rotation = 0.0
+sgt_rotation_rand = 1.0
+sgt_dist_min = 0.25
+sgt_follow_normal = false
+sgt_slope = Vector2(0, 45)
+sgt_tool_shape = {
+"airbrush": 1,
+"eraser": 0,
+"pencil": 1
+}
+metadata/_custom_type_script = "uid://2juaclm8gc1n"
+metadata/SimpleGrassTextured = "2.0.5"
+metadata/sgt_external_id = "g4_f661c7d8"
