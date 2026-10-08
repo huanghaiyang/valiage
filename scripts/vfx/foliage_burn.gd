@@ -67,6 +67,8 @@ const WIND_PARAMS := [
 	"player_move",
 	"sgt_wind_direction", "sgt_wind_strength", "sgt_wind_turbulence", "sgt_wind_movement",
 	"sgt_player_position", "sgt_player_mov",
+	# ★ 2026-10-08：SGT 草的人物倒伏/分开也是逐材质 uniform（改见 grass.gdshaderinc）
+	"sgt_player_pos", "sgt_player_mov", "sgt_player_bend", "sgt_player_radial", "sgt_player_bend_radius",
 ]
 ## 与 _shader_mats 一一对应的"原材质"（风参数的来源）
 var _shader_src: Array[ShaderMaterial] = []

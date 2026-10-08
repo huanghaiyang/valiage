@@ -175,6 +175,68 @@ SimpleGrassTextured 的整片草用的正是 `MultiMeshInstance3D`，于是从�
 **整体调幅就改 `w_sway_scale` 里的 `0.22`**（越大越明显，越小越静）。
 `lev` 仍是 SGT 原有的高度权重（`pow(高度/grass_size_y, 1.7+风强)`）：根部不动、梢部摆得最多。
 
+## 角色倒伏 / 分开（2026-10-08 修复：原来完全没效果）
+
+原来是**四重失效**，所以草对人物走动毫无反应：
+
+| # | 问题 |
+| --- | --- |
+| 1 | 插件自带的交互是**贴图管线**（高度图 + 法线位移 + 运动图），而 `singleton.gd:101` 在运行时会 `set_interactive(false)`；本项目**没有任何脚本**调用 `SimpleGrass.set_interactive(true)` / `set_player_position()` → 那条路根本没开 |
+| 2 | 着色器把玩家参数声明成 `global uniform sgt_player_position / sgt_player_mov`，而 `scripts/wind.gd` 写的是**逐材质同名参数** → 两个不同 uniform，写了没用 |
+| 3 | 它依赖的两张采样图 `sgt_normal_displacement` / `sgt_motion_texture` 也是 `global uniform` → 4.7 运行时全局参数本就失效 |
+| 4 | 采样 UV 还按「世界 x 除以 50 分块」，依赖那张全局位移图 |
+
+**改法**（和风同一套做法，不走贴图、不依赖全局参数）：
+
+- 着色器新增逐材质 uniform：`sgt_player_pos` / `sgt_player_bend_radius` / `sgt_player_bend` /
+  `sgt_player_radial` / `sgt_player_edge`；
+- 顶点阶段用**局部坐标**算到玩家的距离：半径内权重 1，到 `半径×edge` 用 `smoothstep` 平滑收到 0
+  → 边缘不会出现硬边；两种位移叠加：**径向分开**（以玩家为圆心往外推）+ **沿移动方向倒伏**；
+- `scripts/wind.gd` 每帧写这些参数：位置优先用 `SimpleGrass.player_position`，
+  本项目没调它 → 兜底直接读 `"player"` 组节点的 `global_position`（启动时会打印一条说明）；
+  位移用位置差分得到，跳变 >1.5 米（传送）不计推力；
+  站着时倒伏强度降到 25%（避免出生点一圈草永远是倒的）；
+- 位移量按「米」标定并乘 `inter_soft = 1 - grass_strength*0.45`：**草越硬越拨不动**。
+  想更明显就调 `wind.gd::_write_sgt()` 里的 `sgt_player_radial`（默认 0.30）与
+  `sgt_player_bend`（默认 0.24）以及 `sgt_player_bend_radius`（默认 1.25 米）。
+
+> `foliage_burn.gd` 的 `WIND_PARAMS` 也补了这几个新名字，燃烧材质副本才会继续跟随人物。
+
+### 调手感（都在 `scripts/wind.gd` 的导出变量里，Inspector 能改）
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `sgt_player_bend_radius` | `1.4` | 以玩家为圆心多大范围内动草（米） |
+| `sgt_player_radial` | `1.20` | 径向"分开"位移（米级手柄） |
+| `sgt_player_bend` | `1.00` | 沿移动方向"倒伏"位移（米级手柄；站着只剩 25%） |
+| `debug_sgt_player` | `true` | 移动时每秒打一条日志（确认链路用，稳定后可关） |
+
+位移最终量级 = `radial/bend × sgt_player_gain(0.10) × w(0~1)`；半径 1.4 米内生效、边缘平滑到 0。
+
+### ★ 关键教训：权重不能用「门限式」写法（2026-10-08 排查记录）
+
+角色倒伏前两版**完全没效果**，原因不是 uniform 进不了 GPU（实测：整片草能被诊断色染绿），
+而是权重被写成了门限式：
+
+```glsl
+// ✗ 失败写法：w = 1.0 - smoothstep(pr, pr*1.05, pd);  w *= lev * dist;
+//   smoothstep 的过渡区间只有 5%，稍微远一点立刻变 0；再乘 lev（根部≈0）与 dist（远景可能≈0）
+//   → 绝大多数顶点 w = 0 → 位移为 0，看起来就是"完全没反应"
+```
+
+```glsl
+// ✓ 有效写法：线性权重 + 平方，clamp 到 0..1，不拿 dist/lev 当门限
+float w = clamp(1.0 - pd / pr, 0.0, 1.0);  w = w * w;
+```
+
+排查用的手段（已全部清理，但值得记住）：
+
+1. **诊断染色**：给材质写一个 `sgt_player_edge` 之类的开关参数，让着色器把 ALBEDO 改成纯色
+   （注意 `ALBEDO` 只能在 `fragment()` 里改，vertex 里要经 varying 传下去）；
+   整片草变色 → 逐材质 uniform 确实进 GPU ✓
+2. **常量位移试验**：`if(diag>1.5) VERTEX.x += 20.0 * lev;` —— 草被整片拉飞 → 顶点写入有效 ✓
+3. **中间量着色**：把 `pd / w / lev` 映射成 RGB，一眼看出哪一段恒为 0（本次就是靠这个定位到权重）
+
 ## 注意（升级插件时）
 
 本改动直接写在 addon 原文件里（`grass.gd` / `plugin.gd` 中带 `★ 本项目改动` 注释），

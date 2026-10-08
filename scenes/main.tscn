@@ -154,16 +154,21 @@ shader_parameter/grass_size_y = 1.0
 shader_parameter/interactive_mode = true
 shader_parameter/interactive_level_xz = 3.0
 shader_parameter/interactive_level_y = 0.3
+shader_parameter/sgt_player_pos = Vector3(1000000000, 1000000000, 1000000000)
+shader_parameter/sgt_player_bend_radius = 1.25
+shader_parameter/sgt_player_bend = 0.06
+shader_parameter/sgt_player_radial = 0.3
+shader_parameter/sgt_player_edge = 1.6
 shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
-shader_parameter/sgt_wind_strength = 0.15
-shader_parameter/sgt_wind_turbulence = 1.0
-shader_parameter/sgt_wind_movement = Vector3(0, 0, 0)
+shader_parameter/sgt_wind_strength = 0.207
+shader_parameter/sgt_wind_turbulence = 0.3
+shader_parameter/sgt_wind_movement = Vector3(1000.61725, 0, 0)
 shader_parameter/burn_char_color = Color(0.06, 0.05, 0.045, 1)
 shader_parameter/burn_ember_color = Color(1, 0.32, 0.05, 1)
 shader_parameter/burn_ember_gain = 0.5
 metadata/SimpleGrassTexturedMaterial = "2.1.0"
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_vc5cj"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_txyw0"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -189,6 +194,11 @@ shader_parameter/grass_size_y = 1.0
 shader_parameter/interactive_mode = true
 shader_parameter/interactive_level_xz = 3.0
 shader_parameter/interactive_level_y = 0.3
+shader_parameter/sgt_player_pos = Vector3(1000000000, 1000000000, 1000000000)
+shader_parameter/sgt_player_bend_radius = 1.25
+shader_parameter/sgt_player_bend = 0.24
+shader_parameter/sgt_player_radial = 0.3
+shader_parameter/sgt_player_edge = 1.6
 shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
 shader_parameter/sgt_wind_strength = 0.15
 shader_parameter/sgt_wind_turbulence = 1.0
@@ -198,7 +208,7 @@ shader_parameter/burn_ember_color = Color(1, 0.32, 0.05, 1)
 shader_parameter/burn_ember_gain = 0.5
 metadata/SimpleGrassTexturedMaterial = "2.1.0"
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_chjal"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_vc5cj"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -224,6 +234,11 @@ shader_parameter/grass_size_y = 1.0
 shader_parameter/interactive_mode = true
 shader_parameter/interactive_level_xz = 3.0
 shader_parameter/interactive_level_y = 0.3
+shader_parameter/sgt_player_pos = Vector3(1000000000, 1000000000, 1000000000)
+shader_parameter/sgt_player_bend_radius = 1.25
+shader_parameter/sgt_player_bend = 0.24
+shader_parameter/sgt_player_radial = 0.3
+shader_parameter/sgt_player_edge = 1.6
 shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
 shader_parameter/sgt_wind_strength = 0.15
 shader_parameter/sgt_wind_turbulence = 1.0
@@ -233,7 +248,7 @@ shader_parameter/burn_ember_color = Color(1, 0.32, 0.05, 1)
 shader_parameter/burn_ember_gain = 0.5
 metadata/SimpleGrassTexturedMaterial = "2.1.0"
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_5he1u"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_nvyfr"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -259,6 +274,11 @@ shader_parameter/grass_size_y = 1.0
 shader_parameter/interactive_mode = true
 shader_parameter/interactive_level_xz = 3.0
 shader_parameter/interactive_level_y = 0.3
+shader_parameter/sgt_player_pos = Vector3(1000000000, 1000000000, 1000000000)
+shader_parameter/sgt_player_bend_radius = 1.25
+shader_parameter/sgt_player_bend = 0.24
+shader_parameter/sgt_player_radial = 0.3
+shader_parameter/sgt_player_edge = 1.6
 shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
 shader_parameter/sgt_wind_strength = 0.15
 shader_parameter/sgt_wind_turbulence = 1.0
@@ -2853,7 +2873,6 @@ metadata/vt_done = true
 
 [node name="StuckMonitor" type="Node3D" parent="." unique_id=2098627901]
 script = ExtResource("23_pm3ni")
-active = false
 player_path = NodePath("../Player")
 
 [node name="QualityTerrain" type="Node" parent="." unique_id=139714686]
@@ -2889,7 +2908,7 @@ metadata/SimpleGrassTextured = "2.0.5"
 metadata/sgt_external_id = "g0_9c1a4284"
 
 [node name="紫花笔刷" type="MultiMeshInstance3D" parent="." unique_id=1471402708]
-material_override = SubResource("ShaderMaterial_vc5cj")
+material_override = SubResource("ShaderMaterial_txyw0")
 multimesh = ExtResource("41_vchkt")
 script = ExtResource("19_jscy8")
 texture_albedo = ExtResource("40_cjqg0")
@@ -2911,7 +2930,7 @@ metadata/SimpleGrassTextured = "2.0.5"
 metadata/sgt_external_id = "g1_ef636ebd"
 
 [node name="小红花笔刷" type="MultiMeshInstance3D" parent="." unique_id=1678475211]
-material_override = SubResource("ShaderMaterial_chjal")
+material_override = SubResource("ShaderMaterial_vc5cj")
 multimesh = ExtResource("43_vchkt")
 script = ExtResource("19_jscy8")
 texture_albedo = ExtResource("37_5poiv")
@@ -2933,7 +2952,7 @@ metadata/SimpleGrassTextured = "2.0.5"
 metadata/sgt_external_id = "g0_bf7c89c7"
 
 [node name="小黄花笔刷" type="MultiMeshInstance3D" parent="." unique_id=612807907]
-material_override = SubResource("ShaderMaterial_5he1u")
+material_override = SubResource("ShaderMaterial_nvyfr")
 multimesh = ExtResource("41_2cjbq")
 script = ExtResource("19_jscy8")
 texture_albedo = ExtResource("37_c6pm6")

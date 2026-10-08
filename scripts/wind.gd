@@ -48,6 +48,15 @@ extends Node
 @export var fallback_speed := 1.4
 @export var fallback_direction := Vector2(1.0, 0.0)
 @export var scan_interval := 0.5
+## ★ SGT 草的人物倒伏/分开强度（想调手感直接改这里）
+##   半径：以玩家为圆心多大范围内动草（米）
+##   radial：径向"分开"位移（米，叶尖量级）
+##   bend：沿移动方向"倒伏"位移（米，叶尖量级）
+##   debug_sgt_player：每 0.5 秒把这条链的数值打到日志（确认有没有生效）
+@export var sgt_player_bend_radius := 1.4
+@export var sgt_player_radial := 1.20
+@export var sgt_player_bend := 1.00
+@export var debug_sgt_player := true
 
 ## ★ 当前风（供火焰/其他 VFX 读取，不必去翻材质）。每次写材质前同步更新。
 var cur_dir := Vector2(1.0, 0.0)
@@ -67,6 +76,13 @@ var _player_prev := Vector3.ZERO
 var _player_fwd := Vector3(0.0, 0.0, -1.0)
 ## 平滑后的移动量 0..1（站着不动 -> 0 -> 草回弹）
 var _move_amt := 0.0
+## ★ 给 SGT 草用的玩家世界坐标 + 这一帧的水平位移（逐材质写）
+##   优先用 SimpleGrass.player_position（项目里若按插件文档更新过就用它），
+##   没有（本项目的实际情况）就直接取 "player" 组节点的位置。
+var _sgt_player_pos := Vector3(1.0e9, 1.0e9, 1.0e9)
+var _sgt_player_step := Vector3.ZERO
+var _sgt_player_warned := false
+var _dbg_player_t := 0.0
 
 
 func _ready() -> void:
@@ -103,6 +119,8 @@ func _process(delta: float) -> void:
 		_player_prev = ppos
 	else:
 		_move_amt = lerpf(_move_amt, 0.0, clampf(delta * move_smooth, 0.0, 1.0))
+	# ★ SGT 草的人物倒伏：位置 + 这一帧的水平位移（逐材质写，见 _write_sgt）
+	_update_sgt_player(delta, p, ppos)
 	# 天气
 	var w: Node = null
 	if get_tree() != null:
@@ -266,6 +284,39 @@ func _find_player() -> Node3D:
 	return null
 
 
+# ---------------------------------------------------------------- SGT 人物倒伏
+
+## ★ SGT 草的人物倒伏参数：玩家世界坐标 + 每帧水平位移
+##   位置优先取 SimpleGrass.player_position（插件文档推荐项目每帧调 set_player_position），
+##   但本项目 game/player 脚本并没有调它 -> 兜底直接读 "player" 组节点的 global_position。
+##   位移用位置差分得到；大于 1.5 米视为传送/初始化，不给推力（避免一瞬间把草吹平）。
+func _update_sgt_player(_delta: float, p: Node3D, ppos: Vector3) -> void:
+	var pos := Vector3(1.0e9, 1.0e9, 1.0e9)
+	var sg: Node = null
+	if get_tree() != null:
+		sg = get_tree().root.get_node_or_null("SimpleGrass")
+	if sg != null:
+		var v: Variant = sg.get("player_position")
+		if v is Vector3 and (v as Vector3).length() > 1.0:
+			pos = v as Vector3
+	var using_group := false
+	if pos.x > 1.0e8 and p != null:
+		pos = ppos
+		using_group = true
+		if not _sgt_player_warned:
+			_sgt_player_warned = true
+			print("[Wind] SGT 草人物倒伏：改用 \"player\" 组节点的位置（项目未调用 SimpleGrass.set_player_position）")
+	var step := pos - _sgt_player_pos
+	step.y = 0.0
+	if step.length() > 1.5:
+		step = Vector3.ZERO    # 跳变
+	_sgt_player_pos = pos
+	_sgt_player_step = step
+	if using_group and p == null:
+		# 连玩家都找不到：把影响半径清零，别让草整片朝一个假点倒
+		_sgt_player_pos = Vector3(1.0e9, 1.0e9, 1.0e9)
+
+
 # ---------------------------------------------------------------- 参数写入
 
 func _apply_from_weather(w: Node, delta: float, ppos: Vector3, pmov: Vector3) -> void:
@@ -323,6 +374,8 @@ func _write_ours(dir2: Vector2, strength: float, gust: float, turb: float, speed
 
 
 ## SimpleGrassTextured 的草：它自己的 singleton 写的是全局（运行时失效）-> 这里补上
+##   ★ 2026-10-08：玩家倒伏/分开也走这条链（逐材质）；着色器里的 uniform 名见
+##     addons/simplegrasstextured/shaders/grass.gdshaderinc 的 sgt_player_pos / _bend / _radial
 func _write_sgt(dir2: Vector2, strength: float, gust: float, turb: float, ppos: Vector3, pmov: Vector3) -> void:
 	if _mats_sgt.is_empty():
 		return
@@ -334,5 +387,23 @@ func _write_sgt(dir2: Vector2, strength: float, gust: float, turb: float, ppos: 
 		m.set_shader_parameter("sgt_wind_strength", strength * (1.0 + gust))
 		m.set_shader_parameter("sgt_wind_turbulence", turb)
 		m.set_shader_parameter("sgt_wind_movement", _movement)
-		m.set_shader_parameter("sgt_player_position", ppos)
-		m.set_shader_parameter("sgt_player_mov", pmov)
+		# 玩家（倒伏 + 分开）：位置 + 这一帧的水平位移
+		m.set_shader_parameter("sgt_player_pos", _sgt_player_pos)
+		m.set_shader_parameter("sgt_player_mov", _sgt_player_step)
+		# 走着时倒伏明显、站着时基本回弹（避免出生点一圈草永远是倒的）
+		m.set_shader_parameter("sgt_player_bend", sgt_player_bend * lerpf(0.25, 1.0, _move_amt))
+		m.set_shader_parameter("sgt_player_radial", sgt_player_radial)
+		m.set_shader_parameter("sgt_player_bend_radius", sgt_player_bend_radius)
+		m.set_shader_parameter("sgt_player_gain", 0.10)
+	# ★ 诊断台账（debug_sgt_player 打开时）：只在"确实在动"且每秒最多一次时打出来
+	if not debug_sgt_player:
+		return
+	_dbg_player_t += get_process_delta_time()
+	if _dbg_player_t > 1.0:
+		_dbg_player_t = 0.0
+		var step_len := _sgt_player_step.length()
+		if step_len > 0.002:
+			print("[Wind] SGT 人物倒伏: 材质 %d 个 ｜ 玩家 %s ｜ 位移 %.3f ｜ radius=%.2f radial=%.2f bend=%.2f" % [
+					_mats_sgt.size(), str(_sgt_player_pos), step_len,
+					sgt_player_bend_radius, sgt_player_radial,
+					sgt_player_bend * lerpf(0.25, 1.0, _move_amt)])

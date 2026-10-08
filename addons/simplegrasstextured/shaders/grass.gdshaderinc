@@ -54,6 +54,14 @@ uniform float interactive_level_y = 0.3;
 
 global uniform vec3 sgt_player_position = vec3(100000.0);
 global uniform vec3 sgt_player_mov = vec3(0.0);
+// ★ 2026-10-08：玩家倒伏/分开改用**逐材质 uniform**（同 sgt_wind_* 的原因与做法）
+//   原来 `sgt_player_position` 声明成 global uniform，而 scripts/wind.gd 写的是逐材质同名参数
+//   → 两个不同 uniform，写了没用；加上全局参数在 4.7 运行时本就是坏的（见文件顶部注释）
+uniform vec3 sgt_player_pos = vec3(1.0e9);      // 玩家世界坐标
+uniform float sgt_player_bend_radius = 1.4;     // 影响半径（米）
+uniform float sgt_player_bend = 1.0;            // 沿移动方向倒伏（米级手柄）
+uniform float sgt_player_radial = 1.2;          // 径向分开（米级手柄）
+uniform float sgt_player_gain = 0.10;           // 位移总增益（收敛量级，见 wind.gd 的写入值）
 global uniform sampler2D sgt_normal_displacement : repeat_disable, filter_nearest, hint_normal;
 global uniform sampler2D sgt_motion_texture : repeat_disable, filter_nearest, hint_default_black;
 uniform vec3 sgt_wind_direction = vec3(1.0, 0.0, 0.0);   // 改逐材质：Godot 4.7 运行时 global uniform 顶点阶段失效
@@ -80,6 +88,7 @@ varying float v_burn_ember;
 varying float v_burn_kill;
 /// ★ 消失/长回都用**缩放**：1 = 正常大小，0 = 缩到 0（贴着火根消失）
 varying float v_burn_scale;
+varying float v_sgt_player_w;
 
 const highp float EPSILON = 0.0001;
 
@@ -105,6 +114,7 @@ float wrap(float value, float min, float max) {
 
 
 void vertex() {
+	v_sgt_player_w = 0.0;
 	float lev = pow(abs((VERTEX.y - NODE_POSITION_WORLD.y) / grass_size_y), 1.7 + sgt_wind_strength);
 	float rand = wrap(dot(NODE_POSITION_WORLD, NODE_POSITION_WORLD * 10.0), 0.0, 256.0);
 	float randf = fract(rand);
@@ -158,16 +168,33 @@ void vertex() {
 	vec3 scale = vec3(scale_w, scale_h, scale_w) * (1.0 + scale_rand);
 	VERTEX = NODE_POSITION_WORLD + (align * dist * scale);
 
-	if(dist > 0.0 && interactive_mode) {
-		float node_x = NODE_POSITION_WORLD.x / 50.0;
-		float node_z = NODE_POSITION_WORLD.z / 50.0;
-		vec2 uv_disp = vec2(clamp((node_x - (sgt_player_position.x - 0.5)), 0.0, 1.0), clamp((node_z - (sgt_player_position.z - 0.5)), 0.0, 1.0));
-		vec3 norm_mov = textureLod(sgt_normal_displacement, uv_disp - sgt_player_mov.xz, 0).rgb;
-		float time = get_value(sgt_motion_texture, uv_disp) / 65535.0;
-		norm_mov.xy = (norm_mov.xy * 2.0 - 1.0) * interactive_level_xz * lev;
-		VERTEX.xz += norm_mov.xy * (sin(time * time * 15.0) / 2.0) * (1.0 - time);
-		VERTEX.xz += norm_mov.xy * 0.5;
-		VERTEX.y -= (VERTEX.y - NODE_POSITION_WORLD.y) * norm_mov.b * interactive_level_y;
+	if(dist > 0.0) {
+		// ★★ 2026-10-08 角色倒伏/分开（最终版）
+		//   ① 用世界坐标直接算到玩家的水平距离（这一步 VERTEX 已是世界坐标）
+		//   ② 权重 w = (1 - 距离/半径)² 并 clamp 0..1 —— 不用 smoothstep，也不拿 dist/lev 当门限
+		//      （前两版就是被 smoothstep 区间 + w*lev*dist 那套门限吃成了 0，所以完全没效果）
+		//   ③ 位移 = 径向分开 + 沿移动方向倒伏，统一乘 sgt_player_gain 收敛量级
+		float pr = max(0.05, sgt_player_bend_radius);
+		vec3 dp = VERTEX - sgt_player_pos;
+		dp.y = 0.0;
+		float pd = length(dp);
+		float w = clamp(1.0 - pd / pr, 0.0, 1.0);
+		w = w * w;
+		if(w > 0.0005) {
+			float p_gain = clamp(sgt_player_gain, 0.0, 2.0);
+			vec2 push = (pd > 0.0001) ? (dp.xz / pd) : vec2(0.0);
+			// ① 径向分开：以玩家为圆心往外推
+			VERTEX.xz += push * (w * sgt_player_radial * p_gain);
+			// ② 沿移动方向倒伏（站着不动 → 位移为 0，自动回弹）
+			vec2 mv = sgt_player_mov.xz;
+			float mlen = length(mv);
+			if(mlen > 0.0001) {
+				VERTEX.xz += (mv / mlen) * (w * sgt_player_bend * p_gain * min(mlen * 8.0, 1.0));
+			}
+			// 贴着身体的一圈压低一点，视觉上像被拨开
+			VERTEX.y -= (VERTEX.y - NODE_POSITION_WORLD.y) * w * 0.10 * p_gain;
+			v_sgt_player_w = w;
+		}
 	}
 	v_normal_grass = (MODELVIEW_MATRIX * vec4(0.0, 1.0, 0.0, 1.0)).xyz - NODE_POSITION_VIEW;
 
