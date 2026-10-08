@@ -115,14 +115,36 @@ void vertex() {
 	uv_scale = vec2(1.0 / texture_frames.x, 1.0 / texture_frames.y);
 
 	float text_wind = texture(sgt_wind_pattern, (vec2(NODE_POSITION_WORLD.x, NODE_POSITION_WORLD.z) * 0.005) - sgt_wind_movement.xz).r;
-	VERTEX.x += text_wind * lev * sgt_wind_strength * sgt_wind_direction.x * (1.0 - grass_strength);
-	VERTEX.z += text_wind * lev * sgt_wind_strength * sgt_wind_direction.z * (1.0 - grass_strength);
-	VERTEX.x += sin(rand + sgt_wind_movement.y) * lev * ((1.0 - grass_strength) / 10.0);
-	VERTEX.x += sgt_wind_direction.x * lev * (sgt_wind_strength + (sin(TIME + rand) * 0.2 * (1.0 - grass_strength) * min(1.0, sgt_wind_turbulence))) * (1.0 - grass_strength);
-	VERTEX.y += sin(rand + sgt_wind_movement.y) * lev * ((1.0 - grass_strength) / 10.0) * sgt_wind_direction.y;
-	VERTEX.y += sgt_wind_direction.y * lev * (sgt_wind_strength + (sin(TIME + rand) * 0.2 * (1.0 - grass_strength) * min(1.0, sgt_wind_turbulence))) * (1.0 - grass_strength);
-	VERTEX.z += cos(rand + sgt_wind_movement.y) * lev * ((1.0 - grass_strength) / 10.0);
-	VERTEX.z += sgt_wind_direction.z * lev * (sgt_wind_strength + (sin(TIME + rand) * 0.2 * (1.0 - grass_strength) * min(1.0, sgt_wind_turbulence))) * (1.0 - grass_strength);
+	// ★★ 2026-10-08 重写风位移，对齐本项目的 assets/shaders/grass_wind.gdshader（已验证可用）
+	//   原公式的问题：静态推力占大头（约 lev×0.04），随时间变化的摆动项只有 sin×0.01
+	//   → 表现同时是「倒伏过狠」+「摆动看不出来」✗
+	//   新公式（与原版同一个设计）：
+	//     along 恒为正（0.3~1.0，均值≈0.65）→ 位移始终沿风向"呼吸"，不会左右抽动；
+	//     摆动来自 (1) lev 的高度权重 (2) gust 阵风包络 (3) 频率里的位置相位，每株不同步。
+	//   幅度基准：高度 × 0.22 × 风强（风强 0.18 的小风 ≈ 每米高 4 厘米）。
+	float w_turb = clamp(sgt_wind_turbulence, 0.0, 1.0);
+	vec3 w_dir3 = normalize(sgt_wind_direction + vec3(0.0001, 0.0, 0.0001));
+	vec2 w_dir = w_dir3.xz;
+	float w_speed = 1.4;
+	// ★ 沿风向的相位梯度：让风"一阵一阵扫过"整片草（相邻草叶不同步 → 看得见波动）。
+	//   只跟风向上的投影有关：垂直风向的草叶同步 ✓ 沿风向的草叶依次错开 ✓
+	float w_row = dot(NODE_POSITION_WORLD.xz, w_dir) * 0.16;
+	// 阵风：幅度在 0.55..1.45 之间起伏，叠加位置相位 → 波纹从草场一侧推向另一侧
+	float w_gust = 1.0 + 0.9 * (0.5 + 0.5 * sin(TIME * w_speed * 0.55 - w_row + sgt_wind_movement.y * 0.8));
+	// 草越"硬"（grass_strength 越大）越不易被吹动：0.55 时约打八折
+	float w_stiff = clamp(1.0 - grass_strength * 0.35, 0.3, 1.0);
+	float w_amp = sgt_wind_strength * w_gust * w_stiff;
+	// 沿风向：呼吸项带位置相位（可见的"推—回"），静态 0.65 保证不会反向
+	float w_along = sin(TIME * w_speed - w_row * 0.8) * 0.55 + 0.65;
+	// 垂直风向：小幅左右晃，幅度由 turbulence 决定
+	float w_across = cos(TIME * w_speed * 0.83 - w_row * 0.6) * w_turb;
+	vec2 w_sway = w_dir * w_along + vec2(-w_dir.y, w_dir.x) * (w_across * 0.25);
+	// 地形起伏用原本的风图案叠一点，让整片草有"波浪"感（可关：系数 0.3 很小）
+	// ★ 想整体调幅度就改下面这个 0.22（≈每米高出多少米的位移；原版 grass_wind 用同一个值）
+	float w_sway_scale = 0.22 * (1.0 + (text_wind - 0.5) * 0.3);
+	float w_dist = (VERTEX.y - NODE_POSITION_WORLD.y) * w_sway_scale * w_amp;
+	VERTEX.x += w_sway.x * w_dist * lev;
+	VERTEX.z += w_sway.y * w_dist * lev;
 
 	vec3 align = VERTEX - NODE_POSITION_WORLD;
 	float scale_rand = ((float(randi % 5) / 5.0) * scale_var);

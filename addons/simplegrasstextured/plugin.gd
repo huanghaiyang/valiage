@@ -35,6 +35,10 @@ const LOCATE_VIEW_HEIGHT := 4.0
 #   选中高亮环的半径（米），以及一次最多显示多少个环
 const LOCATE_SELECTION_RADIUS := 0.85
 const LOCATE_MAX_MARKERS := 256
+# ★ 本项目改动：草地数据外挂的默认目录（相对 res://，不要放 addons/ 里以免插件重装被删）
+const EXTERNALIZE_DIR := "res://maps"
+#   记录「这个节点对应的外挂文件名 id」的节点 meta key（随场景保存，改名后仍复用同一文件）
+const EXTERNALIZE_META_KEY := &"sgt_external_id"
 
 enum EVENT_MOUSE {
 	EVENT_NONE,
@@ -771,28 +775,46 @@ func focus_grass_point(world_position : Vector3) -> void:
 	camera.look_at(look_at_point, Vector3.UP)
 
 
-## 面板「删除」：按实例下标删除草，整个操作进入编辑器撤销堆栈（Ctrl+Z 可还原）
+## 面板「删除」：按实例下标删除草，整个操作进入编辑器撤销堆栈（Ctrl+Z 可还原）。
+## 撤销数据用**值快照**（transform 数组），避免外挂 .res 时资源缓存复用同一对象导致撤销失效。
 func delete_grass_instances(grass, indices : PackedInt32Array) -> void:
 	if grass == null or not is_instance_valid(grass):
 		return
 	if indices.is_empty() or grass.multimesh == null:
 		return
+	var count_before : int = int(grass.multimesh.instance_count)
 	var before : Array = grass.delete_instances_by_indices(indices)
 	if before.size() < 2:
 		return
-	var prev_multimesh : MultiMesh = before[0]
+	var prev_snapshot : Array = _undo_snapshot(before[0])
 	var prev_height_map : Image = before[1]
-	var after_multimesh : MultiMesh = grass.multimesh
+	var after_snapshot : Array = grass.get_instance_snapshot()
 	var after_height_map : Image = grass.baked_height_map
-	var removed := prev_multimesh.instance_count - after_multimesh.instance_count
+	var removed : int = count_before - after_snapshot.size()
 	var undo_redo := get_undo_redo()
 	undo_redo.create_action("%s - 删除 %d 株草" % [grass.name, removed], UndoRedo.MERGE_DISABLE, grass)
-	undo_redo.add_do_method(grass, &"replace_multimesh_with", after_multimesh, after_height_map)
-	undo_redo.add_undo_method(grass, &"replace_multimesh_with", prev_multimesh, prev_height_map)
+	undo_redo.add_do_method(grass, &"restore_multimesh_from_snapshot", after_snapshot, after_height_map)
+	undo_redo.add_undo_method(grass, &"restore_multimesh_from_snapshot", prev_snapshot, prev_height_map)
 	undo_redo.commit_action()
 	if _gui_toolbar != null:
 		_gui_toolbar.label_stats.text = "Count: " + str(grass.multimesh.instance_count)
 	_update_pointer()
+
+
+## 撤销数据统一成「transform 快照数组」：
+## 新接口直接返回快照；若拿到的是旧接口返回的 MultiMesh（脚本版本不一致时），
+## 就地从它导出快照，避免类型不匹配报错，也保证撤销仍然有效。
+func _undo_snapshot(data) -> Array:
+	if data is Array:
+		return data
+	if data is MultiMesh:
+		var out : Array = []
+		var mm : MultiMesh = data
+		out.resize(mm.instance_count)
+		for i in range(mm.instance_count):
+			out[i] = mm.get_instance_transform(i)
+		return out
+	return []
 
 
 ## 面板选中若干株草 -> 给每一株都放一个高亮环（多选也能一眼看到选中了哪些）。
@@ -892,6 +914,188 @@ func _show_focus_helper(world_position : Vector3) -> void:
 	_focus_helper.global_position = world_position
 	_focus_helper.visible = true
 # ★ 本项目改动（草地实例面板）结束 --------------------------------------------
+
+
+## ★ 本项目改动（草地数据外挂）开始 --------------------------------------------
+## 判断 MultiMesh 是否已经是「真正的外挂资源文件」。
+## 注意：内联子资源的 resource_path 也不是空的（形如 res://scenes/main.tscn::MultiMesh_xxx），
+## 含 "::" 说明数据还嵌在场景里，需要外挂；只有独立路径（res://maps/xxx.res）才算外挂。
+func _is_external_file_grass(mm : MultiMesh) -> bool:
+	if mm == null:
+		return false
+	var path := String(mm.resource_path)
+	return path.length() > 0 and path.find("::") == -1
+
+
+## 一键把内联的草地数据外挂成单独 .res：
+##   场景里巨大的 buffer 行会被换成一句 `multimesh = ExtResource(...)`，
+##   之后笔刷 / 擦除 / 删除都会继续写回这个文件（grass.gd 里的 take_over_path 逻辑）。
+##   整个替换进撤销堆栈；撤销会把草地恢复成内联。
+func externalize_grass_multimesh(grass) -> void:
+	if grass == null or not is_instance_valid(grass):
+		return
+	var mm : MultiMesh = grass.multimesh
+	if mm == null or mm.instance_count == 0:
+		print("SimpleGrassTextured: 草地里还没有草，先刷一些再外挂")
+		return
+	# 只有「真正的外挂文件」（不含 :: 的独立路径）才提前返回；内联子资源要继续外挂
+	if _is_external_file_grass(mm):
+		print("SimpleGrassTextured: 草地数据已经是外挂资源：", mm.resource_path)
+		return
+	var path := _build_externalize_path(grass)
+	if path.is_empty():
+		push_error("SimpleGrassTextured: 生成外挂路径失败")
+		return
+	# 内联数据先取快照，供 _externalize_now 写盘用
+	var inline_snapshot : Array = grass.get_instance_snapshot()
+	var height_map : Image = grass.baked_height_map
+	# 1) 先真正执行外挂，拿到带 resource_path 的新对象
+	var multi_new : MultiMesh = _externalize_now(grass, inline_snapshot, path)
+	if multi_new == null:
+		return
+	var inline_multimesh : MultiMesh = _inline_shadow_multimesh(grass, inline_snapshot)
+	# 2) 再把「外挂 -> 内联」这对状态记进撤销堆栈。
+	#    用 callable 而不是 add_do_property/add_undo_property：do 阶段已经改过同一个属性，
+	#    属性式撤销在这种「do 之后再撤销」的组合下不可靠，自己写赋值最稳。
+	var undo_redo := get_undo_redo()
+	undo_redo.create_action("%s - 外挂草地数据 (.res)" % grass.name, UndoRedo.MERGE_DISABLE, grass)
+	undo_redo.add_do_method(self, &"_assign_multimesh", grass, multi_new, null)
+	undo_redo.add_undo_method(self, &"_assign_multimesh", grass, inline_multimesh, height_map)
+	undo_redo.add_do_reference(multi_new)
+	undo_redo.add_undo_reference(inline_multimesh)
+	undo_redo.commit_action()
+	print("SimpleGrassTextured: 草地数据已外挂到 ", path, "（可 Ctrl+Z 撤销）")
+	_gui_grass_list_refresh()
+
+
+## 撤销 / 重做统一入口：把指定 MultiMesh（与高度图）装到节点上，并重算 AABB
+func _assign_multimesh(grass, multi : MultiMesh, height_map : Image) -> void:
+	if grass == null or not is_instance_valid(grass):
+		return
+	if multi != null and is_instance_valid(multi):
+		grass.multimesh = multi
+	grass.baked_height_map = height_map
+	grass.custom_aabb.position = Vector3.ZERO
+	grass.custom_aabb.end = Vector3.ZERO
+	_gui_grass_list_refresh()
+
+
+## 造一个「内联版」的 MultiMesh（没有 resource_path），撤销时用它把节点还原成内联
+func _inline_shadow_multimesh(grass, snapshot : Array) -> MultiMesh:
+	var multi_inline := MultiMesh.new()
+	multi_inline.transform_format = MultiMesh.TRANSFORM_3D
+	multi_inline.use_custom_data = true
+	multi_inline.mesh = grass.multimesh.mesh if grass.multimesh != null else null
+	if multi_inline.mesh == null:
+		multi_inline.mesh = grass.mesh if grass.mesh != null else load("res://addons/simplegrasstextured/default_mesh.tres")
+	multi_inline.instance_count = snapshot.size()
+	for i in range(snapshot.size()):
+		multi_inline.set_instance_transform(i, snapshot[i])
+	return multi_inline
+
+
+## 执行外挂：写盘 + **直接把带 resource_path 的 MultiMesh 装到节点上**
+## （不依赖 UndoRedo 的 do_property 赋值，行为更可控）
+func _externalize_now(grass, snapshot : Array, path : String) -> MultiMesh:
+	if grass == null or not is_instance_valid(grass):
+		return null
+	var source_mesh : Mesh = null
+	if grass.multimesh != null and grass.multimesh.mesh != null:
+		source_mesh = grass.multimesh.mesh
+	elif grass.mesh != null:
+		source_mesh = grass.mesh
+	else:
+		source_mesh = load("res://addons/simplegrasstextured/default_mesh.tres")
+	var multi_new := MultiMesh.new()
+	multi_new.transform_format = MultiMesh.TRANSFORM_3D
+	multi_new.use_custom_data = true
+	multi_new.mesh = source_mesh
+	multi_new.instance_count = snapshot.size()
+	for i in range(snapshot.size()):
+		multi_new.set_instance_transform(i, snapshot[i])
+	var err := ResourceSaver.save(multi_new, path)
+	if err != OK:
+		push_error("SimpleGrassTextured: 外挂保存失败(%d)：%s" % [err, path])
+		return null
+	multi_new.take_over_path(path)
+	grass.multimesh = multi_new
+	grass.baked_height_map = null
+	# 节点上的自定义 AABB 归零，让引擎按新数据重算
+	grass.custom_aabb.position = Vector3.ZERO
+	grass.custom_aabb.end = Vector3.ZERO
+	return multi_new
+
+
+## 生成外挂路径：res://maps/<场景名>_<节点id>_grass.res
+##
+## ★ 命名按「节点 id」而不是节点名：Godot 没有把 .tscn 里的 unique_id 暴露给 GDScript
+##   （Node.get_scene_unique_id 不存在，get_path(unique) 也只返回 ".."），
+##   所以这里用「首次外挂时生成并写进节点 meta 的 id」—— meta 会随场景一起保存，
+##   之后无论你把节点改成什么名字，都复用同一个文件，不会再多出几个 .res。
+func _build_externalize_path(grass) -> String:
+	DirAccess.make_dir_recursive_absolute(EXTERNALIZE_DIR)
+	# 1) 已经记过 id：直接用（节点名改了也不影响）
+	var recorded := String(grass.get_meta(EXTERNALIZE_META_KEY, ""))
+	if not recorded.is_empty():
+		var recorded_path := EXTERNALIZE_DIR.path_join(_externalize_filename(_scene_base_name(), recorded))
+		if FileAccess.file_exists(recorded_path):
+			return recorded_path
+	# 2) 首次：生成一个稳定且唯一的 id 并记到节点 meta
+	var id := _make_externalize_id(grass)
+	grass.set_meta(EXTERNALIZE_META_KEY, id)
+	return EXTERNALIZE_DIR.path_join(_externalize_filename(_scene_base_name(), id))
+
+
+## 生成「不依赖节点名」的唯一 id，例如：g3_1a2b3c4d
+func _make_externalize_id(grass) -> String:
+	# 节点在场景里的序号（同类草节点的第几个），改名/移动都不会变
+	var index := 0
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root != null:
+		var all: Array = []
+		_collect_grass_nodes(scene_root, all)
+		for i in range(all.size()):
+			if all[i] == grass:
+				index = i
+				break
+	var scene_tail := _scene_base_name()
+	var path_tail := String(grass.get_path()) if grass.is_inside_tree() else String(grass.name)
+	var mixed := ("%s|%s|%d" % [scene_tail, path_tail, Time.get_unix_time_from_system()])
+	var digest := "%08x" % (hash(mixed) & 0xFFFFFFFF)
+	return "g%d_%s" % [index, digest]
+
+
+func _externalize_filename(scene_base : String, id : String) -> String:
+	return "%s_%s_grass.res" % [_sanitize_filename_part(scene_base), _sanitize_filename_part(id)]
+
+
+func _scene_base_name() -> String:
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root != null and not String(scene_root.scene_file_path).is_empty():
+		return String(scene_root.scene_file_path).get_file().get_basename()
+	return "scene"
+
+
+func _sanitize_filename_part(text : String) -> String:
+	var out := text.strip_edges()
+	for bad in ["/", "\\", ":", "@", "*", "?", "\"", "<", ">", "|", "::", "."]:
+		out = out.replace(bad, "_")
+	if out.is_empty():
+		out = "unnamed"
+	return out
+
+
+func _collect_grass_nodes(node : Node, out : Array) -> void:
+	if node.has_meta(&"SimpleGrassTextured"):
+		out.append(node)
+	for child in node.get_children():
+		_collect_grass_nodes(child, out)
+
+
+func _gui_grass_list_refresh() -> void:
+	if _gui_grass_list != null:
+		_gui_grass_list.refresh_later()
+# ★ 本项目改动（草地数据外挂）结束 --------------------------------------------
 
 
 func _on_project_settings_changed() -> void:

@@ -37,6 +37,8 @@ enum MENU_ID {
 	CLEAR_ALL,
 	HELP_ABOUT,
 	RECALCULATE_AABB,
+	# ★ 本项目改动：把内联的草地数据外挂成 .res
+	EXTERNALIZE_MULTIMESH,
 }
 
 enum MENU_SHAPE_ID {
@@ -46,6 +48,20 @@ enum MENU_SHAPE_ID {
 	TOOL_SHAPE_BOX,
 	TOOL_SHAPE_BOX_INF_H,
 }
+
+## ★ 本项目改动：草株数超过这个数还是内联时，菜单里给出提示（纯提示，不自动外挂）
+const EXTERNALIZE_HINT_COUNT := 100
+
+
+## ★ 本项目改动：判断 MultiMesh 是否为「真正的外挂资源文件」。
+##   内联子资源的 resource_path 形如 res://scenes/main.tscn::MultiMesh_xxx（含 "::"），
+##   外挂文件才是 res://maps/xxx.res 这种独立路径。
+##   （两个 gui 脚本各自持有一份，plugin.gd 里也有一份同实现，保持行为一致）
+func is_external_multimesh(mm: MultiMesh) -> bool:
+	if mm == null:
+		return false
+	var path := String(mm.resource_path)
+	return path.length() > 0 and path.find("::") == -1
 
 var _plugin: EditorPlugin = null
 var _grass_selected = null
@@ -92,6 +108,8 @@ func set_plugin(plugin :EditorPlugin) -> void:
 	popup.add_item("Recalculate custom AABB", MENU_ID.RECALCULATE_AABB)
 	popup.add_item("Bake height map", MENU_ID.BAKE_HEIGHT_MAP)
 	popup.add_check_item("Cast shadow", MENU_ID.CAST_SHADOW)
+	# ★ 本项目改动：草地数据外挂（内联 buffer 太占场景文件时使用）
+	popup.add_item("Externalize grass data (.res)", MENU_ID.EXTERNALIZE_MULTIMESH)
 	popup.add_item("Global parameters", MENU_ID.GLOBAL_PARAMETERS)
 	popup.add_separator()
 	popup.add_item("Clear all", MENU_ID.CLEAR_ALL)
@@ -121,6 +139,8 @@ func set_current_grass(grass_selected) -> void:
 		popup.set_item_text(popup.get_item_index(MENU_ID.BAKE_HEIGHT_MAP), "Bake height map")
 		popup.set_item_disabled(popup.get_item_index(MENU_ID.BAKE_HEIGHT_MAP), false)
 	_tools_menu.set_item_checked(_tools_menu.get_item_index(MENU_ID.TOOL_FOLLOW_NORMAL), _grass_selected.sgt_follow_normal)
+	# ★ 本项目改动：草地数据存储状态提示（超过阈值还是内联时就提示可以外挂）
+	_update_externalize_item(_grass_selected)
 	for tool_name in _grass_selected.sgt_tool_shape:
 		match tool_name:
 			"airbrush":
@@ -129,6 +149,34 @@ func set_current_grass(grass_selected) -> void:
 				_update_shape_menu_from_grass(_pencil_shape_menu, _grass_selected.sgt_tool_shape[tool_name])
 			"eraser":
 				_update_shape_menu_from_grass(_eraser_shape_menu, _grass_selected.sgt_tool_shape[tool_name])
+
+
+## ★ 本项目改动：更新「外挂草地数据」菜单项的文字/可用状态
+func _update_externalize_item(grass) -> void:
+	var popup := get_popup()
+	var idx := popup.get_item_index(MENU_ID.EXTERNALIZE_MULTIMESH)
+	if idx == -1:
+		return
+	var mm: MultiMesh = grass.multimesh
+	if mm == null or mm.instance_count == 0:
+		popup.set_item_text(idx, "Externalize grass data (.res)")
+		popup.set_item_disabled(idx, true)
+		popup.set_item_tooltip(idx, "先刷一些草再外挂")
+		return
+	# 注意：内联子资源的 resource_path 也不是空的（形如 res://场景.tscn::MultiMesh_xxx），
+	# 含 "::" 才是「场景内嵌」，只有不含 "::" 的才是真正的外挂文件。
+	if is_external_multimesh(mm):
+		popup.set_item_text(idx, "Externalize grass data (already external)")
+		popup.set_item_disabled(idx, true)
+		popup.set_item_tooltip(idx, "已经是外挂资源：%s" % mm.resource_path)
+		return
+	var count := mm.instance_count
+	var text := "Externalize grass data (.res)"
+	if count > EXTERNALIZE_HINT_COUNT:
+		text += "  ⚠ %d blades inline" % count
+	popup.set_item_text(idx, text)
+	popup.set_item_disabled(idx, false)
+	popup.set_item_tooltip(idx, "把这 %d 株草的 MultiMesh 存成单独 .res，场景文件不再内联巨大的 buffer。\n可用 Ctrl+Z 撤销。" % count)
 
 
 func _update_shape_menu_from_grass(popupmenu: PopupMenu, plugin_id_shape: int) -> void:
@@ -191,6 +239,9 @@ func _on_sgt_menu_button(id :int) -> void:
 			_plugin.get_undo_redo().commit_action()
 		MENU_ID.BAKE_HEIGHT_MAP:
 			_grass_selected.bake_height_map()
+		# ★ 本项目改动：一键把草地数据外挂为 .res（进撤销堆栈）
+		MENU_ID.EXTERNALIZE_MULTIMESH:
+			_plugin.externalize_grass_multimesh(_grass_selected)
 		MENU_ID.GLOBAL_PARAMETERS:
 			var _global_parameters = load("res://addons/simplegrasstextured/gui/global_parameters.tscn").instantiate()
 			get_window().add_child(_global_parameters)

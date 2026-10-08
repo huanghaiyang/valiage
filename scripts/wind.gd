@@ -16,6 +16,16 @@ extends Node
 ##   而 main.gd 是「世界搭好之后」才调 bind_world 的 —— 早先注册进去的草材质会被清掉，
 ##   表现就是「按 V 换天气，草一点反应都没有」。所以这里每帧自己写，不依赖那个列表。
 ##
+## ★★ 2026-10-08 修复：SGT 草不受风 ✗ ★★
+##   材质收集原来只判 `n is MeshInstance3D` ✓
+##   但 **MultiMeshInstance3D 不是 MeshInstance3D 的子类** ✗（Godot 4 两条独立继承链）
+##   → SimpleGrassTextured 的整片草从来没被收进 _mats_sgt ✓
+##   → _write_sgt() 里 `if _mats_sgt.is_empty(): return` 每帧直接返回 ✗
+##   → 表现：「simplegrass 的草不受风力影响」✓
+##   现在补了 `elif n is MultiMeshInstance3D` → _take_from_multimesh() ✓
+##   注意该分支**不能**用 MeshInstance3D 的 API ✗（MultiMeshInstance3D 没有
+##   `mesh` 属性 ✓ 网格在 `multimesh.mesh`；也没有 `get_surface_override_material()` ✓）
+##
 ## ★★ 倒伏只由「移动」驱动 ★★
 ##   站着不动时 player_move = 0 -> 草自动回弹，不会出现「出生点周围一圈草一直倒着」。
 
@@ -115,12 +125,42 @@ func _scan() -> void:
 	var stack: Array = [root]
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
+		# ★★ 修复：MultiMeshInstance3D **不是** MeshInstance3D 的子类 ✗
+		#   SimpleGrassTextured 的草用的是 MultiMeshInstance3D ✓
+		#   → 之前只判 `is MeshInstance3D` ✓ → SGT 草永远不被收集 ✗
+		#   → `_write_sgt()` 里 `if _mats_sgt.is_empty(): return` 每帧直接返回 ✗
+		#   → 表现就是「simplegrass 的草不受风力影响」✓✓
 		if n is MeshInstance3D:
 			found += _take_from_mesh(n as MeshInstance3D)
+		elif n is MultiMeshInstance3D:
+			found += _take_from_multimesh(n as MultiMeshInstance3D)
 		for c in n.get_children():
 			stack.append(c)
 	if found > 0:
 		print("[Wind] 新增 %d 个受风材质（累计 %d ｜ SGT %d）" % [found, _registered, _mats_sgt.size()])
+
+
+## ★ 收集 MultiMeshInstance3D（SimpleGrassTextured 的整片草）的受风材质。
+##   ★ MultiMeshInstance3D 与 MeshInstance3D 不是同一条继承链 ✗ 可用 API 也不同：
+##     - 没有 `mesh` 属性 ✓ 网格在 `multimesh.mesh` ✓
+##     - 没有 `get_surface_override_material()` ✓（那是 MeshInstance3D 的 ✓）
+##     所以这里只用「节点 material_override + multimesh.mesh 自带 surface 材质」✓
+func _take_from_multimesh(mmi: MultiMeshInstance3D) -> int:
+	var got := 0
+	var target_mesh: Mesh = null
+	if mmi.multimesh != null:
+		target_mesh = mmi.multimesh.mesh
+	var mh: float = 0.0
+	if target_mesh != null and target_mesh.get_surface_count() > 0:
+		mh = mmi.get_aabb().size.y
+	if mmi.material_override is ShaderMaterial:
+		got += _register_h(mmi.material_override as ShaderMaterial, mh)
+	if target_mesh != null:
+		for s in range(target_mesh.get_surface_count()):
+			var sm: Material = target_mesh.surface_get_material(s)
+			if sm is ShaderMaterial:
+				got += _register_h(sm as ShaderMaterial, mh)
+	return got
 
 
 func _take_from_mesh(mi: MeshInstance3D) -> int:

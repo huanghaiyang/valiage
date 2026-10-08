@@ -406,14 +406,16 @@ func get_instance_snapshot() -> Array:
 
 
 ## ★ 本项目改动：按实例下标删除（面板右键删除用）。
-##   返回 (删除前的 MultiMesh, 删除前的 baked_height_map)，供撤销使用；
-##   调用方应在删除**之前**保存返回值，然后在 UndoRedo 里：
-##     add_do_method   -> _replace_multimesh(新的 MultiMesh, null)
-##     add_undo_method -> _replace_multimesh(删除前的 MultiMesh, 删除前的 baked_height_map)
+##   返回 **[存活实例的 transform 快照, 删除前的 baked_height_map]**，供撤销使用。
+##   ★ 为什么存快照而不是存旧的 MultiMesh 对象：
+##     当 multimesh 是**外挂资源**（resource_path 非空，例如 res://.../grass_instances.res）时，
+##     Godot 的资源缓存对同一路径只保留一个对象 —— 旧的 MultiMesh 和节点替换后的新对象
+##     会指向同一个实例，replace_multimesh_with() 里的 take_over_path() 又可能把它同步成
+##     节点当前内容，于是「撤销」会退化成「什么都没变」。存成值快照后，撤销时用
+##     restore_multimesh_from_snapshot() 重建一个全新对象，就与磁盘/缓存脱钩了。
 func delete_instances_by_indices(indices : PackedInt32Array) -> Array:
 	if multimesh == null or indices.is_empty():
 		return []
-	var prev_multimesh : MultiMesh = multimesh
 	var prev_height_map : Image = baked_height_map
 	var remove := {}
 	for index in indices:
@@ -423,7 +425,16 @@ func delete_instances_by_indices(indices : PackedInt32Array) -> Array:
 		if not remove.has(i):
 			kept.append(multimesh.get_instance_transform(i))
 	_replace_multimesh_with_transforms(kept)
-	return [prev_multimesh, prev_height_map]
+	return [kept, prev_height_map]
+
+
+## 用「实例 transform 快照」重建 MultiMesh（撤销用的安全路径：永远新建对象）
+func restore_multimesh_from_snapshot(transforms : Array, height_map : Image) -> void:
+	_replace_multimesh_with_transforms(transforms)
+	baked_height_map = height_map
+	if Engine.is_editor_hint():
+		custom_aabb.position = Vector3.ZERO
+		custom_aabb.end = Vector3.ZERO
 
 
 ## 用一个已经建好的 MultiMesh 替换当前 MultiMesh（撤销 / 重做都走这里）
