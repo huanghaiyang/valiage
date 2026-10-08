@@ -28,6 +28,13 @@ extends MultiMeshInstance3D
 ## copy paste your own mesh from any mesh component. Set as null for default 
 ## SimpleGrassTextured mesh.
 @export var mesh : Mesh = null : set = _on_set_mesh
+## ★ 本项目改动：内置十字草叶的**面数**（1/2/3 面）。仅在 `mesh` 为空（用内置网格）时生效。
+##   1 面 = 单片（最省，适合超远/密植）；2 面 = 十字（插件原始行为，默认）；
+##   3 面 = 互成 60° 的三片（8 个观察方向都有覆盖，适合俯视/斜视时草"发薄"的情况）。
+##   顶点数：1 面 = 4 / 2 面 = 8 / 3 面 = 12（三角形 2/4/6）。
+##   ⚠ 提示串与标签都写在这里，Inspector 里才会显示中文（与工具栏下拉一致）。
+@export_enum("1 面", "2 面", "3 面") var mesh_planes := 2 : set = _on_set_mesh_planes
+
 @export_category("Material settings")
 ## Color albedo for mesh material
 @export_color_no_alpha var albedo := Color.WHITE : set = _on_set_albedo
@@ -121,6 +128,13 @@ var sgt_tool_shape := {}
 var temp_dist_min := 0.0
 
 var _default_mesh : Mesh = load("res://addons/simplegrasstextured/default_mesh.tres")
+## ★ 本项目改动：插件原版内置网格（2 面十字），供生成与比对使用
+const BUILTIN_MESH_PATH := "res://addons/simplegrasstextured/default_mesh.tres"
+## ★ 生成网格的**共享资源路径**。必须落盘成资源文件，不能在代码里 new 一个内联网格：
+##   外部 MultiMesh（maps/*_grass.res）保存时会把内联网格**复制进自己文件里**
+##   （表现为 res://maps/xxx_grass.res::ArrayMesh_yyyy），于是每换一次面数，
+##   所有引用它的 .res 都被改写、体积按"网格副本"膨胀。
+const GENERATED_MESH_DIR := "res://addons/simplegrasstextured/generated"
 var _buffer_add : Array[Transform3D] = []
 var _material := load("res://addons/simplegrasstextured/materials/grass.tres").duplicate() as ShaderMaterial
 var _force_update_multimesh := false
@@ -163,6 +177,8 @@ func _ready():
 	else:
 		set_process(false)
 	_singleton = get_node("/root/SimpleGrass")
+	# ★ 本项目改动：按 mesh_planes 生成内置网格（场景里存的 mesh_planes 在这里生效）
+	_rebuild_default_mesh()
 	if not has_meta(&"SimpleGrassTextured"):
 		set_meta(&"SimpleGrassTextured", "2.0.5")
 	else:
@@ -252,6 +268,117 @@ func _process(_delta : float):
 	if _buffer_add.size() != 0 or _force_update_multimesh:
 		_force_update_multimesh = false
 		_update_multimesh()
+
+
+## ★★ 本项目改动：按面数生成内置草叶网格。
+##   沿用插件默认网格的约定（已实测 default_mesh.tres 的逐顶点数据）：
+##     · 单片竖直 1×1，底面在 y=0，水平居中（AABB = (-0.5,0,-0.5,1,1,1)）
+##     · 面片 k 绕 Y 轴旋转 θk = k·π/planes，法线朝向面片正面
+##     · 切线取"面片被旋转后的右方向"，UV 与默认网格逐值一致
+##     · 索引绕序沿用默认网格（着色器都是 cull_disabled，绕序不影响可见性）
+##   面数 2 时与插件自带 default_mesh.tres 等价。
+func _build_plane_mesh(planes: int) -> ArrayMesh:
+	planes = clampi(planes, 1, 3)
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var tangents := PackedFloat32Array()
+	var uv := PackedVector2Array()
+	var indices := PackedInt32Array()
+	for k in range(planes):
+		# 面片 k：绕 Y 轴旋转 θk = 2π·k/planes（面片是"直线"，所以 2 面时就是十字）
+		# ⚠ Godot 的 Vector3.cross() 是**左手系**：UP.cross((1,0,0)) == (0,0,-1)，
+		#   与数学上的右手叉乘符号相反（已实测确认）。所以要拿"朝正面"的法线必须写
+		#   right.cross(UP) —— 这也正好与插件自带 default_mesh 的约定逐值一致：
+		#   自带网格 面1 的 n=(-1,0,0) / right=(0,0,-1) 满足 right.cross(UP)=(-1,0,0) ✓
+		var ang := TAU * float(k) / float(planes)
+		var right := Vector3(cos(ang), 0.0, -sin(ang))    # 面片被旋转后的"右"
+		var nrm := right.cross(Vector3.UP)                # 面片正面法线
+		var base := verts.size()
+		# 4 个顶点，UV 与默认网格保持一致（0,0)/(1,1)/(0,1)/(1,0)
+		verts.append(-right * 0.5 + Vector3.UP)   # 0 左上
+		verts.append( right * 0.5)                # 1 右下
+		verts.append(-right * 0.5)                # 2 左下
+		verts.append( right * 0.5 + Vector3.UP)   # 3 右上
+		normals.append(nrm); normals.append(nrm); normals.append(nrm); normals.append(nrm)
+		for _i in range(4):
+			tangents.append(right.x); tangents.append(right.y); tangents.append(right.z); tangents.append(1.0)
+		uv.append(Vector2(0, 0)); uv.append(Vector2(1, 1)); uv.append(Vector2(0, 1)); uv.append(Vector2(1, 0))
+		# 与默认网格相同的两个三角形绕序
+		indices.append(base + 0); indices.append(base + 1); indices.append(base + 2)
+		indices.append(base + 3); indices.append(base + 1); indices.append(base + 0)
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TANGENT] = tangents
+	arrays[Mesh.ARRAY_TEX_UV] = uv
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var m := ArrayMesh.new()
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return m
+
+
+## ★ 应用面数：重建内置网格，并让已存在的 MultiMesh 立刻用上新网格
+func apply_mesh_planes() -> void:
+	_rebuild_default_mesh()
+	if _default_mesh == null:
+		return
+	if mesh != null:
+		return    # 用户自定义 mesh 时不覆盖
+	if multimesh == null:
+		multimesh = _new_multimesh()
+		multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	if multimesh != null:
+		multimesh.mesh = _default_mesh
+		# ⚠ 不要在这里 surface_set_material()：_default_mesh 可能是**共享资源文件**
+		#   （default_mesh.tres / generated/plane_N.tres），那样会把材质写进共享文件、污染其他节点。
+		#   用节点级 material_override 就够了（优先级也高于 mesh 自带表面材质）。
+
+
+func _rebuild_default_mesh() -> void:
+	if mesh_planes == 2:
+		# 2 面：直接用插件自带的网格，保证与升级前逐值一致（也不产生任何副本）
+		_default_mesh = load(BUILTIN_MESH_PATH)
+		if _default_mesh == null:
+			_default_mesh = _get_shared_plane_mesh(2)
+	else:
+		_default_mesh = _get_shared_plane_mesh(mesh_planes)
+
+
+## ★ 取"按面数生成"的共享网格资源：优先从磁盘 .tres 载入，没有再生成并保存。
+##   这样做是为了让所有草节点引用**同一个资源文件**，外部 MultiMesh（maps/*_grass.res）
+##   存的是资源引用而不是内联副本 —— 否则每换一次面数，那些 .res 都会被整体改写。
+func _get_shared_plane_mesh(planes: int) -> Mesh:
+	planes = clampi(planes, 1, 3)
+	var path: String = "%s/plane_%d.tres" % [GENERATED_MESH_DIR, planes]
+	# 磁盘上已有就直接用（所有节点共享同一资源）
+	if ResourceLoader.exists(path):
+		var cached = ResourceLoader.load(path)
+		if cached is Mesh:
+			return cached
+	# 没有：生成一份。编辑器里落盘成资源文件，让后续引用都指向它而不是内联副本
+	var built := _build_plane_mesh(planes)
+	if not Engine.is_editor_hint():
+		return built
+	var dir := DirAccess.open("res://addons/simplegrasstextured")
+	if dir != null and not dir.dir_exists("generated"):
+		dir.make_dir("generated")
+	var err := ResourceSaver.save(built, path)
+	if err == OK:
+		EditorInterface.get_resource_filesystem().scan()
+		var saved = ResourceLoader.load(path)
+		if saved is Mesh:
+			return saved
+	push_warning("SimpleGrassTextured: 无法保存共享网格 %s（err=%d），本次用内联网格" % [path, err])
+	return built
+
+
+func _on_set_mesh_planes(value: int) -> void:
+	mesh_planes = clampi(value, 1, 3)
+	apply_mesh_planes()
+	if Engine.is_editor_hint() and is_inside_tree():
+		update_configuration_warnings()
+		notify_property_list_changed()
 
 
 func _get_property_list() -> Array[Dictionary]:

@@ -77,6 +77,8 @@ var _edit_slope := Vector2(0, 45)
 var _edit_scale := Vector3.ONE
 var _edit_rotation := 0.0
 var _edit_rotation_rand := 1.0
+## ★ 本项目改动：内置草叶面数（1/2/3），与草节点的 mesh_planes 同步
+var _edit_planes := 2
 var _edit_tool: TOOL = TOOL.AIRBRUSH : set = _on_set_tool
 var _gui_toolbar = null
 var _gui_toolbar_up = null
@@ -258,6 +260,8 @@ func _enter_tree() -> void:
 	_gui_toolbar.edit_rotation.value_changed.connect(_on_edit_rotation_value_changed)
 	_gui_toolbar.edit_rotation_rand.value_changed.connect(_on_edit_rotation_rand_value_changed)
 	_gui_toolbar.edit_distance.value_changed.connect(_on_edit_distance_value_changed)
+	# ★ 本项目改动：内置草叶面数（1/2/3）
+	_gui_toolbar.planes_changed.connect(_on_planes_changed)
 	_edit_tool = TOOL.AIRBRUSH
 
 
@@ -670,6 +674,12 @@ func _update_gui() -> void:
 		_gui_toolbar.edit_rotation.value = _grass_selected.sgt_rotation
 		_gui_toolbar.edit_rotation_rand.value = _grass_selected.sgt_rotation_rand
 		_gui_toolbar.edit_distance.value = _grass_selected.sgt_dist_min
+		# ★ 本项目改动：同步内置面数（读不到/类型不对一律退回 2 面）
+		_edit_planes = _read_planes(_grass_selected)
+		if _gui_toolbar.option_planes != null:
+			var _pi: int = _gui_toolbar.option_planes.get_item_index(_edit_planes)
+			if _pi >= 0:
+				_gui_toolbar.option_planes.select(_pi)
 		_gui_toolbar.edit_slope_range.set_value(_grass_selected.sgt_slope.x, _grass_selected.sgt_slope.y)
 		_gui_toolbar.set_current_grass(_grass_selected)
 		_gui_toolbar_up.set_current_grass(_grass_selected)
@@ -1168,6 +1178,31 @@ func _on_edit_rotation_rand_value_changed(value : float) -> void:
 func _on_edit_distance_value_changed(value : float) -> void:
 	if _grass_selected != null:
 		_grass_selected.sgt_dist_min = value
+
+
+## ★ 本项目改动：类型安全地读草节点的 mesh_planes
+##   坑：对动态属性直接写 int(obj.mesh_planes)，一旦值不是数值就会抛
+##   "Invalid call. Nonexistent 'int' constructor."（运行期狂刷）。
+##   节点是旧版脚本 / 属性被设成别的类型时，这里必须能安全退回 2 面。
+func _read_planes(grass) -> int:
+	if grass == null or not is_instance_valid(grass):
+		return 2
+	var v: Variant = grass.get("mesh_planes")
+	if v is int:
+		return clampi(int(v), 1, 3)
+	if v is float:
+		return clampi(int(round(float(v))), 1, 3)
+	return 2
+
+
+## ★ 本项目改动：切换内置草叶面数（1/2/3）。
+##   网格是整片草丛共用的，换完立刻用在新绘制的实例上（已存在的顶点数据不变）。
+func _on_planes_changed(value : int) -> void:
+	_edit_planes = clampi(value, 1, 3)
+	if _grass_selected != null:
+		_grass_selected.mesh_planes = _edit_planes
+		if _gui_grass_list != null:
+			_gui_grass_list.refresh_later()
 
 
 func _on_set_tool(value : TOOL) -> void:

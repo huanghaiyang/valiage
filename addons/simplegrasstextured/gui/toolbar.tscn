@@ -279,6 +279,27 @@ flat = true
 custom_minimum_size = Vector2(15, 0)
 layout_mode = 2
 
+[node name="PlaneCont" type="HBoxContainer" parent="." unique_id=1783452901]
+unique_name_in_owner = true
+layout_mode = 2
+tooltip_text = "内置草叶面数：1/2/3（仅在内置网格时生效；自定义 Mesh 不受影响）"
+
+[node name="OptionPlanes" type="OptionButton" parent="PlaneCont" unique_id=1783452902]
+unique_name_in_owner = true
+layout_mode = 2
+tooltip_text = "内置草叶面数：1 面最省、2 面为插件原始十字、3 面覆盖更多观察方向"
+item_count = 3
+popup/item_0/text = "1 面"
+popup/item_0/id = 0
+popup/item_1/text = "2 面"
+popup/item_1/id = 1
+popup/item_2/text = "3 面"
+popup/item_2/id = 2
+
+[node name="Separator6" type="Control" parent="." unique_id=1783452903]
+custom_minimum_size = Vector2(15, 0)
+layout_mode = 2
+
 [node name="LabelStats" type="Label" parent="." unique_id=1749097393]
 layout_mode = 2
 size_flags_horizontal = 3

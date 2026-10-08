@@ -24,6 +24,9 @@
 @tool
 extends Control
 
+## ★ 本项目改动：内置草叶面数（1/2/3）切换信号
+signal planes_changed(planes: int)
+
 enum MENU_SHAPE_ID {
 	TOOL_SHAPE_SPHERE,
 	TOOL_SHAPE_CYLINDER,
@@ -58,6 +61,8 @@ var _grass_selected = null
 @onready var edit_rotation_rand :EditorSpinSlider
 @onready var edit_distance :EditorSpinSlider
 @onready var label_stats :Label = $LabelStats
+## ★ 本项目改动：面数选择控件
+@onready var option_planes :OptionButton = %OptionPlanes
 
 @onready var _label_radius :Label = $HSliderRadius/Label
 @onready var _label_density :Label = $HSliderDensity/Label
@@ -78,6 +83,15 @@ func _ready() -> void:
 	%RotationCont.add_child(edit_rotation)
 	%RotationRandCont.add_child(edit_rotation_rand)
 	%DistanceCont.add_child(edit_distance)
+	# ★ 本项目改动：面数下拉（信号在 _ready 里接线，避免场景连接漏掉）
+	if option_planes != null:
+		option_planes.clear()
+		option_planes.add_item("1 面", 1)
+		option_planes.add_item("2 面", 2)
+		option_planes.add_item("3 面", 3)
+		option_planes.select(option_planes.get_item_index(2))
+		if not option_planes.item_selected.is_connected(_on_option_planes_item_selected):
+			option_planes.item_selected.connect(_on_option_planes_item_selected)
 
 
 func _unhandled_input(event :InputEvent) -> void:
@@ -133,6 +147,16 @@ func set_current_grass(grass) -> void:
 	%ButtonMore.set_current_grass(grass)
 	if _grass_selected == null:
 		return
+	# ★ 本项目改动：把草节点上的面数同步到下拉（类型安全：读不到/类型不对就保持当前选择）
+	if option_planes != null:
+		var planes: Variant = _grass_selected.get("mesh_planes")
+		var idx := -1
+		if planes is int:
+			idx = option_planes.get_item_index(int(planes))
+		elif planes is float:
+			idx = option_planes.get_item_index(int(round(float(planes))))
+		if idx >= 0:
+			option_planes.select(idx)
 	for tool_name in _grass_selected.sgt_tool_shape:
 		match tool_name:
 			"airbrush":
@@ -312,6 +336,13 @@ func _on_icon_radius_pressed() -> void:
 
 func _on_icon_radius_2_pressed() -> void:
 	slider_density.value = DEFAULT_DENSITY
+
+
+## ★ 本项目改动：面数下拉改变
+func _on_option_planes_item_selected(index: int) -> void:
+	if option_planes == null:
+		return
+	planes_changed.emit(option_planes.get_item_id(index))
 
 
 func _on_timer_reimport_icons_timeout() -> void:

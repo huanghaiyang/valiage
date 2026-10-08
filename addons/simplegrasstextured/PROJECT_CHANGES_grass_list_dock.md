@@ -220,6 +220,10 @@ SimpleGrassTextured 的整片草用的正是 `MultiMeshInstance3D`，于是从�
 位移最终量级 = `radial/bend × gain × w(0~1)`；半径内生效、边缘平滑到 0。
 `_ready()` 的 `_ensure_project_settings()` 会自动补齐缺失项并写入 `_doc` 中文说明。
 
+> ⚠ **读取项目设置必须逐类型判断**：设置里可能是非数值，
+> 直接 `float(_sgt_setting(...))` 会每帧抛 `Nonexistent 'float' constructor`。
+> 统一走 `_sgt_num()` / `_sgt_bool()`。
+
 > ⚠ **键名必须用 ASCII**。实测中文键名（如 `Wind/SGT草人物交互/影响半径_米`）在
 > Godot 读取 `project.godot` 时会失配：`ProjectSettings.has_setting()` 返回 `false`，
 > 脚本拿不到值（自检输出 `has=false`）。中文只放在 `_doc` 前缀字段里做说明。
@@ -251,6 +255,64 @@ float w = clamp(1.0 - pd / pr, 0.0, 1.0);  w = w * w;
    整片草变色 → 逐材质 uniform 确实进 GPU ✓
 2. **常量位移试验**：`if(diag>1.5) VERTEX.x += 20.0 * lev;` —— 草被整片拉飞 → 顶点写入有效 ✓
 3. **中间量着色**：把 `pd / w / lev` 映射成 RGB，一眼看出哪一段恒为 0（本次就是靠这个定位到权重）
+
+## 内置草叶面数：1 / 2 / 3 面（工具栏下拉）
+
+插件自带草叶是**十字形 2 个面**（`default_mesh.tres`：8 顶点 / 4 三角形，互成 90°），
+约 45° 斜看时有一半草叶接近侧视、视觉上会"发薄"。
+
+**用法**（两处入口，值互相同步）：
+- **Inspector**：选中草节点 → `Grass settings` → `Mesh Planes`（显示为 `1 面 / 2 面 / 3 面`）
+- **工具栏**：3D 视图上方的 SGT 工具栏里也有一个 `1 面 / 2 面 / 3 面` 下拉
+
+改完立即生效（整片草丛共用网格，
+不用重新刷草；已刷的实例顶点数据不变）。
+
+| 面数 | 顶点 / 三角形 | 说明 |
+| --- | --- | --- |
+| 1 面 | 4 / 2 | 单片，最省；适合超远距离或不需要多角度覆盖的密植 |
+| 2 面 | 8 / 4 | 插件原始十字（**默认，行为与升级前完全一致**：直接复用自带 `default_mesh.tres`） |
+| 3 面 | 12 / 6 | 互成 60° 的三片，8 个观察方向都有覆盖；顶点数 +50% |
+
+### 实现要点（`grass.gd`）
+
+- `@export_enum("1 面","2 面","3 面") var mesh_planes := 2`，带 `STORAGE` 用法 →
+  随场景保存（自检：属性列表含 `mesh_planes`，`usage=4102`；`hint_string="1 面,2 面,3 面"`）
+- **网格必须落盘成共享资源**：`addons/simplegrasstextured/generated/plane_{1,3}.tres`
+  （2 面仍用插件自带 `default_mesh.tres`）。`_get_shared_plane_mesh()` 优先读文件，
+  没有才生成并 `ResourceSaver.save()` 落盘。
+
+> ⚠ **踩坑（重要）：不要在代码里 `new` 一个网格塞给 `multimesh.mesh`**。
+> 外部 MultiMesh（`maps/*_grass.res`）保存时会把它**内联复制进自己的文件**
+> （表现为 `res://maps/xxx_grass.res::ArrayMesh_yyyy`），于是每换一次面数：
+> ① 所有引用它的 `.res` 都被整体改写（git 里一片 modified）；
+> ② 每个 `.res` 里都塞了一份网格副本。
+> 修复后自检确认：面数 2/1/3 分别指向
+> `default_mesh.tres` / `generated/plane_1.tres` / `generated/plane_3.tres`，
+> 全部是**外部资源引用**（`resource_path` 非空且不含 `::`）。
+
+> ⚠ 也不要在 `apply_mesh_planes()` 里调 `surface_set_material()`：
+> 那会把材质写进**共享**网格文件，污染其他草节点。节点级 `material_override` 优先级更高，足够。
+- `_build_plane_mesh(planes)` 代码生成：面片 k 绕 Y 轴转 `2π·k/planes`，
+  切线 = 面片右方向，法线 = `right.cross(UP)`，UV 与插件默认逐值一致；
+  AABB 与默认网格一致（高度 1、底面在 y=0），所以草的尺寸/贴地不变
+- `mesh`（自定义网格）非空时**不覆盖**，面数设置不生效
+- `apply_mesh_planes()` 同步替换 `multimesh.mesh` 并挂回材质；`_ready()` 里按 `mesh_planes` 重建
+
+> ⚠ **实测踩坑：Godot 的 `Vector3.cross()` 是左手系** ——
+> `Vector3.UP.cross(Vector3(1,0,0))` 返回 `(0,0,-1)`，与数学上的右手叉乘**符号相反**。
+> 要拿"朝正面"的法线必须写 `right.cross(UP)`；写成 `UP.cross(right)` 法线会整个翻面。
+> （插件自带网格的 plane1 也满足 `right.cross(UP)` 这个约定。）
+
+> ⚠ **实测踩坑：不要对动态属性直接写 `int(x)`**。
+> `_grass_selected` 是弱类型（旧版节点 / 换过脚本），`int(_grass_selected.mesh_planes)`
+> 一旦值类型不对就每帧抛 `Invalid call. Nonexistent 'int' constructor.`。
+> 必须像 `plugin.gd::_read_planes()` 那样**逐类型判断**：
+> `is int → clampi` / `is float → 四舍五入再夹` / 其它一律退回 2。
+> （自检覆盖 int/float/越界/null/字符串/Vector3/bool/无该属性 共 15 例，全部安全。）
+
+> 自检结果：面数 1/2/3 顶点数 4/8/12 正确；3 面两两线夹角 60.00°/59.996°/60.004°；
+> 每片法线⟂面片；切 2→1→3 面时 `multimesh.mesh` 顶点数 8→4→12 正确。
 
 ## 注意（升级插件时）
 
