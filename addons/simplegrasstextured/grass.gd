@@ -124,7 +124,7 @@ var _default_mesh : Mesh = load("res://addons/simplegrasstextured/default_mesh.t
 var _buffer_add : Array[Transform3D] = []
 var _material := load("res://addons/simplegrasstextured/materials/grass.tres").duplicate() as ShaderMaterial
 var _force_update_multimesh := false
-var _properties = []
+var _properties : Array[Dictionary] = []
 var _node_height_map = null
 var _singleton = null
 
@@ -254,7 +254,7 @@ func _process(_delta : float):
 		_update_multimesh()
 
 
-func _get_property_list() -> Array:
+func _get_property_list() -> Array[Dictionary]:
 	if _properties == null:
 		return []
 	return _properties
@@ -348,6 +348,126 @@ func erase_box(size: Vector3, shape_transform: Transform3D) -> void:
 					num_to_erase += 1
 			return num_to_erase
 	)
+
+
+## ★ 本项目改动：给「草地实例」停靠面板用的只读接口。
+##   面板只读取 MultiMesh 实例数据来统计数量 / 列出坐标，不修改任何东西。
+func get_instance_count() -> int:
+	if multimesh == null:
+		return 0
+	return multimesh.instance_count
+
+
+## 单株草的世界坐标（multimesh 的 transform 是相对本节点的局部坐标）
+func get_instance_position(index : int) -> Vector3:
+	if multimesh == null:
+		return Vector3.ZERO
+	if index < 0 or index >= multimesh.instance_count:
+		return Vector3.ZERO
+	return _instance_local_to_world(multimesh.get_instance_transform(index).origin)
+
+
+## 越界安全的 transform 读取（面板分帧建行时实例可能已被删除）
+func get_instance_transform_safe(index : int) -> Transform3D:
+	if multimesh == null:
+		return Transform3D()
+	if index < 0 or index >= multimesh.instance_count:
+		return Transform3D()
+	return multimesh.get_instance_transform(index)
+
+
+## 所有实例的世界坐标（面板一次读回，避免逐株跨脚本查询）
+func get_instance_positions() -> Array:
+	var out : Array = []
+	if multimesh == null:
+		return out
+	out.resize(multimesh.instance_count)
+	for i in range(multimesh.instance_count):
+		out[i] = _instance_local_to_world(multimesh.get_instance_transform(i).origin)
+	return out
+
+
+## 节点不在场景树里时 to_global() 会报错，这里统一兜底
+func _instance_local_to_world(local_origin : Vector3) -> Vector3:
+	if not is_inside_tree():
+		return local_origin
+	return to_global(local_origin)
+
+
+## 所有实例的局部 transform 快照（面板需要完整的缩放 / 旋转信息时使用）
+func get_instance_snapshot() -> Array:
+	var out : Array = []
+	if multimesh == null:
+		return out
+	out.resize(multimesh.instance_count)
+	for i in range(multimesh.instance_count):
+		out[i] = multimesh.get_instance_transform(i)
+	return out
+
+
+## ★ 本项目改动：按实例下标删除（面板右键删除用）。
+##   返回 (删除前的 MultiMesh, 删除前的 baked_height_map)，供撤销使用；
+##   调用方应在删除**之前**保存返回值，然后在 UndoRedo 里：
+##     add_do_method   -> _replace_multimesh(新的 MultiMesh, null)
+##     add_undo_method -> _replace_multimesh(删除前的 MultiMesh, 删除前的 baked_height_map)
+func delete_instances_by_indices(indices : PackedInt32Array) -> Array:
+	if multimesh == null or indices.is_empty():
+		return []
+	var prev_multimesh : MultiMesh = multimesh
+	var prev_height_map : Image = baked_height_map
+	var remove := {}
+	for index in indices:
+		remove[index] = true
+	var kept : Array[Transform3D] = []
+	for i in range(multimesh.instance_count):
+		if not remove.has(i):
+			kept.append(multimesh.get_instance_transform(i))
+	_replace_multimesh_with_transforms(kept)
+	return [prev_multimesh, prev_height_map]
+
+
+## 用一个已经建好的 MultiMesh 替换当前 MultiMesh（撤销 / 重做都走这里）
+func replace_multimesh_with(multi_new : MultiMesh, height_map : Image) -> void:
+	if not is_instance_valid(multi_new):
+		return
+	if multi_new.instance_count > 0 and multi_new.mesh == null:
+		# 罕见：撤销数据里的 MultiMesh 丢了 mesh，退回当前/默认 mesh
+		if multimesh != null and multimesh.mesh != null:
+			multi_new.mesh = multimesh.mesh
+		else:
+			multi_new.mesh = mesh if mesh != null else _default_mesh
+	if multi_new.instance_count == 0:
+		# 空的 MultiMesh 可以安全指定格式（有多实例时不允许改）
+		multi_new.transform_format = MultiMesh.TRANSFORM_3D
+	if Engine.is_editor_hint() and multimesh != null and multimesh.resource_path.length():
+		var path := multimesh.resource_path
+		multimesh = multi_new
+		multimesh.take_over_path(path)
+	else:
+		multimesh = multi_new
+	baked_height_map = height_map
+	if Engine.is_editor_hint():
+		custom_aabb.position = Vector3.ZERO
+		custom_aabb.end = Vector3.ZERO
+
+
+func _replace_multimesh_with_transforms(transforms : Array) -> void:
+	var multi_new := _new_multimesh()
+	multi_new.transform_format = MultiMesh.TRANSFORM_3D
+	multi_new.mesh = mesh if mesh != null else _default_mesh
+	multi_new.instance_count = transforms.size()
+	for i in range(transforms.size()):
+		multi_new.set_instance_transform(i, transforms[i])
+	if Engine.is_editor_hint() and multimesh != null and multimesh.resource_path.length():
+		var path := multimesh.resource_path
+		multimesh = multi_new
+		multimesh.take_over_path(path)
+	else:
+		multimesh = multi_new
+	if Engine.is_editor_hint():
+		baked_height_map = null
+		custom_aabb.position = Vector3.ZERO
+		custom_aabb.end = Vector3.ZERO
 
 
 func snap_to_terrain() -> void:

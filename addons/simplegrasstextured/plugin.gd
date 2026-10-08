@@ -25,6 +25,16 @@
 extends EditorPlugin
 
 const DEFAULT_POINTER_DEPTH := 10.0
+# ★ 本项目改动：「定位」相机取景参数
+#   相机到目标的最小距离：小于它就被推远，大于它保持原距离（绝不拉近）
+const LOCATE_MIN_DISTANCE := 18.0
+#   视线俯角（0.35 ≈ 19°），让画面里能看到地面而不是平视
+const LOCATE_TILT := 0.35
+#   视野中心相对草抬高多少米（草因此落在画面偏下，上方留出环境）
+const LOCATE_VIEW_HEIGHT := 4.0
+#   选中高亮环的半径（米），以及一次最多显示多少个环
+const LOCATE_SELECTION_RADIUS := 0.85
+const LOCATE_MAX_MARKERS := 256
 
 enum EVENT_MOUSE {
 	EVENT_NONE,
@@ -74,6 +84,11 @@ var _project_ray_normal := Vector3.INF
 var _inspector_plugin : EditorInspectorPlugin = null
 var _evaluate_draw_time: int = 100
 var _prev_config := ""
+# ★ 本项目改动：左侧「草地实例」停靠面板 + 定位/选中高亮
+var _gui_grass_list = null
+var _focus_helper : MeshInstance3D = null
+var _focus_helper_material : StandardMaterial3D = null
+var _focus_helpers : Array[MeshInstance3D] = []
 var _custom_settings := [{
 		"name": "SimpleGrassTextured/General/default_terrain_physics_layer",
 		"type": TYPE_INT,
@@ -203,6 +218,17 @@ func _enter_tree() -> void:
 	add_control_to_container(EditorPlugin.CONTAINER_SPATIAL_EDITOR_MENU, _gui_toolbar_up)
 	_gui_toolbar_up.set_plugin(self)
 	
+	# ★ 本项目改动：在编辑器左侧停靠区加一个「草地实例」面板
+	#   列出当前草地节点刷出的每一株草（总数 / 世界坐标），
+	#   左键单击定位、右键删除（删除进入编辑器撤销堆栈）。
+	_gui_grass_list = load("res://addons/simplegrasstextured/gui/grass_list_dock.gd").new()
+	_gui_grass_list.name = "SimpleGrassTexturedInstances"
+	add_control_to_dock(EditorPlugin.DOCK_SLOT_LEFT_UR, _gui_grass_list)
+	_gui_grass_list.set_plugin(self)
+	var editor_selection := EditorInterface.get_selection()
+	if editor_selection != null and not editor_selection.selection_changed.is_connected(_on_editor_selection_changed):
+		editor_selection.selection_changed.connect(_on_editor_selection_changed)
+	
 	_inspector_plugin = load("res://addons/simplegrasstextured/sgt_inspector.gd").new()
 	add_inspector_plugin(_inspector_plugin)
 	
@@ -239,6 +265,16 @@ func _exit_tree() -> void:
 	_grass_selected = null
 	_raycast_3d.queue_free()
 	_pointer_decal.queue_free()
+	# ★ 本项目改动：卸下草地实例面板 / 定位高亮，并断开选择变化信号
+	var editor_selection := EditorInterface.get_selection()
+	if editor_selection != null and editor_selection.selection_changed.is_connected(_on_editor_selection_changed):
+		editor_selection.selection_changed.disconnect(_on_editor_selection_changed)
+	if _gui_grass_list != null:
+		remove_control_from_docks(_gui_grass_list)
+		_gui_grass_list.queue_free()
+		_gui_grass_list = null
+	clear_selection_highlights()
+	_focus_helper = null
 	remove_custom_type("SimpleGrassTextured")
 	remove_control_from_container(EditorPlugin.CONTAINER_SPATIAL_EDITOR_BOTTOM, _gui_toolbar)
 	_gui_toolbar.queue_free()
@@ -298,6 +334,8 @@ func _handles(object) -> bool:
 		_grass_selected = object
 		_update_gui()
 		_update_pointer()
+		if _gui_grass_list != null:
+			_gui_grass_list.set_grass(object)
 		return true
 	_grass_selected = null
 	return false
@@ -307,6 +345,10 @@ func _edit(object) -> void:
 	_grass_selected = object
 	_update_gui()
 	_update_pointer()
+	# 只有真正选中草地节点时才切换面板对象；选中别的节点时保留上次的列表
+	if _gui_grass_list != null and object != null and object.has_meta(&"SimpleGrassTextured"):
+		_gui_grass_list.set_grass(object)
+		_gui_grass_list.refresh_later()
 
 
 func _make_visible(visible : bool) -> void:
@@ -322,6 +364,8 @@ func _make_visible(visible : bool) -> void:
 		_grass_selected = null
 		_gui_toolbar.set_current_grass(null)
 		_gui_toolbar_up.set_current_grass(null)
+		if _gui_grass_list != null:
+			_gui_grass_list.clear_highlights()
 
 
 func _physics_process(_delta) -> void:
@@ -413,6 +457,9 @@ func _forward_3d_gui_input(viewport_camera: Camera3D, event: InputEvent) -> int:
 				get_undo_redo().add_do_property(_grass_selected, &"baked_height_map", _grass_selected.baked_height_map)
 				get_undo_redo().add_do_property(_grass_selected, &"multimesh", _grass_selected.multimesh)
 				get_undo_redo().commit_action()
+				# ★ 本项目改动：笔刷一次操作结束 -> 让草地面板补一次延迟刷新
+				if _gui_grass_list != null:
+					_gui_grass_list.refresh_later()
 				_time_draw = 0
 				_object_draw = null
 				_mouse_event = EVENT_MOUSE.EVENT_NONE
@@ -668,6 +715,183 @@ func _update_pointer() -> void:
 		TOOL_SHAPE.BOX_INF_H:
 			_pointer_depth = 1000000
 			_pointer_decal.set_texture(Decal.TEXTURE_ALBEDO, _pointer_img_rect)
+
+
+# ★ 本项目改动（草地实例面板）开始 --------------------------------------------
+# 编辑器里选中的节点变化时，把「当前草地」同步给面板：
+#   选中 SimpleGrassTextured -> 面板显示它；选中的是别的节点 -> 保持原样不打扰。
+func _on_editor_selection_changed() -> void:
+	if _gui_grass_list == null:
+		return
+	var selection := EditorInterface.get_selection()
+	if selection == null:
+		return
+	for node in selection.get_selected_nodes():
+		if node != null and node.has_meta(&"SimpleGrassTextured"):
+			_gui_grass_list.set_grass(node)
+			return
+	_gui_grass_list.refresh(false)
+
+
+## 面板「定位」：把编辑器 3D 相机移到指定世界坐标，并在该处放一个高亮球。
+## 取景规则（避免「拉太近」）：
+##   1. 相机到目标的距离不小于 LOCATE_MIN_DISTANCE（原来更远就保持原距离，绝不拉近）；
+##   2. 相机始终守在目标点的水平方向上、比目标高一点，视线带一点俯角；
+##   3. 视野中心抬高 LOCATE_VIEW_HEIGHT，草落在画面偏下，上方留出环境。
+func focus_grass_point(world_position : Vector3) -> void:
+	_show_focus_helper(world_position)
+	var viewport := EditorInterface.get_editor_viewport_3d(0)
+	if viewport == null:
+		return
+	var camera := viewport.get_camera_3d()
+	if camera == null:
+		return
+	if camera.projection == Camera3D.PROJECTION_ORTHOGONAL:
+		camera.global_position = world_position
+		return
+	var look_at_point := world_position + Vector3.UP * LOCATE_VIEW_HEIGHT
+	if look_at_point.distance_to(camera.global_position) < 0.001:
+		return
+	# 观察方向：优先用当前相机->目标的水平方向，相机正上/正下方时退回相机自身朝向
+	var horizontal := world_position - camera.global_position
+	horizontal.y = 0.0
+	if horizontal.length() < 0.001:
+		horizontal = -camera.global_transform.basis.z
+		horizontal.y = 0.0
+	if horizontal.length() < 0.001:
+		horizontal = Vector3.BACK
+	horizontal = horizontal.normalized()
+	# 视线方向 = 水平方向 + 俯角
+	var look_dir := (horizontal + Vector3.DOWN * LOCATE_TILT).normalized()
+	# 距离：保持原来的三维距离，但不小于 LOCATE_MIN_DISTANCE（只推远、不拉近）
+	var distance := camera.global_position.distance_to(world_position)
+	distance = maxf(distance, LOCATE_MIN_DISTANCE)
+	# 相机沿 look_dir 反方向退到目标身后：高度由俯角决定，不会钻到地下
+	camera.global_position = world_position - look_dir * distance
+	camera.look_at(look_at_point, Vector3.UP)
+
+
+## 面板「删除」：按实例下标删除草，整个操作进入编辑器撤销堆栈（Ctrl+Z 可还原）
+func delete_grass_instances(grass, indices : PackedInt32Array) -> void:
+	if grass == null or not is_instance_valid(grass):
+		return
+	if indices.is_empty() or grass.multimesh == null:
+		return
+	var before : Array = grass.delete_instances_by_indices(indices)
+	if before.size() < 2:
+		return
+	var prev_multimesh : MultiMesh = before[0]
+	var prev_height_map : Image = before[1]
+	var after_multimesh : MultiMesh = grass.multimesh
+	var after_height_map : Image = grass.baked_height_map
+	var removed := prev_multimesh.instance_count - after_multimesh.instance_count
+	var undo_redo := get_undo_redo()
+	undo_redo.create_action("%s - 删除 %d 株草" % [grass.name, removed], UndoRedo.MERGE_DISABLE, grass)
+	undo_redo.add_do_method(grass, &"replace_multimesh_with", after_multimesh, after_height_map)
+	undo_redo.add_undo_method(grass, &"replace_multimesh_with", prev_multimesh, prev_height_map)
+	undo_redo.commit_action()
+	if _gui_toolbar != null:
+		_gui_toolbar.label_stats.text = "Count: " + str(grass.multimesh.instance_count)
+	_update_pointer()
+
+
+## 面板选中若干株草 -> 给每一株都放一个高亮环（多选也能一眼看到选中了哪些）。
+## positions 为空表示清空高亮；超过 LOCATE_MAX_MARKERS 只显示前若干个。
+func set_selection_highlights(positions : PackedVector3Array, limit : int = LOCATE_MAX_MARKERS) -> void:
+	var wanted := positions
+	if wanted.size() > limit:
+		wanted = wanted.slice(0, limit)
+	# 先把「定位」留下的单个标记也纳入管理，避免它游离在外
+	if not wanted.is_empty() and _focus_helper != null and not _focus_helpers.has(_focus_helper):
+		if is_instance_valid(_focus_helper):
+			var first : MeshInstance3D = _focus_helper
+			_focus_helpers.append(first)
+			if _focus_helpers.size() > wanted.size():
+				_focus_helpers.pop_back()
+				first.queue_free()
+	_focus_helper = null
+	while _focus_helpers.size() > wanted.size():
+		var extra : MeshInstance3D = _focus_helpers.pop_back()
+		if is_instance_valid(extra):
+			extra.queue_free()
+	while _focus_helpers.size() < wanted.size():
+		var marker := _create_focus_marker("SGTSelectionMarker%d" % _focus_helpers.size(), LOCATE_SELECTION_RADIUS)
+		_focus_helpers.append(marker)
+	for i in range(_focus_helpers.size()):
+		var marker : MeshInstance3D = _focus_helpers[i]
+		if not is_instance_valid(marker):
+			continue
+		marker.global_position = wanted[i]
+		marker.visible = true
+	# _focus_helper 只作为「有没有高亮」的标志；这里统一指向第一个环
+	_focus_helper = _focus_helpers[0] if not _focus_helpers.is_empty() else null
+
+
+## 清空全部高亮环
+func clear_selection_highlights() -> void:
+	for marker in _focus_helpers:
+		if is_instance_valid(marker):
+			marker.queue_free()
+	_focus_helpers.clear()
+	_focus_helper = null
+
+
+func _create_focus_marker(marker_name : String, radius : float) -> MeshInstance3D:
+	if _focus_helper_material == null:
+		_focus_helper_material = StandardMaterial3D.new()
+		_focus_helper_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_focus_helper_material.albedo_color = Color(1.0, 0.55, 0.05, 1.0)
+		_focus_helper_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		# 不做深度测试：草丛 / 地形挡在前面时这个标记仍然可见
+		_focus_helper_material.no_depth_test = true
+	var marker := MeshInstance3D.new()
+	marker.name = marker_name
+	marker.mesh = _create_ring_mesh(radius, maxf(radius * 0.28, 0.06))
+	marker.material_override = _focus_helper_material
+	marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	marker.visible = false
+	add_child(marker)
+	return marker
+
+
+## 生成一个水平圆环（放在草地上像个标记环）。每次调用都新建网格，
+## 因为标记数量很少，不值得为不同半径做缓存。
+func _create_ring_mesh(radius : float, thickness : float) -> ArrayMesh:
+	var steps := 40
+	var r_in := maxf(radius - thickness * 0.5, 0.01)
+	var r_out := radius + thickness * 0.5
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var indices := PackedInt32Array()
+	for i in range(steps):
+		var a := TAU * float(i) / float(steps)
+		var dir := Vector3(cos(a), 0.0, sin(a))
+		verts.append(dir * r_in)
+		verts.append(dir * r_out)
+		normals.append(Vector3.UP)
+		normals.append(Vector3.UP)
+	for i in range(steps):
+		var v := i * 2
+		var next := ((i + 1) % steps) * 2
+		indices.append(v); indices.append(v + 1); indices.append(next)
+		indices.append(v + 1); indices.append(next + 1); indices.append(next)
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _show_focus_helper(world_position : Vector3) -> void:
+	if _focus_helper == null or not is_instance_valid(_focus_helper):
+		var marker := _create_focus_marker("SGTLocateMarker", LOCATE_SELECTION_RADIUS)
+		_focus_helper = marker
+	_focus_helper.global_position = world_position
+	_focus_helper.visible = true
+# ★ 本项目改动（草地实例面板）结束 --------------------------------------------
 
 
 func _on_project_settings_changed() -> void:

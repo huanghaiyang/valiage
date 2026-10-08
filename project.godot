@@ -52,10 +52,8 @@ buses/default_bus_layout="uid://dhnh2a14hacql"
 
 Game="*res://scripts/game.gd"
 Settings="*res://scripts/settings.gd"
-_mcp_game_helper="*res://addons/godot_ai/runtime/game_helper.gd"
 Weather="*res://scripts/world/weather.gd"
 StaffSystem="*res://scripts/staff_system.gd"
-SimpleGrass="*uid://bfq0snth8sj3h"
 Quality="*res://scripts/quality/quality_manager.gd"
 GameSettings="*res://scripts/settings/game_settings.gd"
 Wind="*res://scripts/wind.gd"
@@ -63,6 +61,8 @@ Mana="*res://scripts/spells/mana.gd"
 SpellCaster="*res://scripts/spells/spell_caster.gd"
 Vitals="*res://scripts/vitals.gd"
 VitalsHud="*res://scripts/ui/vitals_hud.gd"
+_mcp_game_helper="*res://addons/godot_ai/runtime/game_helper.gd"
+SimpleGrass="*uid://bfq0snth8sj3h"
 
 [display]
 
