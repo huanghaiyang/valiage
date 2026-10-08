@@ -8,9 +8,11 @@ size = Vector3(0.18261719, 0.15761566, 0.3335266)
 [node name="石质墓园栅栏_07" type="Node3D" unique_id=1200776160]
 
 [node name="石质墓园栅栏_07" type="MeshInstance3D" parent="." unique_id=1644481460]
+transform = Transform3D(10, 0, 0, 0, 10, 0, 0, 0, 10, 0, 0.70927047, 0)
 mesh = ExtResource("1_phtuw")
 
 [node name="StaticBody3D" type="StaticBody3D" parent="石质墓园栅栏_07" unique_id=853650543]
+transform = Transform3D(10, 0, 0, 0, 10, 0, 0, 0, 10, 0, 0.70927047, 0)
 collision_layer = 4
 collision_mask = 0
 
