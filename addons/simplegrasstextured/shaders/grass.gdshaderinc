@@ -270,11 +270,13 @@ void fragment() {
 	vec2 uv = (UV * uv_scale) + uv_align;
 	vec4 albedo_tex = texture(texture_albedo, uv);
 	ALBEDO = albedo.rgb * albedo_tex.rgb;
-	// ★★ 本项目改动：角色被草遮挡时的 1px 褐色轮廓
+	// ★★ 本项目改动：角色被草遮挡时的轮廓（脚底小圈）
 	//   条件：① 这一像素落在角色的屏幕圆内
 	//         ② 草片比角色**更靠近相机**（真的挡住了）
 	//         ③ 处在圆的"边缘一圈"（宽度 = sgt_occl_px 像素）→ 只描边、不糊满
-	//   这样草盖住角色的地方会出现一圈褐色，玩家能看清角色在哪。
+	//   注意：sgt_occl_color 的 **alpha 也要用上**（半透明白），这里只改 ALBEDO 不够。
+	float o_alpha = 1.0;
+	bool o_hit = false;
 	if (sgt_occl_on > 0.5) {
 		// ⚠ 两套坐标系必须换算：
 		//   · sgt_player_screen / _screen_r 来自 unproject_position() -> **视口逻辑坐标**（如 1280x720）
@@ -294,6 +296,8 @@ void fragment() {
 			ALBEDO = sgt_occl_color.rgb;
 			METALLIC = 0.0;
 			ROUGHNESS = 1.0;
+			o_hit = true;
+			o_alpha = sgt_occl_color.a;
 		}
 	}
 	NORMAL_MAP = texture(texture_normal, uv).rgb;
@@ -307,6 +311,11 @@ void fragment() {
 	ROUGHNESS = roughness_tex * roughness;
 	ALPHA *= albedo.a * albedo_tex.a;
 	ALPHA_SCISSOR_THRESHOLD = alpha_scissor_threshold;
+	// ★ 轮廓半透明：命中轮廓色时，用颜色自带的 alpha（sgt_occlusion_color.a）
+	if (o_hit) {
+		ALPHA = o_alpha;
+		ALPHA_SCISSOR_THRESHOLD = 0.0;   // 别让 alpha 剪切把半透明像素丢掉
+	}
 
 	// ★ 逐实例燃烧：烧焦变黑 + 余烬。
 	//   消失/长回走**缩放**（见 vertex 里的 v_burn_scale），不再是噪声溶解，

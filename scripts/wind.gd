@@ -63,13 +63,15 @@ extends Node
 @export var sgt_player_bend := 1.00              ## 沿移动方向"倒伏"位移（米级手柄）
 @export var sgt_player_gain := 0.10              ## 位移总增益（收敛量级）
 @export var debug_sgt_player := true             ## 移动时每秒打一条日志（确认链路用）
-## ★★ 本项目改动：角色被草遮挡时的 1px 褐色轮廓
+## ★★ 本项目改动：角色被草遮挡时的轮廓（脚底小圈，白色）
 ##   enable：总开关 ｜ px：轮廓宽度（像素）｜ height：角色高度（米，用于估算屏幕半径）
 @export var sgt_occlusion_outline := true        ## 是否启用遮挡轮廓
 @export var sgt_occlusion_px := 1.0              ## 轮廓宽度（像素）
 @export var sgt_occlusion_height := 1.75         ## 角色高度（米）
-@export var sgt_occlusion_radius_scale := 0.30   ## 屏幕半径相对"角色屏幕高"的比例
-@export var sgt_occlusion_color := Color(0.30, 0.17, 0.09, 1.0)   ## 褐色
+@export var sgt_occlusion_foot_radius := 0.20    ## 轮廓半径（米）：以角色脚底为圆心的小圈
+@export var sgt_occlusion_color := Color(1.0, 1.0, 1.0, 0.55)   ## 半透明白（a = 不透明度）
+## ★ 调试开关（默认关）：启动 2 秒后把玩家送到最近一株 SGT 草上，便于查看轮廓
+@export var debug_snap_to_grass := false
 ## 每帧算好的角色屏幕量（供 _write_sgt 写入材质）
 var _occl_on := 0.0
 var _occl_screen := Vector2(-100000.0, -100000.0)
@@ -105,6 +107,7 @@ var _sgt_player_pos := Vector3(1.0e9, 1.0e9, 1.0e9)
 var _sgt_player_step := Vector3.ZERO
 var _sgt_player_warned := false
 var _dbg_player_t := 0.0
+var _dbg_snap_t := 0.0
 
 
 func _ready() -> void:
@@ -120,6 +123,14 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	if not enabled:
 		return
+	# ★ 调试：启动 2 秒后把玩家送到最近一株 SGT 草（默认关）
+	if debug_snap_to_grass:
+		_dbg_snap_t += delta
+		if _dbg_snap_t >= 2.0:
+			_dbg_snap_t = -1.0e9
+			print("[Wind] 调试传送: %s ｜ 脚底圈半径=%.1f px（视口逻辑）｜ 世界半径=%.2f m" % [
+					str(snap_player_to_nearest_grass()), _occl_radius,
+					float(_sgt_num("foot_radius", sgt_occlusion_foot_radius))])
 	_scan_timer += delta
 	if _scan_timer >= scan_interval:
 		_scan_timer = 0.0
@@ -324,10 +335,10 @@ const SGT_SET_KEYS: Dictionary = {
 	"bend": "沿移动倒伏（米级手柄）：顺着行走方向的倒伏力度（站着只剩 25%）",
 	"gain": "位移总增益：最终位移 = 手柄 × 增益 × 权重(0~1)",
 	"debug_log": "打印调试日志：移动时每秒输出一条链路日志",
-	"occlusion_outline": "角色被草遮挡时是否描一圈褐色轮廓",
+	"occlusion_outline": "角色被草遮挡时是否描一圈轮廓",
 	"occlusion_px": "轮廓宽度（像素）",
-	"occlusion_height": "角色高度（米）：用于估算角色的屏幕半径",
-	"occlusion_radius_scale": "屏幕半径相对角色屏幕高的比例（0.3 ≈ 半个角色宽）",
+	"occlusion_height": "角色高度（米）：用于算视空间深度",
+	"foot_radius": "轮廓半径（米）：以角色脚底为圆心的小圈",
 }
 
 func _ensure_project_settings() -> void:
@@ -340,7 +351,7 @@ func _ensure_project_settings() -> void:
 		"occlusion_outline": sgt_occlusion_outline,
 		"occlusion_px": sgt_occlusion_px,
 		"occlusion_height": sgt_occlusion_height,
-		"occlusion_radius_scale": sgt_occlusion_radius_scale,
+		"foot_radius": sgt_occlusion_foot_radius,
 	}
 	for k in defaults:
 		var key: String = SGT_SET_PREFIX + String(k)
@@ -447,14 +458,18 @@ func _update_screen_metrics(p: Node3D) -> void:
 		px_size = logical
 	var base := p.global_position
 	var h := maxf(0.2, _sgt_num("occlusion_height", sgt_occlusion_height))
+	# ★ 轮廓是"角色脚底的一个小圈"：圆心 = 脚底屏幕位置。
+	#   半径用**相机参数解析计算**，不要用"投影一个世界方向上的点再量长度"：
+	#   后者会随角色朝向/坡度/相机偏航而给出不同长度（世界 +X 方向在俯视+偏航下
+	#   投影长度本来就不等于圆圈的屏幕半径）-> 表现就是"圈时大时小"。
+	#   解析式：在角色所处深度上，1 米对应多少**视口逻辑像素**。
 	var p_bot := cam.unproject_position(base)
-	var p_top := cam.unproject_position(base + Vector3(0.0, h, 0.0))
-	var h_px := (p_top - p_bot).length()
-	if h_px < 0.5:
+	var r_world := maxf(0.05, _sgt_num("foot_radius", sgt_occlusion_foot_radius))
+	var r_px := r_world * _pixels_per_meter(cam, base, logical)
+	if r_px < 0.5:
 		return    # 角色几乎在相机背后 / 极远：不画
-	var rscale := _sgt_num("occlusion_radius_scale", sgt_occlusion_radius_scale)
 	_occl_screen = p_bot                              # 视口逻辑坐标（与 unproject 一致）
-	_occl_radius = clampf(h_px * rscale, 1.0, 0.9 * logical.y)
+	_occl_radius = clampf(r_px, 0.5, 0.9 * logical.y)
 	_occl_depth = -(cam.global_transform.affine_inverse() * (base + Vector3(0.0, h * 0.5, 0.0))).z
 	_occl_vp_logical = logical
 	_occl_vp_pixel = px_size
@@ -468,6 +483,24 @@ func _framebuffer_pixel_size() -> Vector2:
 	if s.x < 1.0 or s.y < 1.0:
 		s = Vector2(1280.0, 720.0)
 	return s
+
+
+## ★ 在 `at` 所处深度上，**1 米对应多少视口逻辑像素**（解析式，不含方向依赖）。
+##   透视：该深度的可见世界高度 = 2 * 距离 * tan(fov/2)，再按视口逻辑高度换算。
+##   ⚠ 不要用"投影一个世界方向上的点再量长度"来估 —— 那会随朝向/坡度/相机偏航
+##     给出不同值，表现就是圈的屏幕大小时大时小。
+func _pixels_per_meter(cam: Camera3D, at: Vector3, logical: Vector2) -> float:
+	var vh := maxf(1.0, logical.y)
+	if cam.projection == Camera3D.PROJECTION_ORTHOGONAL:
+		return vh / maxf(0.01, cam.size)
+	var cam_inv := cam.global_transform.affine_inverse()
+	var dist := -(cam_inv * at).z          # 视空间深度（正数，越远越大）
+	if dist < 0.01:
+		return 0.0
+	var world_h := 2.0 * dist * tan(deg_to_rad(cam.fov) * 0.5)
+	if world_h < 0.0001:
+		return 0.0
+	return vh / world_h
 
 
 ## ★★ 窗口/视口尺寸变化：立即重算屏幕量并写进材质。
@@ -493,7 +526,8 @@ func _apply_sgt_occlusion() -> void:
 		on = 0.0
 	var px := float(_sgt_num("occlusion_px", sgt_occlusion_px))
 	var oc := sgt_occlusion_color
-	var col := Color(oc.r, oc.g, oc.b, 1.0)
+	# ★ 保留 alpha：着色器用它做轮廓的不透明度（半透明白）
+	var col := Color(oc.r, oc.g, oc.b, oc.a)
 	for m in _mats_sgt:
 		if not is_instance_valid(m):
 			continue
@@ -505,6 +539,38 @@ func _apply_sgt_occlusion() -> void:
 		m.set_shader_parameter("sgt_occl_on", on)
 		m.set_shader_parameter("sgt_occl_px", px)
 		m.set_shader_parameter("sgt_occl_color", col)
+
+
+## ★ 调试用：把玩家送到**最近的一株 SGT 草**上（脚下有草，便于查看轮廓；不影响正常玩法）
+func snap_player_to_nearest_grass() -> bool:
+	var p := _find_player()
+	if p == null or get_tree() == null:
+		return false
+	var root := get_tree().current_scene
+	if root == null:
+		return false
+	var best := 1.0e12
+	var best_pos := Vector3.ZERO
+	var found := false
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is MultiMeshInstance3D and n.has_meta(&"SimpleGrassTextured"):
+			var mmi := n as MultiMeshInstance3D
+			if mmi.multimesh != null:
+				for i in range(mini(mmi.multimesh.instance_count, 4000)):
+					var w: Vector3 = mmi.global_transform * mmi.multimesh.get_instance_transform(i).origin
+					var d := w.distance_squared_to(p.global_position)
+					if d < best:
+						best = d
+						best_pos = w
+						found = true
+		for c in n.get_children():
+			stack.append(c)
+	if not found:
+		return false
+	p.global_position = Vector3(best_pos.x, p.global_position.y, best_pos.z)
+	return true
 
 
 # ---------------------------------------------------------------- 参数写入
