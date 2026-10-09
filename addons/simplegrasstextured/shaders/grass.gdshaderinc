@@ -62,6 +62,17 @@ uniform float sgt_player_bend_radius = 1.4;     // 影响半径（米）
 uniform float sgt_player_bend = 1.0;            // 沿移动方向倒伏（米级手柄）
 uniform float sgt_player_radial = 1.2;          // 径向分开（米级手柄）
 uniform float sgt_player_gain = 0.10;           // 位移总增益（收敛量级，见 wind.gd 的写入值）
+// ★★ 本项目改动：角色被草遮挡时的 1px 褐色轮廓
+//   判定 = 草片在角色屏幕圆内 ∩ 草片在角色前面 ∩ 靠近圆的轮廓边缘 → 画褐色
+//   屏幕量由 scripts/wind.gd 每帧算好，走**逐材质**通道（global uniform 在 4.7 运行时失效，本项目踩过）
+uniform vec2 sgt_player_screen = vec2(-100000.0, -100000.0);  // 角色屏幕坐标（**视口逻辑坐标**，同 unproject_position）
+uniform float sgt_player_screen_r = 0.0;        // 角色屏幕半径（**视口逻辑坐标单位**）
+uniform float sgt_player_depth = 0.0;           // 角色视空间深度
+uniform float sgt_occl_on = 0.0;                // 1 = 启用遮挡轮廓
+uniform float sgt_occl_px = 1.0;                // 轮廓宽度（帧缓冲像素；<0 = 诊断涂满整圆）
+uniform vec4 sgt_occl_color = vec4(0.30, 0.17, 0.09, 1.0);   // 褐色
+uniform vec2 sgt_occl_vp_logical = vec2(1280.0, 720.0);       // 视口逻辑尺寸（unproject 所在空间）
+uniform vec2 sgt_occl_vp_pixel = vec2(1280.0, 720.0);         // 帧缓冲像素尺寸（FRAGCOORD 所在空间）
 global uniform sampler2D sgt_normal_displacement : repeat_disable, filter_nearest, hint_normal;
 global uniform sampler2D sgt_motion_texture : repeat_disable, filter_nearest, hint_default_black;
 uniform vec3 sgt_wind_direction = vec3(1.0, 0.0, 0.0);   // 改逐材质：Godot 4.7 运行时 global uniform 顶点阶段失效
@@ -259,6 +270,32 @@ void fragment() {
 	vec2 uv = (UV * uv_scale) + uv_align;
 	vec4 albedo_tex = texture(texture_albedo, uv);
 	ALBEDO = albedo.rgb * albedo_tex.rgb;
+	// ★★ 本项目改动：角色被草遮挡时的 1px 褐色轮廓
+	//   条件：① 这一像素落在角色的屏幕圆内
+	//         ② 草片比角色**更靠近相机**（真的挡住了）
+	//         ③ 处在圆的"边缘一圈"（宽度 = sgt_occl_px 像素）→ 只描边、不糊满
+	//   这样草盖住角色的地方会出现一圈褐色，玩家能看清角色在哪。
+	if (sgt_occl_on > 0.5) {
+		// ⚠ 两套坐标系必须换算：
+		//   · sgt_player_screen / _screen_r 来自 unproject_position() -> **视口逻辑坐标**（如 1280x720）
+		//   · 这里的 FRAGCOORD 是**帧缓冲真实像素**（高 DPI 下如 3824x1982）
+		//   实测二者的比例 ≈ 2.99，不做换算圆就会画到错误位置（表现为"完全看不到"）。
+		vec2 oratio = sgt_occl_vp_pixel / max(sgt_occl_vp_logical, vec2(1.0, 1.0));
+		vec2 ocenter_px = sgt_player_screen * oratio;
+		float orad_px = sgt_player_screen_r * oratio.y;
+		float od = length(FRAGCOORD.xy - ocenter_px);        // 到角色中心的像素距离
+		float oedge = max(1.0, abs(sgt_occl_px));            // 轮廓宽度（像素）
+		// ★ 诊断模式（sgt_occl_px < 0）：忽略深度与边缘判定，把整个圆涂色
+		bool force_disk = sgt_occl_px < 0.0;
+		// ⚠ render_mode 有 world_vertex_coords，fragment 里的 VERTEX 是世界坐标，
+		//   不能当视空间深度；这里只用它做一个保守的"不画在角色身后"的判断。
+		float ofrag = -VERTEX.z;
+		if (od < orad_px && (force_disk || (ofrag < sgt_player_depth && od > orad_px - oedge))) {
+			ALBEDO = sgt_occl_color.rgb;
+			METALLIC = 0.0;
+			ROUGHNESS = 1.0;
+		}
+	}
 	NORMAL_MAP = texture(texture_normal, uv).rgb;
 	NORMAL_MAP_DEPTH = normal_scale;
 	METALLIC = metallic;

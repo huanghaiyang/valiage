@@ -63,6 +63,22 @@ extends Node
 @export var sgt_player_bend := 1.00              ## 沿移动方向"倒伏"位移（米级手柄）
 @export var sgt_player_gain := 0.10              ## 位移总增益（收敛量级）
 @export var debug_sgt_player := true             ## 移动时每秒打一条日志（确认链路用）
+## ★★ 本项目改动：角色被草遮挡时的 1px 褐色轮廓
+##   enable：总开关 ｜ px：轮廓宽度（像素）｜ height：角色高度（米，用于估算屏幕半径）
+@export var sgt_occlusion_outline := true        ## 是否启用遮挡轮廓
+@export var sgt_occlusion_px := 1.0              ## 轮廓宽度（像素）
+@export var sgt_occlusion_height := 1.75         ## 角色高度（米）
+@export var sgt_occlusion_radius_scale := 0.30   ## 屏幕半径相对"角色屏幕高"的比例
+@export var sgt_occlusion_color := Color(0.30, 0.17, 0.09, 1.0)   ## 褐色
+## 每帧算好的角色屏幕量（供 _write_sgt 写入材质）
+var _occl_on := 0.0
+var _occl_screen := Vector2(-100000.0, -100000.0)
+var _occl_radius := 0.0
+var _occl_depth := 0.0
+## ★ 两套尺寸都要：逻辑视口（unproject 坐标系）与帧缓冲像素（FRAGCOORD 坐标系）
+var _occl_vp_logical := Vector2(1280.0, 720.0)
+var _occl_vp_pixel := Vector2(1280.0, 720.0)
+
 
 ## ★ 当前风（供火焰/其他 VFX 读取，不必去翻材质）。每次写材质前同步更新。
 var cur_dir := Vector2(1.0, 0.0)
@@ -94,6 +110,10 @@ var _dbg_player_t := 0.0
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_ensure_project_settings()
+	# ★ 窗口/视口尺寸一变就重算角色屏幕量并立刻写进草材质（否则轮廓会一直按旧尺寸画）
+	var vp := get_viewport()
+	if vp != null and not vp.size_changed.is_connected(_on_viewport_size_changed):
+		vp.size_changed.connect(_on_viewport_size_changed)
 	_scan()
 
 
@@ -304,6 +324,10 @@ const SGT_SET_KEYS: Dictionary = {
 	"bend": "沿移动倒伏（米级手柄）：顺着行走方向的倒伏力度（站着只剩 25%）",
 	"gain": "位移总增益：最终位移 = 手柄 × 增益 × 权重(0~1)",
 	"debug_log": "打印调试日志：移动时每秒输出一条链路日志",
+	"occlusion_outline": "角色被草遮挡时是否描一圈褐色轮廓",
+	"occlusion_px": "轮廓宽度（像素）",
+	"occlusion_height": "角色高度（米）：用于估算角色的屏幕半径",
+	"occlusion_radius_scale": "屏幕半径相对角色屏幕高的比例（0.3 ≈ 半个角色宽）",
 }
 
 func _ensure_project_settings() -> void:
@@ -313,6 +337,10 @@ func _ensure_project_settings() -> void:
 		"bend": sgt_player_bend,
 		"gain": sgt_player_gain,
 		"debug_log": debug_sgt_player,
+		"occlusion_outline": sgt_occlusion_outline,
+		"occlusion_px": sgt_occlusion_px,
+		"occlusion_height": sgt_occlusion_height,
+		"occlusion_radius_scale": sgt_occlusion_radius_scale,
 	}
 	for k in defaults:
 		var key: String = SGT_SET_PREFIX + String(k)
@@ -390,6 +418,93 @@ func _update_sgt_player(_delta: float, p: Node3D, ppos: Vector3) -> void:
 	if using_group and p == null:
 		# 连玩家都找不到：把影响半径清零，别让草整片朝一个假点倒
 		_sgt_player_pos = Vector3(1.0e9, 1.0e9, 1.0e9)
+	# ★ 顺带算"角色在屏幕上的位置/半径/视深度"，供草着色器画遮挡轮廓
+	_update_screen_metrics(p)
+
+## ★★ 本项目改动：算出角色在屏幕上的位置、半径与视空间深度。
+##   草着色器用它们判断"这一像素是否属于被草挡住角色"的那一圈，从而描出 1px 褐色轮廓。
+##   ⚠ 这套量**全都依赖视口尺寸**（半径是"比例"，脚本按视口像素换算），
+##     所以窗口一改尺寸就必须重算并**立刻**写进材质 —— 见 _on_viewport_size_changed()。
+##   每帧无条件计算（不做开关早退），关闭开关时由调用方把 _occl_on 归零。
+func _update_screen_metrics(p: Node3D) -> void:
+	if p == null or not is_instance_valid(p) or get_tree() == null:
+		return
+	var cam := get_tree().root.get_camera_3d()
+	if cam == null:
+		return
+	var vp := cam.get_viewport()
+	if vp == null:
+		return
+	# ★★ 两套尺寸都要，缺一不可（这是"轮廓完全看不到 / 不跟随"的根本原因）：
+	#   · unproject_position() 返回的是**视口逻辑坐标**（本机 1280x720）
+	#   · 着色器 FRAGCOORD 是**帧缓冲真实像素**（本机 3824x1982，比例约 2.99）
+	#   只存一套，圆就会被画到错误的屏幕位置。
+	var px_size := _framebuffer_pixel_size()
+	var logical := Vector2(vp.get_visible_rect().size)
+	if logical.x < 1.0 or logical.y < 1.0:
+		logical = px_size
+	if px_size.x < 1.0 or px_size.y < 1.0:
+		px_size = logical
+	var base := p.global_position
+	var h := maxf(0.2, _sgt_num("occlusion_height", sgt_occlusion_height))
+	var p_bot := cam.unproject_position(base)
+	var p_top := cam.unproject_position(base + Vector3(0.0, h, 0.0))
+	var h_px := (p_top - p_bot).length()
+	if h_px < 0.5:
+		return    # 角色几乎在相机背后 / 极远：不画
+	var rscale := _sgt_num("occlusion_radius_scale", sgt_occlusion_radius_scale)
+	_occl_screen = p_bot                              # 视口逻辑坐标（与 unproject 一致）
+	_occl_radius = clampf(h_px * rscale, 1.0, 0.9 * logical.y)
+	_occl_depth = -(cam.global_transform.affine_inverse() * (base + Vector3(0.0, h * 0.5, 0.0))).z
+	_occl_vp_logical = logical
+	_occl_vp_pixel = px_size
+	_occl_on = 1.0
+
+
+## ★ 帧缓冲真实像素尺寸（与着色器 FRAGCOORD 同坐标系）。
+##   ⚠ Window 没有 get_render_target_size()（那是 Viewport 的方法，调用会直接崩到断点）。
+func _framebuffer_pixel_size() -> Vector2:
+	var s := Vector2(DisplayServer.window_get_size())
+	if s.x < 1.0 or s.y < 1.0:
+		s = Vector2(1280.0, 720.0)
+	return s
+
+
+## ★★ 窗口/视口尺寸变化：立即重算屏幕量并写进材质。
+##   不这样做的话，轮廓会一直用**旧视口尺寸**换算（半径、像素宽度全部错位），
+##   而且要等到下一次风参数写入才可能纠正 —— 草材质列表为空时更是永远不纠正。
+func _on_viewport_size_changed() -> void:
+	var p := _find_player()
+	if p == null:
+		return
+	_update_screen_metrics(p)
+	_apply_sgt_occlusion()
+	if debug_sgt_player:
+		print("[Wind] 视口尺寸变化 -> 已刷新轮廓：逻辑=%s 像素=%s 屏幕半径=%.2f 视深度=%.2f" % [
+				str(_occl_vp_logical), str(_occl_vp_pixel), _occl_radius, _occl_depth])
+
+
+## ★ 把"角色屏幕量 + 轮廓参数"写进所有 SGT 草材质。
+##   ★ 必须**每次遍历全部材质**（不像风参数那样一帧只写一次也无所谓）：
+##     resize 时会立刻调这里，不能只更新第一个材质。
+func _apply_sgt_occlusion() -> void:
+	var on := _occl_on
+	if not _sgt_bool("occlusion_outline", sgt_occlusion_outline):
+		on = 0.0
+	var px := float(_sgt_num("occlusion_px", sgt_occlusion_px))
+	var oc := sgt_occlusion_color
+	var col := Color(oc.r, oc.g, oc.b, 1.0)
+	for m in _mats_sgt:
+		if not is_instance_valid(m):
+			continue
+		m.set_shader_parameter("sgt_player_screen", _occl_screen)
+		m.set_shader_parameter("sgt_player_screen_r", _occl_radius)
+		m.set_shader_parameter("sgt_player_depth", _occl_depth)
+		m.set_shader_parameter("sgt_occl_vp_logical", _occl_vp_logical)
+		m.set_shader_parameter("sgt_occl_vp_pixel", _occl_vp_pixel)
+		m.set_shader_parameter("sgt_occl_on", on)
+		m.set_shader_parameter("sgt_occl_px", px)
+		m.set_shader_parameter("sgt_occl_color", col)
 
 
 # ---------------------------------------------------------------- 参数写入
@@ -475,6 +590,9 @@ func _write_sgt(dir2: Vector2, strength: float, gust: float, turb: float, ppos: 
 		m.set_shader_parameter("sgt_player_radial", p_radial)
 		m.set_shader_parameter("sgt_player_bend_radius", p_radius)
 		m.set_shader_parameter("sgt_player_gain", p_gain)
+	# ★ 角色被草遮挡时的 1px 褐色轮廓（屏幕量在 _update_screen_metrics 里算好）
+	#   写成独立函数：窗口尺寸变化时要能"立刻"重写全部材质，而不是等下一次风参数更新
+	_apply_sgt_occlusion()
 	# ★ 诊断台账（打印调试日志 打开时）：只在"确实在动"且每秒最多一次时打出来
 	if not _sgt_bool("debug_log", debug_sgt_player):
 		return
