@@ -62,6 +62,13 @@ extends Node
 @export var sgt_player_radial := 1.20            ## 径向"分开"位移（米级手柄）
 @export var sgt_player_bend := 1.00              ## 沿移动方向"倒伏"位移（米级手柄）
 @export var sgt_player_gain := 0.10              ## 位移总增益（收敛量级）
+## ★★ 进阶：高度闸门 —— 角色脚底**高于附近草顶**时，不该有倒伏/分开（例如起跳、站高处俯看草）
+##   height_margin：留一点余量（米），脚底高于"草顶 + 余量"才算悬空
+@export var sgt_height_gate := true
+@export var sgt_height_margin := 0.05
+## ★ 闸门平滑时间（秒）：起跳离草 / 落地入草时，倒伏不能"啪"地弹回或压下
+##   越大越软（约 0.2 秒是"有感觉但不拖沓"）；0 = 瞬时（不推荐）
+@export var sgt_height_gate_smooth := 0.2
 @export var debug_sgt_player := true             ## 移动时每秒打一条日志（确认链路用）
 ## ★★ 本项目改动：角色被草遮挡时的轮廓（脚底小圈，白色）
 ##   enable：总开关 ｜ px：轮廓宽度（像素）｜ height：角色高度（米，用于估算屏幕半径）
@@ -80,6 +87,16 @@ var _occl_depth := 0.0
 ## ★ 两套尺寸都要：逻辑视口（unproject 坐标系）与帧缓冲像素（FRAGCOORD 坐标系）
 var _occl_vp_logical := Vector2(1280.0, 720.0)
 var _occl_vp_pixel := Vector2(1280.0, 720.0)
+## ★ 高度闸门状态
+##   _sgt_grass_nodes：SGT 草节点（MultiMeshInstance3D）
+##   _sgt_grass_pts  ：每株草的"世界坐标 + 顶部高度" [Vector4(x, y(地面), z, 顶部世界高度)]
+##   _sgt_gate       ：1 = 正常倒伏/分开，0 = 角色悬空（脚底高于草顶）不作用
+var _sgt_grass_nodes: Array = []
+var _sgt_grass_pts: Array = []
+## gate 是**目标值**（0/1），_sgt_gate_s 是**实际写入材质的平滑值**
+var _sgt_gate := 1.0
+var _sgt_gate_s := 1.0
+var _sgt_gate_pts := 0
 
 
 ## ★ 当前风（供火焰/其他 VFX 读取，不必去翻材质）。每次写材质前同步更新。
@@ -128,9 +145,8 @@ func _process(delta: float) -> void:
 		_dbg_snap_t += delta
 		if _dbg_snap_t >= 2.0:
 			_dbg_snap_t = -1.0e9
-			print("[Wind] 调试传送: %s ｜ 脚底圈半径=%.1f px（视口逻辑）｜ 世界半径=%.2f m" % [
-					str(snap_player_to_nearest_grass()), _occl_radius,
-					float(_sgt_num("foot_radius", sgt_occlusion_foot_radius))])
+			print("[Wind] 调试传送: %s ｜ 脚底圈半径=%.1f px（视口逻辑）" % [
+					str(snap_player_to_nearest_grass()), _occl_radius])
 	_scan_timer += delta
 	if _scan_timer >= scan_interval:
 		_scan_timer = 0.0
@@ -178,6 +194,9 @@ func _scan() -> void:
 	if root == null:
 		return
 	var found := 0
+	# ⚠ 每次扫描都要清空草节点列表：_scan() 每 scan_interval 秒重跑一次，
+	#   不清空会不断累积重复节点 -> 缓存被重复追加、白白吃内存
+	_sgt_grass_nodes.clear()
 	var stack: Array = [root]
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
@@ -189,11 +208,81 @@ func _scan() -> void:
 		if n is MeshInstance3D:
 			found += _take_from_mesh(n as MeshInstance3D)
 		elif n is MultiMeshInstance3D:
+			if n.has_meta(&"SimpleGrassTextured"):
+				_sgt_grass_nodes.append(n)      # ★ 记下 SGT 草节点，供高度闸门用
 			found += _take_from_multimesh(n as MultiMeshInstance3D)
 		for c in n.get_children():
 			stack.append(c)
+	_cache_grass_tops()                        # ★ 缓存每株草的位置与顶部高度
+	if _sgt_grass_pts.size() > 0:
+		print("[Wind] 高度闸门：缓存 %d 株 SGT 草（%d 个草节点）" % [
+				_sgt_grass_pts.size(), _sgt_grass_nodes.size()])
 	if found > 0:
 		print("[Wind] 新增 %d 个受风材质（累计 %d ｜ SGT %d）" % [found, _registered, _mats_sgt.size()])
+
+
+## ★★ 高度闸门：缓存每株 SGT 草的"位置 + 顶部世界高度"。
+##   每株草矮而多，但**只缓存一次**（草位置是静态的），闸门计算就只遍历缓存数组。
+##   ⚠ MultiMesh 的节点 AABB 是**局部空间**的，不含各实例的缩放；
+##     而且实例数据在 headless 下读不出真实值 —— 所以这里取保守做法：
+##     草顶 = 该实例的地面高度 + 网格局部高度（不做实例缩放），够用且稳。
+func _cache_grass_tops() -> void:
+	_sgt_grass_pts.clear()
+	var limit := 6000
+	for node in _sgt_grass_nodes:
+		var mmi := node as MultiMeshInstance3D
+		if mmi == null or not is_instance_valid(mmi) or mmi.multimesh == null:
+			continue
+		var local_h := mmi.get_aabb().size.y
+		if local_h <= 0.0001:
+			local_h = 1.0
+		var xf := mmi.global_transform
+		var cnt := mini(mmi.multimesh.instance_count, limit)
+		for i in range(cnt):
+			var t := mmi.multimesh.get_instance_transform(i)
+			var w: Vector3 = xf * t.origin
+			# 顶部高度：地面 + 网格高度 × 实例缩放（y）
+			var sy := t.basis.get_scale().y
+			_sgt_grass_pts.append(Vector4(w.x, w.y, w.z, w.y + local_h * absf(sy)))
+
+
+## ★★ 高度闸门：角色脚底是否**高于附近所有草的顶部**。
+##   是 → 目标值 0（悬空：草不该被压/不该分开）
+##   否 → 目标值 1（在草里：正常倒伏/分开）
+##   ⚠ 目标值只是 0/1，直接写进材质会让草"瞬时弹回/瞬时压下" —— 必须**平滑**。
+##     这里按 sgt_height_gate_smooth（秒）做指数趋近，起跳与落地都有过渡。
+func _update_height_gate(delta: float, ppos: Vector3) -> void:
+	_sgt_gate_pts = 0
+	if not sgt_height_gate or _sgt_grass_pts.is_empty():
+		_sgt_gate = 1.0
+	else:
+		_sgt_gate = _gate_target(ppos)
+	# ★ 平滑：指数趋近（与 _move_amt 同一套手感），0.35 秒基本到位
+	var sm := maxf(0.001, sgt_height_gate_smooth)
+	_sgt_gate_s = lerpf(_sgt_gate_s, _sgt_gate, clampf(delta / sm, 0.0, 1.0))
+	# 指数趋近永远到不了端点，足够接近就吸附（免得留一丝倒伏）
+	if absf(_sgt_gate_s - _sgt_gate) < 0.01:
+		_sgt_gate_s = _sgt_gate
+
+
+## 闸门目标值：1 = 脚底没高出附近草顶；0 = 悬空在草顶之上
+func _gate_target(ppos: Vector3) -> float:
+	var r := maxf(0.2, _sgt_num("bend_radius_m", sgt_player_bend_radius))
+	var r2 := r * r
+	var foot_y := ppos.y
+	var margin := sgt_height_margin
+	for v in _sgt_grass_pts:
+		var p4: Vector4 = v          # Array 元素是 Variant，必须显式标注类型
+		var dx := p4.x - ppos.x
+		var dz := p4.z - ppos.z
+		if dx * dx + dz * dz > r2:
+			continue
+		_sgt_gate_pts += 1
+		if p4.w + margin > foot_y:
+			# 附近有草的顶部高过脚底 -> 角色在草里 / 站在草的同一高度
+			return 1.0
+	# 附近完全没有草，或附近所有草都明显低于脚底 -> 悬空
+	return 0.0
 
 
 ## ★ 收集 MultiMeshInstance3D（SimpleGrassTextured 的整片草）的受风材质。
@@ -338,6 +427,9 @@ const SGT_SET_KEYS: Dictionary = {
 	"occlusion_outline": "角色被草遮挡时是否描一圈轮廓",
 	"occlusion_px": "轮廓宽度（像素）",
 	"occlusion_height": "角色高度（米）：用于算视空间深度",
+	"height_gate": "高度闸门：脚底高于附近草顶时不倒伏/不分开（起跳或站高处）",
+	"height_margin": "高度闸门余量（米）：脚底要高出草顶多少才算悬空",
+	"height_gate_smooth": "高度闸门平滑时间（秒）：起跳离草/落地入草的过渡，别瞬时弹回",
 	"foot_radius": "轮廓半径（米）：以角色脚底为圆心的小圈",
 }
 
@@ -351,6 +443,9 @@ func _ensure_project_settings() -> void:
 		"occlusion_outline": sgt_occlusion_outline,
 		"occlusion_px": sgt_occlusion_px,
 		"occlusion_height": sgt_occlusion_height,
+		"height_gate": sgt_height_gate,
+		"height_margin": sgt_height_margin,
+		"height_gate_smooth": sgt_height_gate_smooth,
 		"foot_radius": sgt_occlusion_foot_radius,
 	}
 	for k in defaults:
@@ -404,7 +499,7 @@ func _sgt_bool(short_key: String, fallback: bool) -> bool:
 ##   位置优先取 SimpleGrass.player_position（插件文档推荐项目每帧调 set_player_position），
 ##   但本项目 game/player 脚本并没有调它 -> 兜底直接读 "player" 组节点的 global_position。
 ##   位移用位置差分得到；大于 1.5 米视为传送/初始化，不给推力（避免一瞬间把草吹平）。
-func _update_sgt_player(_delta: float, p: Node3D, ppos: Vector3) -> void:
+func _update_sgt_player(delta: float, p: Node3D, ppos: Vector3) -> void:
 	var pos := Vector3(1.0e9, 1.0e9, 1.0e9)
 	var sg: Node = null
 	if get_tree() != null:
@@ -429,6 +524,9 @@ func _update_sgt_player(_delta: float, p: Node3D, ppos: Vector3) -> void:
 	if using_group and p == null:
 		# 连玩家都找不到：把影响半径清零，别让草整片朝一个假点倒
 		_sgt_player_pos = Vector3(1.0e9, 1.0e9, 1.0e9)
+	# ★★ 高度闸门：脚底高于附近草顶（起跳 / 站高处俯看草）-> 倒伏与分开都不作用，
+	#   已经在倒伏的草会平滑恢复（平滑由 _move_amt 与着色器自身过渡完成）。
+	_update_height_gate(delta, pos)
 	# ★ 顺带算"角色在屏幕上的位置/半径/视深度"，供草着色器画遮挡轮廓
 	_update_screen_metrics(p)
 
@@ -636,24 +734,28 @@ func _write_sgt(dir2: Vector2, strength: float, gust: float, turb: float, ppos: 
 	if _mats_sgt.is_empty():
 		return
 	var dir3 := Vector3(dir2.x, 0.0, dir2.y).normalized()
+	# ★ 性能：项目设置查询提到**循环外**（原来每个材质每帧查 4 次）
+	var p_radius := _sgt_num("bend_radius_m", sgt_player_bend_radius)
+	var p_radial := _sgt_num("radial", sgt_player_radial)
+	var p_bend := _sgt_num("bend", sgt_player_bend)
+	var p_gain := _sgt_num("gain", sgt_player_gain)
+	# ★★ 高度闸门：角色脚底高于附近草顶时，倒伏与分开都归零（草平滑回正）
+	var g := _sgt_gate_s
+	var wind_now := strength * (1.0 + gust)
+	var bend_now := p_bend * lerpf(0.25, 1.0, _move_amt) * g
 	for m in _mats_sgt:
 		if not is_instance_valid(m):
 			continue
 		m.set_shader_parameter("sgt_wind_direction", dir3)
-		m.set_shader_parameter("sgt_wind_strength", strength * (1.0 + gust))
+		m.set_shader_parameter("sgt_wind_strength", wind_now)
 		m.set_shader_parameter("sgt_wind_turbulence", turb)
 		m.set_shader_parameter("sgt_wind_movement", _movement)
 		# 玩家（倒伏 + 分开）：位置 + 这一帧的水平位移
-	# 强度从**项目设置**实时读取（Wind/sgt_player/*），改完立刻生效，不必重启编辑器
-		var p_radius := _sgt_num("bend_radius_m", sgt_player_bend_radius)
-		var p_radial := _sgt_num("radial", sgt_player_radial)
-		var p_bend := _sgt_num("bend", sgt_player_bend)
-		var p_gain := _sgt_num("gain", sgt_player_gain)
 		m.set_shader_parameter("sgt_player_pos", _sgt_player_pos)
 		m.set_shader_parameter("sgt_player_mov", _sgt_player_step)
 		# 走着时倒伏明显、站着时基本回弹（避免出生点一圈草永远是倒的）
-		m.set_shader_parameter("sgt_player_bend", p_bend * lerpf(0.25, 1.0, _move_amt))
-		m.set_shader_parameter("sgt_player_radial", p_radial)
+		m.set_shader_parameter("sgt_player_bend", bend_now)
+		m.set_shader_parameter("sgt_player_radial", p_radial * g)
 		m.set_shader_parameter("sgt_player_bend_radius", p_radius)
 		m.set_shader_parameter("sgt_player_gain", p_gain)
 	# ★ 角色被草遮挡时的 1px 褐色轮廓（屏幕量在 _update_screen_metrics 里算好）
@@ -667,9 +769,10 @@ func _write_sgt(dir2: Vector2, strength: float, gust: float, turb: float, ppos: 
 		_dbg_player_t = 0.0
 		var step_len := _sgt_player_step.length()
 		if step_len > 0.002:
-			print("[Wind] SGT 人物倒伏: 材质 %d 个 ｜ 玩家 %s ｜ 位移 %.3f ｜ radius=%.2f radial=%.2f bend=%.2f" % [
+			print("[Wind] SGT 人物倒伏: 材质 %d 个 ｜ 玩家 %s ｜ 位移 %.3f ｜ radius=%.2f radial=%.2f bend=%.2f ｜ 高度闸门=%.1f(附近 %d 株)" % [
 					_mats_sgt.size(), str(_sgt_player_pos), step_len,
 					_sgt_num("bend_radius_m", sgt_player_bend_radius),
 					_sgt_num("radial", sgt_player_radial),
 					_sgt_num("bend", sgt_player_bend)
-					* lerpf(0.25, 1.0, _move_amt)])
+					* lerpf(0.25, 1.0, _move_amt),
+					_sgt_gate, _sgt_gate_pts])
