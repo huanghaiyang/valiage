@@ -77,7 +77,7 @@ var _edit_slope := Vector2(0, 45)
 var _edit_scale := Vector3.ONE
 var _edit_rotation := 0.0
 var _edit_rotation_rand := 1.0
-## ★ 本项目改动：内置草叶面数（1/2/3），与草节点的 mesh_planes 同步
+## ★ 本项目改动：内置草叶面数（1~6），与草节点的 mesh_planes 同步
 var _edit_planes := 2
 var _edit_tool: TOOL = TOOL.AIRBRUSH : set = _on_set_tool
 var _gui_toolbar = null
@@ -260,7 +260,7 @@ func _enter_tree() -> void:
 	_gui_toolbar.edit_rotation.value_changed.connect(_on_edit_rotation_value_changed)
 	_gui_toolbar.edit_rotation_rand.value_changed.connect(_on_edit_rotation_rand_value_changed)
 	_gui_toolbar.edit_distance.value_changed.connect(_on_edit_distance_value_changed)
-	# ★ 本项目改动：内置草叶面数（1/2/3）
+	# ★ 本项目改动：内置草叶面数（1~6）
 	_gui_toolbar.planes_changed.connect(_on_planes_changed)
 	_edit_tool = TOOL.AIRBRUSH
 
@@ -1189,16 +1189,16 @@ func _read_planes(grass) -> int:
 		return 2
 	var v: Variant = grass.get("mesh_planes")
 	if v is int:
-		return clampi(int(v), 1, 3)
+		return clampi(int(v), 1, 6)
 	if v is float:
-		return clampi(int(round(float(v))), 1, 3)
+		return clampi(int(round(float(v))), 1, 6)
 	return 2
 
 
-## ★ 本项目改动：切换内置草叶面数（1/2/3）。
+## ★ 本项目改动：切换内置草叶面数（1~6）。
 ##   网格是整片草丛共用的，换完立刻用在新绘制的实例上（已存在的顶点数据不变）。
 func _on_planes_changed(value : int) -> void:
-	_edit_planes = clampi(value, 1, 3)
+	_edit_planes = clampi(value, 1, 6)
 	if _grass_selected != null:
 		_grass_selected.mesh_planes = _edit_planes
 		if _gui_grass_list != null:

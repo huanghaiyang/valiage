@@ -28,12 +28,13 @@ extends MultiMeshInstance3D
 ## copy paste your own mesh from any mesh component. Set as null for default 
 ## SimpleGrassTextured mesh.
 @export var mesh : Mesh = null : set = _on_set_mesh
-## ★ 本项目改动：内置十字草叶的**面数**（1/2/3 面）。仅在 `mesh` 为空（用内置网格）时生效。
+## ★ 本项目改动：内置草叶的**面数**（1~6 面）。仅在 `mesh` 为空（用内置网格）时生效。
 ##   1 面 = 单片（最省，适合超远/密植）；2 面 = 十字（插件原始行为，默认）；
-##   3 面 = 互成 60° 的三片（8 个观察方向都有覆盖，适合俯视/斜视时草"发薄"的情况）。
-##   顶点数：1 面 = 4 / 2 面 = 8 / 3 面 = 12（三角形 2/4/6）。
+##   3 面 = 互成 60° 的三片；4/5/6 面 = 更密的扇形分布（俯视/斜视时草更"厚"）。
+##   顶点数：每面 4 个顶点（2 个三角形），所以 1~6 面对应 4~24 个顶点。
+##   面数越多，同一株草在各观察方向上的覆盖越均匀，但顶点/填充开销也越大。
 ##   ⚠ 提示串与标签都写在这里，Inspector 里才会显示中文（与工具栏下拉一致）。
-@export_enum("1 面", "2 面", "3 面") var mesh_planes := 2 : set = _on_set_mesh_planes
+@export_enum("1 面", "2 面", "3 面", "4 面", "5 面", "6 面") var mesh_planes := 2 : set = _on_set_mesh_planes
 
 @export_category("Material settings")
 ## Color albedo for mesh material
@@ -278,7 +279,7 @@ func _process(_delta : float):
 ##     · 索引绕序沿用默认网格（着色器都是 cull_disabled，绕序不影响可见性）
 ##   面数 2 时与插件自带 default_mesh.tres 等价。
 func _build_plane_mesh(planes: int) -> ArrayMesh:
-	planes = clampi(planes, 1, 3)
+	planes = clampi(planes, 1, 6)
 	var verts := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var tangents := PackedFloat32Array()
@@ -349,7 +350,7 @@ func _rebuild_default_mesh() -> void:
 ##   这样做是为了让所有草节点引用**同一个资源文件**，外部 MultiMesh（maps/*_grass.res）
 ##   存的是资源引用而不是内联副本 —— 否则每换一次面数，那些 .res 都会被整体改写。
 func _get_shared_plane_mesh(planes: int) -> Mesh:
-	planes = clampi(planes, 1, 3)
+	planes = clampi(planes, 1, 6)
 	var path: String = "%s/plane_%d.tres" % [GENERATED_MESH_DIR, planes]
 	# 磁盘上已有就直接用（所有节点共享同一资源）
 	if ResourceLoader.exists(path):
@@ -365,7 +366,11 @@ func _get_shared_plane_mesh(planes: int) -> Mesh:
 		dir.make_dir("generated")
 	var err := ResourceSaver.save(built, path)
 	if err == OK:
-		EditorInterface.get_resource_filesystem().scan()
+		# ⚠ EditorInterface 在部分上下文（--script 直接跑等）里不可用，
+		#   get_resource_filesystem() 会返回 null -> 直接 .scan() 会报错刷屏。必须判空。
+		var efs := EditorInterface.get_resource_filesystem()
+		if efs != null:
+			efs.scan()
 		var saved = ResourceLoader.load(path)
 		if saved is Mesh:
 			return saved
@@ -374,7 +379,7 @@ func _get_shared_plane_mesh(planes: int) -> Mesh:
 
 
 func _on_set_mesh_planes(value: int) -> void:
-	mesh_planes = clampi(value, 1, 3)
+	mesh_planes = clampi(value, 1, 6)
 	apply_mesh_planes()
 	if Engine.is_editor_hint() and is_inside_tree():
 		update_configuration_warnings()
