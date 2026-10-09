@@ -75,6 +75,12 @@ var _shader_src: Array[ShaderMaterial] = []
 
 var _mm_burn: Array = []
 var _reported := false            ## 1 秒的状态汇报只打一次
+## ★ 本控制器正在烧的实例集合：{MultiMeshInstance3D 的 instance_id -> {实例下标: true}}
+##   用途（修复"第二次施法点不着 SGT 草"）：SGT 的整片草是**一个节点**，
+##   而 `burning` meta 是**节点级**的 —— 第二发火焰哪怕打在草地上完全不同的位置，
+##   也会被"该目标已在燃烧中"挡掉。改成按**实例**判断：只有真正重叠的实例才算重复。
+##   （树这类 MeshInstance3D 仍按节点判断，行为不变。）
+var _mm_owner: Dictionary = {}
 ## 被我们打开 use_custom_data 的 MultiMesh（收尾时还原，避免改动 addon 的内存布局）
 var _mm_custom_on: Array = []
 ## 由法术在点燃前设置：只烧这个圆内的实例（0 半径 = 不筛）
@@ -104,6 +110,84 @@ func _ready() -> void:
 	_rng.randomize()
 
 
+## 本控制器将要烧的实例下标（按 MultiMeshInstance3D 分组；没有逐实例目标时返回空）
+func _planned_mm_indices() -> Dictionary:
+	var out: Dictionary = {}
+	if _target is MultiMeshInstance3D:
+		# SGT 草：t 本身就是那片草 -> 用预设表（法术算好的圈内实例）
+		var mmi := _target as MultiMeshInstance3D
+		if preset_mm == mmi and not preset_indices.is_empty():
+			var s: Dictionary = {}
+			for k in preset_indices:
+				s[int(k)] = true
+			out[mmi.get_instance_id()] = s
+			return out
+		# 没有预设表：按圆心/半径现算（与 _start_multimesh_burn 的兜底一致）
+		if mmi.multimesh != null:
+			var s2: Dictionary = {}
+			for i in range(mmi.multimesh.instance_count):
+				var w: Vector3 = mmi.global_transform * mmi.multimesh.get_instance_transform(i).origin
+				if burn_radius <= 0.0 or Vector2(w.x - burn_center.x, w.z - burn_center.z).length() <= burn_radius:
+					s2[i] = true
+			out[mmi.get_instance_id()] = s2
+		return out
+	# 目标内部含 MultiMesh（例如火焰烧的是父节点）
+	if _target != null:
+		for mmi in _multimeshes:
+			if mmi.multimesh == null:
+				continue
+			var s3: Dictionary = {}
+			for i in range(mmi.multimesh.instance_count):
+				var w2: Vector3 = mmi.global_transform * mmi.multimesh.get_instance_transform(i).origin
+				if burn_radius <= 0.0 or Vector2(w2.x - burn_center.x, w2.z - burn_center.z).length() <= burn_radius:
+					s3[i] = true
+			out[mmi.get_instance_id()] = s3
+	return out
+
+
+## 这些实例里是否有别的控制器正在烧（跨控制器共享，静态表）
+static var _busy_instances: Dictionary = {}
+
+func _claim_instances(planned: Dictionary) -> bool:
+	for mid in planned:
+		var busy: Dictionary = _busy_instances.get(mid, {})
+		for i in (planned[mid] as Dictionary):
+			if busy.get(i, false):
+				return false      # 有重叠 -> 视为重复点燃
+	return true
+
+
+func _register_instances(planned: Dictionary) -> void:
+	for mid in planned:
+		var busy: Dictionary = _busy_instances.get(mid, {})
+		for i in (planned[mid] as Dictionary):
+			busy[i] = true
+		_busy_instances[mid] = busy
+	for e in _mm_burn:
+		var mmi := e["mmi"] as MultiMeshInstance3D
+		if mmi == null:
+			continue
+		var mid2 := mmi.get_instance_id()
+		if not _mm_owner.has(mid2):
+			_mm_owner[mid2] = {}
+		(_mm_owner[mid2] as Dictionary)[int(e["i"])] = true
+
+
+func _release_instances() -> void:
+	for e in _mm_burn:
+		var mmi := e["mmi"] as MultiMeshInstance3D
+		if mmi == null or not is_instance_valid(mmi):
+			continue
+		var mid := mmi.get_instance_id()
+		var busy: Dictionary = _busy_instances.get(mid, {})
+		busy.erase(int(e["i"]))
+		if busy.is_empty():
+			_busy_instances.erase(mid)
+		else:
+			_busy_instances[mid] = busy
+	_mm_owner.clear()
+
+
 ## 点着一株植被。返回是否成功（找不到网格就失败）
 func burn_node(n: Node3D, delay: float = 0.0) -> bool:
 	# ★★ 按目标分档燃烧时长（用户要求 ✓）：**草可以快 ✓ 树要慢慢慢 ✓**
@@ -113,7 +197,12 @@ func burn_node(n: Node3D, delay: float = 0.0) -> bool:
 	_target = n
 	# ★★ 防重入（修复"树枝闪烁"✗）：同一目标**已有燃烧在跑**时直接跳过 ✓
 	#   重复施法会在同一棵树上叠加多个燃烧器 ✓ → 每帧互相覆盖 burn/ash → **闪烁** ✓✓
-	if n != null and n.has_meta("burning"):
+	#   ★★ 修复"第二次施法点不着 SGT 草"：SGT 的整片草是**一个节点**，而 `burning`
+	#     meta 是**节点级**的 —— 第二发火焰哪怕打在完全不同的草地上也会被挡掉。
+	#     所以对 MultiMesh 目标改用**实例级**判定（见 _claim_instances）：
+	#     整片草允许第二发点燃它自己那块地，只有**实例真的重叠**才算重复。
+	var mm_target: bool = n is MultiMeshInstance3D
+	if n != null and not mm_target and n.has_meta("burning"):
 		print("[燃烧] 该目标已在燃烧中 ✓ 跳过重复点燃：%s" % n.name)
 		return false
 	# ★★★ 已烧毁（用户要求 ✓）：**直接跳过** ✗ 不再播一遍燃烧 ✓
@@ -121,10 +210,11 @@ func burn_node(n: Node3D, delay: float = 0.0) -> bool:
 	#   → 看上去"树叶树枝树干又还原了" ✓✓（用户实测 ✓）
 	#   跳过之后，节点上仍挂着第一次冻结好的焦黑材质 ✓ → **保持焦黑** ✓✓
 	#   状态记在节点 meta 上 ✓（本次运行内有效 ✓ 场景重载会重置 ✓ 需要持久化再说 ✓）
-	if n != null and n.has_meta("burned_out"):
+	#   ★ MultiMesh（草）不适用：它是逐实例燃烧、还会长回来，不该被"已烧毁"永久锁死。
+	if n != null and not mm_target and n.has_meta("burned_out"):
 		print("[燃烧] 该目标**已烧毁** ✓ 不再燃烧（保持焦黑）：%s" % n.name)
 		return false
-	if n != null:
+	if n != null and not mm_target:
 		n.set_meta("burning", true)
 	if _target_is_keep():
 		burn_time = burn_time_tree
@@ -156,12 +246,21 @@ func burn_node(n: Node3D, delay: float = 0.0) -> bool:
 			return false
 		# ★ 逐实例燃烧：整片草是一个节点，但**每个实例单独一份进度**（INSTANCE_CUSTOM），
 		#   所以只有圈内的那几簇会烧，不会把全图草一起涂黑。
+		#   ★ 实例级防重入：本次要烧的实例若与**别的控制器**正在烧的重叠 -> 跳过
+		#     （整片草允许第二发点燃它自己那块地，只有真的重叠才算重复）。
+		var planned := _planned_mm_indices()
+		if not _claim_instances(planned):
+			if debug_burn:
+				print("[植被燃烧] %s 跳过：要烧的实例与另一处燃烧重叠" % n.name)
+			return false
 		_meshes.clear()
 		global_position = Vector3.ZERO
 		if not _start_multimesh_burn():
 			if debug_burn:
 				print("[植被燃烧] %s 跳过：找不到支持 INSTANCE_CUSTOM 的草材质" % n.name)
 			return false
+		# ★ 登记这次真正要烧的实例（同一份 planned），供其他控制器判重叠
+		_register_instances(planned)
 		_collect_surface_points()
 		_build_sparks()
 		set_process(true)
@@ -913,6 +1012,8 @@ func _finish() -> void:
 	#   也**不还原 use_custom_data** —— 一还原就等于把每个实例的数据抹掉。
 	#   （同一片草再被烧时，_start_multimesh_burn 会重新写入它需要的实例。）
 	_mm_custom_on.clear()
+	# ★ 归还"本控制器占用的实例"（实例级防重入的配平；见 _claim_instances）
+	_release_instances()
 	if _sparks != null and is_instance_valid(_sparks):
 		_sparks.visible = false
 	# ★ MultiMesh（addon 的一整片草）**绝不能隐藏**：那是一片/整张地图的草，
