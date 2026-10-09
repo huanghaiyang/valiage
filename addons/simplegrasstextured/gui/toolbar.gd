@@ -24,7 +24,7 @@
 @tool
 extends Control
 
-## ★ 本项目改动：内置草叶面数（1/2/3）切换信号
+## ★ 本项目改动：内置草叶面数（1~6）切换信号
 signal planes_changed(planes: int)
 
 enum MENU_SHAPE_ID {
@@ -86,9 +86,9 @@ func _ready() -> void:
 	# ★ 本项目改动：面数下拉（信号在 _ready 里接线，避免场景连接漏掉）
 	if option_planes != null:
 		option_planes.clear()
-		option_planes.add_item("1 面", 1)
-		option_planes.add_item("2 面", 2)
-		option_planes.add_item("3 面", 3)
+		# ★ 支持 1~6 面：面数越多，同一株草在各观察方向上的覆盖越均匀（也更耗顶点）
+		for planes in range(1, 7):
+			option_planes.add_item("%d 面" % planes, planes)
 		option_planes.select(option_planes.get_item_index(2))
 		if not option_planes.item_selected.is_connected(_on_option_planes_item_selected):
 			option_planes.item_selected.connect(_on_option_planes_item_selected)
