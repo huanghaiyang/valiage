@@ -39,10 +39,11 @@ sgt_player/radial=2.0
 sgt_player/bend=2.0
 sgt_player/gain=0.2
 sgt_player/debug_log=true
-sgt_player/occlusion_outline=true
+sgt_player/occlusion_outline=false
 sgt_player/occlusion_px=1.0
 sgt_player/occlusion_height=1.75
 sgt_player/occlusion_radius_scale=0.3
+sgt_player/sgt_foot_ring=true
 
 [animation]
 

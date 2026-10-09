@@ -72,7 +72,9 @@ extends Node
 @export var debug_sgt_player := true             ## 移动时每秒打一条日志（确认链路用）
 ## ★★ 本项目改动：角色被草遮挡时的轮廓（脚底小圈，白色）
 ##   enable：总开关 ｜ px：轮廓宽度（像素）｜ height：角色高度（米，用于估算屏幕半径）
-@export var sgt_occlusion_outline := true        ## 是否启用遮挡轮廓
+@export var sgt_occlusion_outline := false       ## 草着色器里的屏幕圈：已由 foot_ring 实体圈代替，默认关
+## ★ 角色脚底圈（贴合地形的实体环带，scripts/foot_ring.gd）
+@export var sgt_foot_ring := true
 @export var sgt_occlusion_px := 1.0              ## 轮廓宽度（像素）
 @export var sgt_occlusion_height := 1.75         ## 角色高度（米）
 @export var sgt_occlusion_foot_radius := 0.20    ## 轮廓半径（米）：以角色脚底为圆心的小圈
@@ -125,6 +127,8 @@ var _sgt_player_step := Vector3.ZERO
 var _sgt_player_warned := false
 var _dbg_player_t := 0.0
 var _dbg_snap_t := 0.0
+## ★ 角色脚底圈（贴合地形的实体环带，见 scripts/foot_ring.gd）
+var _foot_ring: Node = null
 
 
 func _ready() -> void:
@@ -134,7 +138,43 @@ func _ready() -> void:
 	var vp := get_viewport()
 	if vp != null and not vp.size_changed.is_connected(_on_viewport_size_changed):
 		vp.size_changed.connect(_on_viewport_size_changed)
+	_setup_foot_ring()
 	_scan()
+
+
+## ★★ 建立"角色脚底圈"：贴合地形的实体环带（照搬火焰圈选的地形贴合思路）。
+##   圈本身是 3D 网格，不再画在草的着色器里 —— 这样才能贴合坡地/台阶。
+func _setup_foot_ring() -> void:
+	if not sgt_foot_ring:
+		return
+	var scr: Script = load("res://scripts/foot_ring.gd")
+	if scr == null:
+		push_warning("[Wind] foot_ring.gd 缺失，脚底圈不可用")
+		return
+	var r: Node = scr.new()
+	r.name = "FootRing"
+	add_child(r)
+	_foot_ring = r
+
+
+## 读脚底圈的参数（半径 / 颜色 / 宽度），让草的屏幕圈与实体圈用同一组数值，
+## 避免"两个圈不一致"；圈不存在时退回脚本里的默认值。
+func _ring_num(prop: String, fallback: float) -> float:
+	if _foot_ring == null or not is_instance_valid(_foot_ring):
+		return fallback
+	var v: Variant = _foot_ring.get(prop)
+	if v is float or v is int:
+		return float(v)
+	return fallback
+
+
+func _ring_color(fallback: Color) -> Color:
+	if _foot_ring == null or not is_instance_valid(_foot_ring):
+		return fallback
+	var v: Variant = _foot_ring.get("color")
+	if v is Color:
+		return v as Color
+	return fallback
 
 
 func _process(delta: float) -> void:
@@ -562,7 +602,7 @@ func _update_screen_metrics(p: Node3D) -> void:
 	#   投影长度本来就不等于圆圈的屏幕半径）-> 表现就是"圈时大时小"。
 	#   解析式：在角色所处深度上，1 米对应多少**视口逻辑像素**。
 	var p_bot := cam.unproject_position(base)
-	var r_world := maxf(0.05, _sgt_num("foot_radius", sgt_occlusion_foot_radius))
+	var r_world := maxf(0.05, _ring_num("radius", 0.30))
 	var r_px := r_world * _pixels_per_meter(cam, base, logical)
 	if r_px < 0.5:
 		return    # 角色几乎在相机背后 / 极远：不画
@@ -623,7 +663,7 @@ func _apply_sgt_occlusion() -> void:
 	if not _sgt_bool("occlusion_outline", sgt_occlusion_outline):
 		on = 0.0
 	var px := float(_sgt_num("occlusion_px", sgt_occlusion_px))
-	var oc := sgt_occlusion_color
+	var oc := _ring_color(sgt_occlusion_color)
 	# ★ 保留 alpha：着色器用它做轮廓的不透明度（半透明白）
 	var col := Color(oc.r, oc.g, oc.b, oc.a)
 	for m in _mats_sgt:
