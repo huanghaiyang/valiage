@@ -1,0 +1,11 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="PackedScene" path="res://assets/models/characters/森林男.glb" id="1_char"]
+[ext_resource type="AnimationLibrary" path="res://assets/animations/mixamo.tres" id="2_lib"]
+
+[node name="森林男" instance=ExtResource("1_char")]
+
+[node name="AnimationPlayer" type="AnimationPlayer" parent="." index="0"]
+libraries = {
+&"": ExtResource("2_lib")
+}

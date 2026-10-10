@@ -74,8 +74,8 @@ Mana="*res://scripts/spells/mana.gd"
 SpellCaster="*res://scripts/spells/spell_caster.gd"
 Vitals="*res://scripts/vitals.gd"
 VitalsHud="*res://scripts/ui/vitals_hud.gd"
-_mcp_game_helper="*res://addons/godot_ai/runtime/game_helper.gd"
 SimpleGrass="*uid://bfq0snth8sj3h"
+_mcp_game_helper="*res://addons/godot_ai/runtime/game_helper.gd"
 
 [display]
 
@@ -88,7 +88,7 @@ window/stretch/aspect="expand"
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/GPUTrail/plugin.cfg", "res://addons/blend_tools/plugin.cfg", "res://addons/blender_bridge/plugin.cfg", "res://addons/burn_toggle/plugin.cfg", "res://addons/concave_collision_tuner/plugin.cfg", "res://addons/crash_monitor/plugin.cfg", "res://addons/exr_tools/plugin.cfg", "res://addons/glb_split/plugin.cfg", "res://addons/glb_tools/plugin.cfg", "res://addons/godot_ai/plugin.cfg", "res://addons/image_convert/plugin.cfg", "res://addons/image_format_converter/plugin.cfg", "res://addons/image_tools/plugin.cfg", "res://addons/object_strings/plugin.cfg", "res://addons/prop_batch/plugin.cfg", "res://addons/simplegrasstextured/plugin.cfg", "res://addons/sky_3d/plugin.cfg", "res://addons/stuck_monitor/plugin.cfg", "res://addons/terrain_3d/plugin.cfg", "res://addons/texture_tier_baker/plugin.cfg", "res://addons/variant_tools/plugin.cfg", "res://addons/world_brush/plugin.cfg")
+enabled=PackedStringArray("res://addons/GPUTrail/plugin.cfg", "res://addons/blend_tools/plugin.cfg", "res://addons/blender_bridge/plugin.cfg", "res://addons/burn_toggle/plugin.cfg", "res://addons/concave_collision_tuner/plugin.cfg", "res://addons/crash_monitor/plugin.cfg", "res://addons/exr_tools/plugin.cfg", "res://addons/glb_split/plugin.cfg", "res://addons/glb_tools/plugin.cfg", "res://addons/godot_ai/plugin.cfg", "res://addons/image_convert/plugin.cfg", "res://addons/image_format_converter/plugin.cfg", "res://addons/image_tools/plugin.cfg", "res://addons/mixamo_retarget/plugin.cfg", "res://addons/object_strings/plugin.cfg", "res://addons/prop_batch/plugin.cfg", "res://addons/simplegrasstextured/plugin.cfg", "res://addons/sky_3d/plugin.cfg", "res://addons/stuck_monitor/plugin.cfg", "res://addons/terrain_3d/plugin.cfg", "res://addons/texture_tier_baker/plugin.cfg", "res://addons/variant_tools/plugin.cfg", "res://addons/world_brush/plugin.cfg")
 
 [global_group]
 
