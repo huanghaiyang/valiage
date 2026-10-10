@@ -24,6 +24,7 @@ var pos_mode: OptionButton
 var auto_yaw_check: CheckBox
 var incremental_check: CheckBox
 var prune_check: CheckBox
+var pose_check: CheckBox
 var yaw_spin: SpinBox
 var clip_tree: Tree
 var log_view: RichTextLabel
@@ -119,6 +120,10 @@ func _build_ui() -> void:
 	prune_check.button_pressed = true
 	prune_check.tooltip_text = "源文件被删掉时，把它的动画从库里移除"
 	inc_row.add_child(prune_check)
+	pose_check = CheckBox.new()
+	pose_check.text = "保留静止姿势"
+	pose_check.tooltip_text = "勾上后不再跳过幅度≈0 的 take（坐姿/躺姿这类静态 pose 会被烘进库）"
+	inc_row.add_child(pose_check)
 
 	var btn_row := HFlowContainer.new()
 	btn_row.add_theme_constant_override("h_separation", 4)
@@ -240,7 +245,7 @@ func _opts() -> Dictionary:
 		"pos_scale_mode": psm,
 		"auto_yaw": auto_yaw_check.button_pressed,
 		"yaw_offset_deg": float(yaw_spin.value),
-		"skip_static": true,
+		"skip_static": not pose_check.button_pressed,
 		"prune_missing": prune_check.button_pressed,
 	}
 

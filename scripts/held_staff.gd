@@ -14,10 +14,22 @@ extends Node3D
 ##
 ## 握点：模型按"目标世界长度"缩放后，把**从杖底往上 32%** 处对到挂点原点。
 
-## 法杖在世界里的目标长度（米）。角色约 1.7m，1.45m 的杖握在手里刚好。
-const STAFF_WORLD_LEN := 1.45
-## 握点：从杖底往上算的比例
+## 法杖在世界里的目标长度（米）。默认按 1.7m 角色定的 1.45m；
+## 角色身高不同时由 player.gd 设 len_scale（= 身高 / 1.7）等比缩放。
+var staff_len := 1.45
+## 长度缩放系数（角色身高适配）。1.5m 角色 → 1.5/1.7 ≈ 0.88
+var len_scale := 1.0
+## 掌心偏移（手骨本地坐标）：由 player.gd 按角色档案算，见 CharacterProfile.hand_grip_offset
+var grip_offset := Vector3.ZERO
+## 握点：从杖底往上算的比例（默认 0.32 = 下三分之一）。player.gd 可覆盖（不同杖模型可调）。
 const GRIP_FRAC := 0.32
+var grip_frac := GRIP_FRAC
+## 杖身**半径**方向的外移量（米）：手掌握着杖时，杖的"轴"应该在掌心外侧
+## 约一个半径处，否则杖身会插进手里。0 = 不偏移（旧行为）。
+var grip_out := 0.0
+## 握持角（相对手骨的固定旋转，度）：由 tools/solve_staff_hold.gd 从参考动作解出。
+## 非零时直接用它当本地朝向（不再用"骨骼 rest + 世界前倾"那套标定）。
+var hold_rot_deg := Vector3.ZERO
 
 # ---- 展示姿态 ----
 ## 默认从竖直朝角色正前方倒 60°（用户要求）
@@ -117,15 +129,42 @@ func _place() -> void:
 	_model_h = bb.size.y
 	# 模型局部单位 -> 世界米 = _model.scale * _parent_scale
 	# 所以要让世界高度等于目标长度：scale = 目标 / (原始高 * 父级缩放)
-	var want := float(_sys_def().get("world_len", STAFF_WORLD_LEN))
+	var want := float(_sys_def().get("world_len", staff_len)) * len_scale
 	var sc := want / (_model_h * _parent_scale)
 	_model.scale = Vector3.ONE * sc
-	# 水平居中 + 把"杖底往上 GRIP_FRAC 处"对到原点
+	# 水平居中 + 把"杖身下三分之一处"对到挂点
+	# ★ flip_in_hand 会把模型绕挂点转 180°（修"杖头朝下"），此时握点比例必须取反：
+	#   否则手会抓在靠近杖头的位置、杖身从手里垂下去（"法杖姿势不对"）。
+	var gf := (1.0 - grip_frac) if flip_in_hand else grip_frac
+	var gy := bb.position.y + gf * bb.size.y
+	# ★ 杖身轴线与粗细：用"握点高度切片"量，而不是整模型包围盒中心
+	#   （花/龙饰会把包围盒撑宽，只看包围盒会让杖身偏出手心）
 	var cx := bb.position.x + bb.size.x * 0.5
 	var cz := bb.position.z + bb.size.z * 0.5
-	var gy := bb.position.y + GRIP_FRAC * bb.size.y
+	var shaft_r := 0.0
+	var slice := _shaft_slice(gy, maxf(0.05, bb.size.y * 0.10))
+	var slice_n := 0
+	if slice.size() >= 3:
+		cx = float(slice[0])
+		cz = float(slice[1])
+		shaft_r = float(slice[2])
+		slice_n = int(slice[3]) if slice.size() > 3 else 0
 	_grip_y = -gy * sc                     # 存下来：悬浮是在这个基准上叠加
-	_model.position = Vector3(-cx * sc, _grip_y, -cz * sc)
+	# 掌心偏移（手骨是腕关节时，把杖挪到掌心里；由 player.gd 按角色档案算好）
+	_model.position = Vector3(-cx * sc, _grip_y, -cz * sc) + grip_offset
+	# 杖身半径外移（沿手骨的本地 X 轴；正负号不合就传负值）：
+	# 让"杖的轴线"落在掌心外侧约一个半径处，杖身才不会插进手里。
+	if absf(grip_out) > 0.0001:
+		_model.position.x += grip_out / _parent_scale
+		print("HeldStaff | 杖身半径外移 %.1f cm（世界）" % (grip_out * 100.0))
+	print("HeldStaff | 握点比例 %.2f（翻转=%s）｜世界长 %.3f m｜握点处杖径 ≈ %.2f cm｜切片顶点 %d｜原点离挂点 %.3f m" % [
+		gf, str(flip_in_hand), _model_h * sc * _parent_scale,
+		shaft_r * 2.0 * sc * _parent_scale * 100.0,
+		slice_n,
+		absf(_grip_y) * _parent_scale])
+	if grip_offset.length() > 0.0001:
+		print("HeldStaff | 应用掌心偏移 %s（骨内单位，约 %.1f cm 世界）" % [
+			str(grip_offset.snapped(Vector3(0.001, 0.001, 0.001))), grip_offset.length() * _parent_scale * 100.0])
 
 
 func _sys_def() -> Dictionary:
@@ -266,6 +305,18 @@ func _apply_pose(delta: float) -> void:
 	if hand == null:
 		return
 	if not _local_ok:
+		# ★ 优先：用"从参考动作解出的握持角"（相对手骨的固定旋转）。
+		#   它是拿 Standing Torch Idle 01 的手骨姿势解出来的，让杖身在那个姿势下竖直 ——
+		#   比"骨骼 rest + 世界前倾 60°"更贴合动画的自然握法。
+		if hold_rot_deg.length() > 0.01:
+			_local_basis = Basis.from_euler(Vector3(
+				deg_to_rad(hold_rot_deg.x), deg_to_rad(hold_rot_deg.y), deg_to_rad(hold_rot_deg.z)))
+			_local_ok = true
+			if not _logged:
+				_logged = true
+				print("HeldStaff | 用档案握持角 %s（度）标定（解自 %s）" % [str(hold_rot_deg), "Torch Idle"])
+			basis = _local_basis.scaled(basis.get_scale())
+			return
 		# **用骨骼的静止姿势(rest)标定，而不是当前动画帧**。
 		# 原来用手骨"当前"的 global basis：切杖那一刻若角色正在走/跑，
 		# 记下来的是那一帧的摆臂姿势 -> 法杖位置概率性不对
@@ -299,6 +350,14 @@ func _apply_pose(delta: float) -> void:
 			print("HeldStaff | 标定完成：%s（%s）" % [
 					"骨骼 rest 姿势" if got_rest else "静止姿势",
 					"BoneAttachment3D" if got_rest else str(hand.get_class())])
+			# 诊断（排查"法杖脱离手臂"用）：世界长度 / 挂点是否真的在杖身上
+			var boxes_d := _mesh_aabbs(_model)
+			var bb_d := _merge_aabbs(boxes_d)
+			var world_h := _model_h * _model.scale.x * _parent_scale
+			var gp := _model.global_position
+			print("HeldStaff | 世界长 %.3f m（目标 %.3f）｜模型局部高 %.2f｜缩放 %.5f × 父级 %.5f｜模型原点离挂点 %.3f m" % [
+				world_h, float(_sys_def().get("world_len", staff_len)) * len_scale,
+				_model_h, _model.scale.x, _parent_scale, hand.global_position.distance_to(gp)])
 	var sc := basis.get_scale()          # 保留挂载时算好的缩放
 	basis = _local_basis.scaled(sc)
 	# 刚性固定：不再做任何自转（否则又变成'自己转圈'）
@@ -361,6 +420,57 @@ func _merge_aabbs(list: Array) -> AABB:
 	for i in range(1, list.size()):
 		bb = bb.merge(list[i])
 	return bb
+
+
+## 取"握点高度附近"的杖身顶点（_model 局部坐标）：返回 [平均 x, 平均 z, 平均半径]
+## ★ 为什么不能只用整体包围盒中心：法杖的花/龙饰会把包围盒撑宽，杖身轴线会被带偏。
+## 用握点高度切片内的顶点平均，才是"手实际握到的那段杖身"的轴线与粗细。
+func _shaft_slice(y0: float, band: float) -> Array:
+	var sx := 0.0
+	var sz := 0.0
+	var n := 0
+	var pts: Array[Vector2] = []
+	for c in _model.find_children("*", "MeshInstance3D", true, false):
+		var mi := c as MeshInstance3D
+		if mi.mesh == null:
+			continue
+		var xf := Transform3D()
+		var nn: Node = mi
+		while nn != null and nn != _model:
+			if nn is Node3D:
+				xf = (nn as Node3D).transform * xf
+			nn = nn.get_parent()
+		var mesh_total := 0
+		var mesh_in := 0
+		var ymin := INF
+		var ymax := -INF
+		for si in mi.mesh.get_surface_count():
+			var arr: Array = mi.mesh.surface_get_arrays(si)
+			if arr.is_empty() or arr[Mesh.ARRAY_VERTEX] == null:
+				continue
+			var verts: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+			mesh_total += verts.size()
+			for v in verts:
+				var p: Vector3 = xf * v
+				ymin = minf(ymin, p.y)
+				ymax = maxf(ymax, p.y)
+				if absf(p.y - y0) > band:
+					continue
+				mesh_in += 1
+				pts.append(Vector2(p.x, p.z))
+				sx += p.x
+				sz += p.z
+				n += 1
+		print("HeldStaff | 切片调试：%s 顶点 %d｜y %.3f~%.3f｜带内 %d（y0=%.3f band=%.3f）" % [
+			String(mi.name), mesh_total, ymin, ymax, mesh_in, y0, band])
+	if n < 8:
+		return []
+	var cx := sx / float(n)
+	var cz := sz / float(n)
+	var r := 0.0
+	for p in pts:
+		r += p.distance_to(Vector2(cx, cz))
+	return [cx, cz, r / float(pts.size()), n]
 
 
 func _body_pos() -> Vector3:

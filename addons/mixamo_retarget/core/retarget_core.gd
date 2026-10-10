@@ -98,7 +98,67 @@ static func build_mapping(src_skel: Skeleton3D, tgt_skel: Skeleton3D) -> Diction
 				out[si] = int(tgt_index[k])
 				used[int(tgt_index[k])] = true
 				break
+	# ---- 手指骨骼：按"手指 + 段号 + 左右"模式补映射 ----
+	# 不做这一步的话，手会一直是张开的 rest 姿势（"手指骨骼绑定失效"），握不住东西。
+	# Mixamo 每指 4 段（Index1..4）；ARP 是"base + 3 段"（index1_base/index1/index2/index3）
+	for si in src_skel.get_bone_count():
+		if out.has(si):
+			continue
+		var fp := parse_finger(src_skel.get_bone_name(si))
+		if fp.is_empty():
+			continue
+		var finger := String(fp["finger"])
+		var seg := int(fp["seg"])
+		var side := String(fp["side"])
+		if side == "":
+			continue
+		var tseg := seg if finger == "thumb" else seg - 1
+		if tseg < 0 or tseg > 3:
+			continue
+		var want := normalize(finger_target_name(finger, tseg, side))
+		if tgt_index.has(want) and not used.has(int(tgt_index[want])):
+			out[si] = int(tgt_index[want])
+			used[int(tgt_index[want])] = true
 	return out
+
+
+## 解析手指骨骼名：{"finger": "index", "seg": 2, "side": "l"}；不是手指就返回 {}
+static func parse_finger(bone_name: String) -> Dictionary:
+	var n := normalize(bone_name)          # 已剥掉 mixamorig 前缀、去掉 . _ - 空格
+	var side := ""
+	if n.contains("left") or n.ends_with("l"):
+		side = "l"
+	elif n.contains("right") or n.ends_with("r"):
+		side = "r"
+	var finger := ""
+	for cand in ["thumb", "index", "middle", "ring", "pinky"]:
+		if n.contains(cand):
+			finger = cand
+			break
+	if finger == "":
+		return {}
+	# 段号：手指名之后的第一个数字；带 "base" 的算第 0 段（掌骨）
+	var seg := 0
+	if n.contains("base"):
+		seg = 0
+	else:
+		var rest := n.substr(n.find(finger) + finger.length())
+		for i in rest.length():
+			if rest[i].is_valid_int():
+				seg = int(rest[i])
+				break
+	if seg == 0 and not n.contains("base"):
+		return {}
+	return {"finger": finger, "seg": seg, "side": side}
+
+
+## 目标骨架里对应的手指骨骼名（ARP 命名）
+static func finger_target_name(finger: String, seg: int, side: String) -> String:
+	if finger == "thumb":
+		return "%s%d.%s" % [finger, seg, side]
+	if seg == 0:
+		return "%s1_base.%s" % [finger, side]
+	return "%s%d.%s" % [finger, seg, side]
 
 # ------------------------------------------------------------------ 尺寸 / 朝向
 
@@ -150,6 +210,16 @@ static func bake(src_ap: AnimationPlayer, src_skel: Skeleton3D, tgt_skel: Skelet
 	var yaw_b := Basis(Vector3.UP, deg_to_rad(float(opts.get("yaw_offset_deg", 0.0))))
 	var skip_static := bool(opts.get("skip_static", true))
 	var path_prefix := String(opts.get("path_prefix", "Skeleton3D"))
+	# 原地化：锁定源髋部的水平位移。
+	# Mixamo 下载时没勾 "In Place" 的动作会在髋上带前向位移（如 Sword And Shield Run ≈2m/循环），
+	# 循环播放会瞬间弹回 —— 表现就是"前跑一段又退回"。这里只锁 X/Z，保留 Y 起伏。
+	var in_place := bool(opts.get("in_place", true))
+	var hips_src := -1
+	var hips0 := Vector3.ZERO
+	for si in mapping.keys():
+		if String(match_slot(src_skel.get_bone_name(int(si))).get("slot", "")) == "hips":
+			hips_src = int(si)
+			break
 
 	# 源 / 目标 rest
 	var src_n := src_skel.get_bone_count()
@@ -227,6 +297,12 @@ static func bake(src_ap: AnimationPlayer, src_skel: Skeleton3D, tgt_skel: Skelet
 			if rots.is_empty():
 				skipped.append("%s（没有可用骨骼轨道）" % clip_name)
 				continue
+			# 原地化基准：本条动画第一个键上的髋部水平位置（X/Z 锁在它上面，Y 保留）
+			hips0 = Vector3.ZERO
+			if in_place and hips_src >= 0 and poss_all.has(hips_src):
+				var hti: int = int(poss_all[hips_src])
+				if src_anim.track_get_key_count(hti) > 0:
+					hips0 = src_anim.position_track_interpolate(hti, src_anim.track_get_key_time(hti, 0))
 			# 静止判定：所有旋转轨道在整段里的最大变化量
 			var motion := 0.0
 			for bi in rots.keys():
@@ -278,7 +354,11 @@ static func bake(src_ap: AnimationPlayer, src_skel: Skeleton3D, tgt_skel: Skelet
 					if rots_all.has(bi):
 						local.basis = Basis(src_anim.rotation_track_interpolate(int(rots_all[bi]), tt))
 					if poss_all.has(bi):
-						local.origin = src_anim.position_track_interpolate(int(poss_all[bi]), tt)
+						var pv: Vector3 = src_anim.position_track_interpolate(int(poss_all[bi]), tt)
+						if in_place and bi == hips_src:
+							pv.x = hips0.x          # 锁水平位移（保留 Y 起伏），避免循环弹回
+							pv.z = hips0.z
+						local.origin = pv
 					g_s[bi] = local
 				for bi in order_src:
 					var pp := src_parent[bi]

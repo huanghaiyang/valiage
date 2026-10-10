@@ -1,5 +1,7 @@
 class_name Player
 extends CharacterBody3D
+## 角色档案模块（用 preload 常量而不是全局类名：--script/无头环境不会重建全局类表，class_name 会找不到）
+const CharProfile := preload("res://scripts/character_profile.gd")
 ## 玩家角色：第三方模型（KayKit Adventurers - Mage，CC0）
 ## CharacterBody3D + 胶囊碰撞（凸形状，兼容场景三角碰撞地形），由 CameraRig 用 move_and_slide 驱动（走物理碰撞）
 ## 动作系统：ACTION_LIB 动作注册表 + 一次性/循环动作播放 + 移动状态联动（走/跑/跳）
@@ -24,7 +26,31 @@ var _spell_casting := false
 var _interact := ""                 # "", "sit", "sleep", "climb"（家具互动）
 var _interact_top_y := 0.0        # 爬梯目标顶 y
 
-const CHARACTER_SCENE := "res://assets/models/characters/Mage.glb"
+## 角色档案 id（见 scripts/character_profile.gd）：换模型只改这里，或换一份档案
+@export var character_id := "forest"
+var _profile: Dictionary = {}
+## 本次角色的目标身高（米）
+var target_height := 1.5
+## 自动算出的模型缩放（把模型缩到目标身高）
+var _auto_scale := 1.0
+## 动画库前缀（库不是加在默认库上时才非空）
+var _lib_prefix := ""
+## 当前动画库里所有剪辑名（映射值写成数组时用来挑"库里存在的那个"）
+var _clip_names := PackedStringArray()
+## 调试：在右手挂点上渲染一个红球（判断挂点有没有真的跟着手骨）。
+## 排查"法杖脱离手臂"时打开过，现在关掉；需要再开就设成 true
+@export var debug_hand_socket := false
+## 法杖在手里上下翻转 180°。**本项目的法杖：false = 杖头向上** ✓（你实测确认）
+## 换别的法杖模型如果杖头朝下，把它改成 true
+@export var staff_flip_in_hand := false
+## 握点比例（从杖底往上）：0.32 = 下三分之一处；翻转时自动取反
+@export var staff_grip_frac := 0.6
+## 杖身半径外移（米）：手掌握杖时杖"轴"应在掌心外侧约一个半径处，否则杖身插进手里。
+## 0 = 不偏移；正负号不合就传负值。法杖越粗这个值越大（实测杖径见日志）。
+@export var staff_grip_out := 0.0
+## 沿手指方向的握点位置（0.45 = 掌心中段，0.6 = 更靠指根/六成处）
+@export var staff_grip_along := 0.0
+const CHARACTER_SCENE := "res://assets/models/characters/Mage.glb"   # 旧默认，仅作回退参考
 # Mage 模型身体（头顶）原始约 2.94m，缩到 0.368 → 角色约 1.08m（门 1.7m 的约 64%）
 const CHARACTER_SCALE := 0.368
 
@@ -36,9 +62,10 @@ const KAYKIT_LIB_PATH := "res://assets/animations/kaykit_library.tres"
 
 # 碰撞体尺寸（主体胶囊：凸形状才能与场景 trimesh 地形正常碰撞；凹形 ConcavePolygonShape3D 在 Godot 物理中不支持 CharacterBody 会穿模）
 const STEP_MAX_ANGLE := 0.907571    # 抬步上限 52 度（与抗抖动的 floor_max_angle 解耦）
-const COLLIDER_RADIUS := 0.28
-const COLLIDER_HEIGHT := 1.08
-const COLLIDER_OFFSET_Y := 0.54
+## 碰撞体尺寸（主体胶囊；运行时按 target_height 重算，见 _ready）
+var COLLIDER_RADIUS := 0.30
+var COLLIDER_HEIGHT := 1.50
+var COLLIDER_OFFSET_Y := 0.75
 # 脚底平底薄圆柱：只垫平球面最低点（站突起/石头/树干时脚部不下陷）；
 # 必须很薄——太高会在坡面/物体边缘把角色垫起造成浮空
 const COLLIDER_FOOT_HEIGHT := 0.05
@@ -51,8 +78,8 @@ const MAX_STEP_HEIGHT := 0.45
 const STEP_PROBE_AHEAD := 0.45
 ## 探针向下探测长度；起点高度为 MAX_STEP_HEIGHT + 该值
 const STEP_DROP := 0.9
-## 台阶顶面之上需要的净空（米）：角色站立高度 + 余量
-const STEP_HEADROOM := 1.25
+## 台阶顶面之上需要的净空（米）：角色站立高度 + 余量（运行时按身高重算）
+var STEP_HEADROOM := 1.72
 ## 抬步后短暂忽略重力，避免上台阶瞬间被拉回
 const STEP_GRACE_TIME := 0.1
 ## 抬步的视觉平滑时长：根部在 smoothstep 曲线上升完这段距离所需时间。
@@ -107,6 +134,8 @@ var _anim_watch := 0.0
 const ANIM_IDLE := "Idle"
 const ANIM_WALK := "Walking_A"
 const ANIM_RUN := "Running_A"
+## 快跑：走和跑共用同一条持剑动作，跑用 1.4× 播放速度（用户规格）
+const RUN_ANIM_SPEED := 1.4
 # 转向/侧移过渡动画（KayKit 库：Strafe_Left/Strafe_Right/DashLeft/DashRight）
 const ANIM_STRAFE_L := "kaykit/Strafe_Left"
 const ANIM_STRAFE_R := "kaykit/Strafe_Right"
@@ -222,17 +251,29 @@ func _ready() -> void:
 	# 进 group 后 spell_caster / Vitals 这类"找玩家"的代码可以走快路径，不必再按名字递归搜
 	add_to_group("player")
 	_setup_dust()                 # ★ 放在最前：与角色模型加载**解耦**（加载失败也照样有灰尘，方便自检）
+	# ---- 角色档案：模型 / 目标身高 / 动画库 / 动作映射（换模型只改 character_id）----
+	_profile = CharProfile.get_profile(character_id)
+	target_height = float(_profile.get("height", 1.5))
+	COLLIDER_RADIUS = clampf(target_height * 0.20, 0.20, 0.34)
+	COLLIDER_HEIGHT = target_height
+	COLLIDER_OFFSET_Y = target_height * 0.5
+	STEP_HEADROOM = target_height * 1.15
+
+	_setup_dust()                 # ★ 放在最前：与角色模型加载**解耦**（加载失败也照样有灰尘，方便自检）
 	body = _instantiate_character()
 	if body == null:
 		body = Node3D.new()
 		body.name = "Visual"
 		add_child(body)
-	body.scale = Vector3.ONE * CHARACTER_SCALE
+		body.scale = Vector3.ONE * CHARACTER_SCALE
+	else:
+		body.scale = Vector3.ONE * _auto_scale      # 按档案目标身高自动缩放
 
-	# 加载 KayKit 动作库（骨骼重定向烘焙到 Mage 骨架）
-	var kk_lib: AnimationLibrary = load(KAYKIT_LIB_PATH)
-	if kk_lib != null and anim_player != null:
-		anim_player.add_animation_library("kaykit", kk_lib)
+	# KayKit 库只给"档案没指定动画库"的旧角色挂（森林男用 mixamo.tres）
+	if String(_profile.get("lib", "")) == "":
+		var kk_lib: AnimationLibrary = load(KAYKIT_LIB_PATH)
+		if kk_lib != null and anim_player != null:
+			anim_player.add_animation_library("kaykit", kk_lib)
 	_ensure_loop_anims()
 
 	# ★ 碰撞体与物理参数**不依赖动画节点**，必须无条件建立（原来放在 _ensure_loop_anims 的
@@ -293,9 +334,12 @@ func _ensure_loop_anims() -> void:
 		return
 	var fixed := 0
 	for n in LOOP_CLIPS:
-		if not anim_player.has_animation(n):
+		# ★ 必须用映射后的剪辑名判断：森林男的动作库是 Mixamo 重定向来的，
+		#   逻辑名（Idle/Walking_A/Running_A）在库里叫 Unarmed Idle/Standard Walk/Running
+		var clip := _clip(n)
+		if not anim_player.has_animation(clip):
 			continue
-		var a := anim_player.get_animation(n)
+		var a := anim_player.get_animation(clip)
 		if a != null and a.loop_mode != Animation.LOOP_LINEAR:
 			a.loop_mode = Animation.LOOP_LINEAR
 			fixed += 1
@@ -304,6 +348,7 @@ func _ensure_loop_anims() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	_debug_geom_check()
 	if _step_cooldown > 0.0:
 		_step_cooldown = maxf(0.0, _step_cooldown - delta)
 	# 滞空兜底：长时间处于跳跃状态说明落地事件漏了，强制复位状态机
@@ -454,20 +499,47 @@ func _cast(space: PhysicsDirectSpaceState3D, from: Vector3, dir: Vector3,
 
 
 func _instantiate_character() -> Node3D:
-	var scene: PackedScene = load(CHARACTER_SCENE)
+	var prof := _profile if not _profile.is_empty() else CharProfile.get_profile(character_id)
+	var scene: PackedScene = load(String(prof.get("scene", CHARACTER_SCENE)))
 	if scene == null:
+		push_warning("[player] 角色模型加载失败：%s" % String(prof.get("scene", "")))
 		return null
 	var inst := scene.instantiate()
 	inst.name = "Visual"
+	# 身高：量模型网格包围盒 → 缩放到档案里的目标身高（换任何模型都自动适配）
+	var raw_h := CharProfile.measure_height(scene)
+	var want_h := float(prof.get("height", 1.5))
+	_auto_scale = (want_h / raw_h) if raw_h > 0.01 else 1.0
 	add_child(inst)
+
+	# 动画：模型自带 AnimationPlayer 就用它；没有（如森林男）就建一个并挂上烘焙好的动画库。
+	# ★ AnimationPlayer 必须是模型根的子节点：库里轨道路径是 root/Skeleton3D:<骨骼>
 	anim_player = _find_animation_player(inst)
-	if anim_player != null:
+	if anim_player == null:
+		anim_player = AnimationPlayer.new()
+		anim_player.name = "AnimPlayer"
+		inst.add_child(anim_player)
+	var lib_path := String(prof.get("lib", ""))
+	_lib_prefix = ""
+	if lib_path != "" and ResourceLoader.exists(lib_path):
+		var lib: AnimationLibrary = load(lib_path)
+		if lib != null:
+			var lname := "" if not anim_player.has_animation_library("") else "mix"
+			anim_player.add_animation_library(lname, lib)
+			_lib_prefix = lname + ("/" if lname != "" else "")
+	if anim_player.has_animation(_clip(ANIM_IDLE)):
 		_play_anim(ANIM_IDLE)
+	_clip_names = anim_player.get_animation_list()
+	print("[player] 角色=%s｜原始高 %.1f → 缩放 %.5f → %.2f m｜动画 %s（%d 条）｜挂点骨骼 %s" % [
+		String(prof.get("label", character_id)), raw_h, _auto_scale, raw_h * _auto_scale,
+		(lib_path.get_file() if lib_path != "" else "模型自带"),
+		anim_player.get_animation_list().size(),
+		str(prof.get("hand_bones", []).slice(0, 2))])
 	_attach_held_staff(inst)
 	return inst
 
 
-## 把可替换的法杖挂到右手骨骼上。Mage 模型自带 1H_Wand / 2H_Staff / Spellbook，
+## 把可替换的法杖挂到手部挂点上（Torch 系列是左手持物 → 现在挂左手）。Mage 模型自带 1H_Wand / 2H_Staff / Spellbook，
 ## 装上自定义法杖时先把它们藏起来，免得两根杖叠在一起。
 func _attach_held_staff(inst: Node) -> void:
 	_native_props.clear()
@@ -475,16 +547,36 @@ func _attach_held_staff(inst: Node) -> void:
 		var p := inst.find_child(nm, true, false)
 		if p is Node3D:
 			_native_props.append(p as Node3D)
-	var slot := inst.find_child("handslot_r", true, false)
+	# 右手挂点：按档案的名字列表找（森林男 hand.r，KayKit Mage handslot_r，Mixamo mixamorig_RightHand…）
+	var slot := CharProfile.find_hand(inst, _profile.get("hand_bones", []))
 	if slot == null:
-		push_warning("[staff] 角色没有 handslot_r 骨骼，法杖无法挂载")
+		push_warning("[staff] 角色 %s 上找不到右手骨骼 %s，法杖无法挂载" % [
+			String(_profile.get("label", character_id)), str(_profile.get("hand_bones", []))])
 		return
+	print("[staff] 手部挂点 = %s" % slot.name)
 	held_staff = load("res://scripts/held_staff.gd").new()
 	held_staff.name = "HeldStaff"
 	# 位置与朝向都归零：尺寸/握点/前倾角全由 HeldStaff 自己按目标长度与世界方向算
 	held_staff.position = Vector3.ZERO
 	held_staff.rotation_degrees = Vector3.ZERO
+	# 法杖长度随身高等比缩放（原按 1.7m 角色定 1.45m；1.5m 角色 → 约 1.28m）
+	held_staff.len_scale = target_height / 1.7
+	# 杖头朝向 / 握点高低：做成可调开关（检查器里直接改，不用动代码）
+	held_staff.flip_in_hand = staff_flip_in_hand
+	held_staff.grip_frac = staff_grip_frac
+	held_staff.grip_out = staff_grip_out
+	# 握持角：档案里从参考动作（Torch Idle）解出来的固定角；为 ZERO 时回退到旧的 rest 标定
+	held_staff.hold_rot_deg = _profile.get("staff_hold_rot_deg", Vector3.ZERO)
+	# 手骨是腕关节时，把法杖挪进掌心（BoneAttachment3D 自己的 position 每帧会被骨骼姿态覆盖，只能交给模型）
+	if slot is BoneAttachment3D:
+		var att := slot as BoneAttachment3D
+		var off := CharProfile.hand_grip_offset(att.get_skeleton(), att.bone_name, staff_grip_along)
+		held_staff.grip_offset = off
+		print("[staff] 掌心偏移 %s（骨内单位，约 %.1f cm 世界）" % [
+			str(off.snapped(Vector3(0.001, 0.001, 0.001))), off.length() * _auto_scale * 100.0])
 	slot.add_child(held_staff)
+	if debug_hand_socket:
+		_add_hand_debug_marker(slot)
 	var sys := _staff_system()
 	if sys != null:
 		_apply_staff(str(sys.get("equipped")), int(sys.get("equipped_element")))
@@ -505,6 +597,92 @@ func _apply_staff(id: String, elem: int) -> void:
 
 ## 运行期取法杖系统。**不要直接写 autoload 标识符 StaffSystem**：那样 player.gd 在
 ## autoload 未注册的编译上下文里（--script 探针、依赖链编译）会直接编译失败。
+## 调试：在右手挂点上放一个红色小球（3.5cm，穿透显示）。
+## 用途：如果球跟着手走 → 挂点是对的（问题在法杖自身的朝向/握点）；
+##       如果球不跟手 → 挂点没绑上骨骼（要查 BoneAttachment3D / 骨骼名）。
+func _add_hand_debug_marker(slot: Node3D) -> void:
+	var mi := MeshInstance3D.new()
+	mi.name = "HandSocketDebug"
+	var sph := SphereMesh.new()
+	# 挂点在模型内部（父级有 0.015 这类缩放），半径要按父级缩放换算成世界 3.5cm
+	var ps := maxf(0.0001, slot.global_transform.basis.get_scale().x)
+	sph.radius = 0.035 / ps
+	sph.height = 0.07 / ps
+	mi.mesh = sph
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.15, 0.15)
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.no_depth_test = true
+	mi.material_override = mat
+	slot.add_child(mi)
+	print("[staff] 调试红球已放在挂点 %s（世界半径 3.5cm）" % slot.name)
+
+
+## 一次性自检（约 2 秒后打一次）：挂点 / 手骨 / 法杖网格 的世界位置，
+## 用来确认"法杖真的绑在手上"（挂点跟手骨重合 + 挂点落在法杖包围盒内）。
+var _geom_checked := false
+var _geom_frames := 0
+
+
+func _debug_geom_check() -> void:
+	if _geom_checked or held_staff == null or body == null:
+		return
+	_geom_frames += 1
+	if _geom_frames < 120:
+		return
+	_geom_checked = true
+	var skel := body.find_child("Skeleton3D", true, false) as Skeleton3D
+	var slot := held_staff.get_parent() as Node3D
+	if skel == null or slot == null:
+		print("[法杖自检] 找不到骨架或挂点 ✗")
+		return
+	var bone_name := "-"
+	if slot is BoneAttachment3D:
+		bone_name = (slot as BoneAttachment3D).bone_name
+	var bi := skel.find_bone(bone_name)
+	var hand_pos := Vector3.ZERO
+	if bi >= 0:
+		hand_pos = skel.global_transform * skel.get_bone_global_pose(bi).origin
+	var d_hand := hand_pos.distance_to(slot.global_position)
+	var box := _mesh_aabb_world(held_staff)
+	var on_staff := box.size != Vector3.ZERO and box.grow(0.03).has_point(slot.global_position)
+	print("[法杖自检] 挂点骨=%s（索引 %d）｜挂点 %s｜手骨 %s｜距离 %.4f m → %s" % [
+		bone_name, bi,
+		str(slot.global_position.snapped(Vector3(0.001, 0.001, 0.001))),
+		str(hand_pos.snapped(Vector3(0.001, 0.001, 0.001))), d_hand,
+		"跟手 ✓" if d_hand < 0.02 else "没跟手 ✗"])
+	print("[法杖自检] 法杖世界包围盒 高 %.3f m｜挂点是否落在杖身上 = %s" % [
+		box.size.y, "是 ✓（手握着杖）" if on_staff else "否 ✗（杖没在手里）"])
+	# 杖身方向（HeldStaff 的 +Y 就是杖身）与竖直的夹角：站立时应接近 0°
+	var axis := (held_staff as Node3D).global_transform.basis.y.normalized()
+	var ang := rad_to_deg(axis.angle_to(Vector3.UP))
+	print("[法杖自检] 杖身方向 %s｜与竖直夹角 %.1f° → %s" % [
+		str(axis.snapped(Vector3(0.001, 0.001, 0.001))), ang,
+		"竖直 ✓" if ang < 15.0 else "偏斜"])
+
+
+func _mesh_aabb_world(n: Node) -> AABB:
+	var out := AABB()
+	var first := true
+	var stack: Array[Node] = [n]
+	while not stack.is_empty():
+		var cur: Node = stack.pop_back()
+		if cur is VisualInstance3D and cur is Node3D and not (cur is Light3D):
+			var b := (cur as VisualInstance3D).get_aabb()
+			var xf := (cur as Node3D).global_transform
+			var o := AABB(xf * b.position, Vector3.ZERO)
+			for i in 8:
+				o = o.expand(xf * (b.position + Vector3(
+					b.size.x if (i & 1) else 0.0,
+					b.size.y if (i & 2) else 0.0,
+					b.size.z if (i & 4) else 0.0)))
+			out = o if first else out.merge(o)
+			first = false
+		for c in cur.get_children():
+			stack.append(c)
+	return out
+
+
 func _staff_system() -> Node:
 	return get_node_or_null("/root/StaffSystem")
 
@@ -530,8 +708,17 @@ func _find_animation_player(node: Node) -> AnimationPlayer:
 	return null
 
 func _play_anim(name: String) -> void:
-	if anim_player != null and anim_player.has_animation(name):
-		anim_player.play(name)
+	var n := _clip(name)
+	if anim_player != null and anim_player.has_animation(n):
+		anim_player.play(n)
+		# 动作/跳跃/施法都恢复 1.0×；跑步的 1.4× 由 _play_move_anim 在播完后设置
+		if name != ANIM_RUN and anim_player.speed_scale != 1.0:
+			anim_player.speed_scale = 1.0
+
+
+## 逻辑动作名 → 本档案的实际剪辑名（含库前缀）。映射值可能是数组（取库里存在的第一个）
+func _clip(name: String) -> String:
+	return _lib_prefix + CharProfile.clip_of(_profile, name, _clip_names)
 
 ## 第一人称隐藏角色模型（避免相机卡进头部内部），第三人称显示
 func set_body_visible(v: bool) -> void:
@@ -631,18 +818,22 @@ func update_turn(delta: float, moving: bool, running: bool) -> void:
 ## 名字没变、但 AnimationPlayer 已经停了，于是角色永远定格。
 ## 必须再确认"当前正在播的剪辑就是它"。
 func _play_move_anim(name: String) -> void:
+	var n := _clip(name)
 	if _move_anim == name and anim_player != null \
-			and anim_player.is_playing() and anim_player.current_animation == name:
+			and anim_player.is_playing() and anim_player.current_animation == n:
 		return
-	if anim_player != null and not anim_player.has_animation(name):
-		if anim_player.has_animation(ANIM_WALK):
+	if anim_player != null and not anim_player.has_animation(n):
+		if anim_player.has_animation(_clip(ANIM_WALK)):
 			name = ANIM_WALK
-		elif anim_player.has_animation(ANIM_IDLE):
+		elif anim_player.has_animation(_clip(ANIM_IDLE)):
 			name = ANIM_IDLE
 		else:
 			return
-	_move_anim = name
-	_play_anim(name)
+		n = _clip(name)
+	_move_anim = name          # 存"逻辑名"，其它地方照旧比较
+	_play_anim(n)
+	# 用户规格：走和跑共用同一条持剑动作，跑步靠 1.4× 播放速度区分（快跑）
+	anim_player.speed_scale = RUN_ANIM_SPEED if name == ANIM_RUN else 1.0
 
 
 ## 动画看门狗：兜底用。
@@ -754,7 +945,8 @@ func play_cast_gesture() -> void:
 ## 只有当前剪辑不是施法动画时才 play() —— 直接每帧 play() 会把剪辑重置回第一帧，
 ## 看起来就是"卡在起手式抖动"。幂等还有第二个好处：起跳等打断之后能自动把姿势找回来。
 func start_spell_cast() -> void:
-	if anim_player == null or not anim_player.has_animation(CAST_ANIM):
+	var ca := _clip(CAST_ANIM)
+	if anim_player == null or not anim_player.has_animation(ca):
 		return
 	if not _spell_casting:
 		_spell_casting = true
@@ -765,8 +957,8 @@ func start_spell_cast() -> void:
 		return
 	_action_active = true
 	_action_loop = true
-	if anim_player.current_animation != CAST_ANIM or not anim_player.is_playing():
-		anim_player.play(CAST_ANIM)
+	if anim_player.current_animation != ca or not anim_player.is_playing():
+		anim_player.play(ca)
 
 ## 结束持续施法（松手 / 换法术 / 取消选中）。恢复移动 / Idle。
 func stop_spell_cast() -> void:
@@ -798,14 +990,14 @@ func start_interact(kind: String, target: Vector3, yaw: float, stand_h: float) -
 	match kind:
 		"sit":
 			global_position.y = target.y + stand_h * 0.55
-			anim_player.play("Sit_Floor_Idle")
+			_play_anim("Sit_Floor_Idle")
 		"sleep":
 			global_position.y = target.y + stand_h * 0.5
-			anim_player.play("Lie_Down")
+			_play_anim("Lie_Down")
 		"climb":
 			global_position.y = target.y
 			_interact_top_y = target.y + stand_h
-			anim_player.play("kaykit/Climbing")
+			_play_anim("kaykit/Climbing")
 
 ## 退出家具互动（移动键/E 触发），恢复移动/Idle
 func stop_interact() -> void:
@@ -825,7 +1017,7 @@ func play_action(index: int) -> String:
 	if anim_player == null or index < 0 or index >= ACTION_LIB.size():
 		return ""
 	var entry: Array = ACTION_LIB[index]
-	var anim: String = entry[1]
+	var anim: String = _clip(String(entry[1]))
 	var mode: String = entry[2]
 	if not anim_player.has_animation(anim):
 		return ""
