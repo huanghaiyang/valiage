@@ -247,10 +247,22 @@ static func build_mapping(src_skel: Skeleton3D, tgt_skel: Skeleton3D) -> Diction
 		var side := String(fp["side"])
 		if side == "":
 			continue
-		var tseg := seg if finger == "thumb" else seg - 1
-		if tseg < 0 or tseg > 3:
+		# ★ 语义对齐（Mixamo ↔ ARP）：
+		#   Mixamo 手指链 = 近节 / 中节 / 末节 / **末端骨 tip**（不蒙皮、伸出模型外，第 4 节长度为 0）
+		#   ARP      = 掌骨(*1_base) / 近节 / 中节 / 末节
+		#   两边段数都是 4 但差一节 → 必须"源第 N 节 → 目标第 N 节"，并丢弃源的 tip（第 4 节），
+		#   掌骨没有对应源骨、保持 rest 即可。
+		#   （旧写法 seg-1 会整体错位一节：目标的**末节**被 Mixamo 的 tip 驱动 → 指尖形变）
+		if seg > 3:
 			continue
+		var tseg := seg
 		var want := normalize(finger_target_name(finger, tseg, side))
+		if not tgt_index.has(want):
+			# 兼容别的骨架命名：退回"源第 N 节 → 目标第 N-1 节（含掌骨那套）"
+			want = normalize(finger_target_name(finger, seg - 1, side))
+			tseg = seg - 1
+		if tseg < 0 or not tgt_index.has(want):
+			continue
 		if tgt_index.has(want) and not used.has(int(tgt_index[want])):
 			out[si] = int(tgt_index[want])
 			used[int(tgt_index[want])] = true
