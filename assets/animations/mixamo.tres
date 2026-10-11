@@ -1,4 +1,4 @@
-[gd_resource type="AnimationLibrary" format=3]
+[gd_resource type="AnimationLibrary" format=3 uid="uid://b7iek0xcpu5ah"]
 
 [sub_resource type="Animation" id="Animation_cuqre"]
 length = 2.0
@@ -16961,4 +16961,293 @@ _data = {
 &"Unarmed Run Forward": SubResource("Animation_8xuc5"),
 &"Walking Left Turn": SubResource("Animation_3g8ba"),
 &"Walking Turn 180": SubResource("Animation_5du61")
+}
+metadata/mixamo_sources = {
+"Climbing Up Wall.fbx": {
+"clips": ["Climbing Up Wall"],
+"deleted": [],
+"mtime": 1791628627,
+"path": "res://assets/mixamo/Climbing Up Wall.fbx",
+"size": 2061456
+},
+"Dodging Right.fbx": {
+"clips": ["Dodging Right"],
+"deleted": [],
+"mtime": 1791620637,
+"path": "res://assets/mixamo/Dodging Right.fbx",
+"size": 1886352
+},
+"End Bicycle Sit Up.fbx": {
+"clips": ["End Bicycle Sit Up"],
+"deleted": [],
+"mtime": 1791628656,
+"path": "res://assets/mixamo/End Bicycle Sit Up.fbx",
+"size": 2382544
+},
+"Fast Run.fbx": {
+"clips": ["Fast Run"],
+"deleted": [],
+"mtime": 1791621935,
+"path": "res://assets/mixamo/Fast Run.fbx",
+"size": 1734752
+},
+"Great Sword Idle.fbx": {
+"clips": ["Great Sword Idle"],
+"deleted": [],
+"mtime": 1791632544,
+"path": "res://assets/mixamo/Great Sword Idle.fbx",
+"size": 1897776
+},
+"Great Sword Jump.fbx": {
+"clips": ["Great Sword Jump"],
+"deleted": [],
+"mtime": 1791632611,
+"path": "res://assets/mixamo/Great Sword Jump.fbx",
+"size": 1808688
+},
+"Great Sword Run.fbx": {
+"clips": ["Great Sword Run"],
+"deleted": [],
+"mtime": 1791632476,
+"path": "res://assets/mixamo/Great Sword Run.fbx",
+"size": 1784384
+},
+"Jogging Stumble.fbx": {
+"clips": ["Jogging Stumble"],
+"deleted": [],
+"mtime": 1791628715,
+"path": "res://assets/mixamo/Jogging Stumble.fbx",
+"size": 1915648
+},
+"Jumping.fbx": {
+"clips": ["Jumping"],
+"deleted": [],
+"mtime": 1791630198,
+"path": "res://assets/mixamo/Jumping.fbx",
+"size": 1930720
+},
+"Laying Nodding.fbx": {
+"clips": ["Laying Nodding"],
+"deleted": [],
+"mtime": 1791628621,
+"path": "res://assets/mixamo/Laying Nodding.fbx",
+"size": 1874432
+},
+"Male Sitting Pose.fbx": {
+"clips": [],
+"deleted": [],
+"mtime": 1791628997,
+"path": "res://assets/mixamo/Male Sitting Pose.fbx",
+"size": 1656784
+},
+"Opening.fbx": {
+"clips": ["Opening"],
+"deleted": [],
+"mtime": 1791628926,
+"path": "res://assets/mixamo/Opening.fbx",
+"size": 2437008
+},
+"Push.fbx": {
+"clips": ["Push"],
+"deleted": [],
+"mtime": 1791628917,
+"path": "res://assets/mixamo/Push.fbx",
+"size": 2970688
+},
+"Running Right Turn.fbx": {
+"clips": ["Running Right Turn"],
+"deleted": [],
+"mtime": 1791622006,
+"path": "res://assets/mixamo/Running Right Turn.fbx",
+"size": 1817920
+},
+"Running Up Stairs.fbx": {
+"clips": ["Running Up Stairs"],
+"deleted": [],
+"mtime": 1791622018,
+"path": "res://assets/mixamo/Running Up Stairs.fbx",
+"size": 1774528
+},
+"Running.fbx": {
+"clips": ["Running"],
+"deleted": [],
+"mtime": 1791620867,
+"path": "res://assets/mixamo/Running.fbx",
+"size": 1794688
+},
+"Spell Cast.fbx": {
+"clips": ["Spell Cast"],
+"deleted": [],
+"mtime": 1791632511,
+"path": "res://assets/mixamo/Spell Cast.fbx",
+"size": 1864304
+},
+"Standard Walk.fbx": {
+"clips": ["Standard Walk"],
+"deleted": [],
+"mtime": 1791620693,
+"path": "res://assets/mixamo/Standard Walk.fbx",
+"size": 1910608
+},
+"Standing 1H Magic Attack 01.fbx": {
+"clips": ["Standing 1H Magic Attack 01"],
+"deleted": [],
+"mtime": 1791629347,
+"path": "res://assets/mixamo/Standing 1H Magic Attack 01.fbx",
+"size": 2052592
+},
+"Standing Torch Idle 01.fbx": {
+"clips": ["Standing Torch Idle 01"],
+"deleted": [],
+"mtime": 1791636191,
+"path": "res://assets/mixamo/Standing Torch Idle 01.fbx",
+"size": 2210192
+},
+"Standing Torch Jump.fbx": {
+"clips": ["Standing Torch Jump"],
+"deleted": [],
+"mtime": 1791636027,
+"path": "res://assets/mixamo/Standing Torch Jump.fbx",
+"size": 1901024
+},
+"Standing Torch Run Back.fbx": {
+"clips": ["Standing Torch Run Back"],
+"deleted": [],
+"mtime": 1791635855,
+"path": "res://assets/mixamo/Standing Torch Run Back.fbx",
+"size": 1801088
+},
+"Standing Torch Run Forward.fbx": {
+"clips": ["Standing Torch Run Forward"],
+"deleted": [],
+"mtime": 1791635969,
+"path": "res://assets/mixamo/Standing Torch Run Forward.fbx",
+"size": 1800576
+},
+"Standing Torch Run Right.fbx": {
+"clips": ["Standing Torch Run Right"],
+"deleted": [],
+"mtime": 1791635882,
+"path": "res://assets/mixamo/Standing Torch Run Right.fbx",
+"size": 1797344
+},
+"Standing Torch Turn Left 180.fbx": {
+"clips": ["Standing Torch Turn Left 180"],
+"deleted": [],
+"mtime": 1791635942,
+"path": "res://assets/mixamo/Standing Torch Turn Left 180.fbx",
+"size": 1911744
+},
+"Standing Torch Turn Left 90.fbx": {
+"clips": ["Standing Torch Turn Left 90"],
+"deleted": [],
+"mtime": 1791636096,
+"path": "res://assets/mixamo/Standing Torch Turn Left 90.fbx",
+"size": 1904256
+},
+"Standing Torch Turn Right 180.fbx": {
+"clips": ["Standing Torch Turn Right 180"],
+"deleted": [],
+"mtime": 1791635928,
+"path": "res://assets/mixamo/Standing Torch Turn Right 180.fbx",
+"size": 1938608
+},
+"Standing Torch Turn Right 90.fbx": {
+"clips": ["Standing Torch Turn Right 90"],
+"deleted": [],
+"mtime": 1791636104,
+"path": "res://assets/mixamo/Standing Torch Turn Right 90.fbx",
+"size": 1894544
+},
+"Standing Torch Walk Left.fbx": {
+"clips": ["Standing Torch Walk Left"],
+"deleted": [],
+"mtime": 1791636136,
+"path": "res://assets/mixamo/Standing Torch Walk Left.fbx",
+"size": 1860624
+},
+"Standing Torch Walk Right.fbx": {
+"clips": ["Standing Torch Walk Right"],
+"deleted": [],
+"mtime": 1791636128,
+"path": "res://assets/mixamo/Standing Torch Walk Right.fbx",
+"size": 1847920
+},
+"Sword And Shield Casting.fbx": {
+"clips": ["Sword And Shield Casting"],
+"deleted": [],
+"mtime": 1791631443,
+"path": "res://assets/mixamo/Sword And Shield Casting.fbx",
+"size": 1976080
+},
+"Sword And Shield Death.fbx": {
+"clips": ["Sword And Shield Death"],
+"deleted": [],
+"mtime": 1791630554,
+"path": "res://assets/mixamo/Sword And Shield Death.fbx",
+"size": 1922080
+},
+"Sword And Shield Idle.fbx": {
+"clips": ["Sword And Shield Idle"],
+"deleted": [],
+"mtime": 1791630540,
+"path": "res://assets/mixamo/Sword And Shield Idle.fbx",
+"size": 2009376
+},
+"Sword And Shield Jump.fbx": {
+"clips": ["Sword And Shield Jump"],
+"deleted": [],
+"mtime": 1791630568,
+"path": "res://assets/mixamo/Sword And Shield Jump.fbx",
+"size": 1830784
+},
+"Sword And Shield Run.fbx": {
+"clips": ["Sword And Shield Run"],
+"deleted": [],
+"mtime": 1791630527,
+"path": "res://assets/mixamo/Sword And Shield Run.fbx",
+"size": 1792480
+},
+"Unarmed Idle.fbx": {
+"clips": ["Unarmed Idle"],
+"deleted": [],
+"mtime": 1791622112,
+"path": "res://assets/mixamo/Unarmed Idle.fbx",
+"size": 2057344
+},
+"Unarmed Jump Running.fbx": {
+"clips": ["Unarmed Jump Running"],
+"deleted": [],
+"mtime": 1791622083,
+"path": "res://assets/mixamo/Unarmed Jump Running.fbx",
+"size": 1964800
+},
+"Unarmed Run Back.fbx": {
+"clips": ["Unarmed Run Back"],
+"deleted": [],
+"mtime": 1791621992,
+"path": "res://assets/mixamo/Unarmed Run Back.fbx",
+"size": 1814672
+},
+"Unarmed Run Forward.fbx": {
+"clips": ["Unarmed Run Forward"],
+"deleted": [],
+"mtime": 1791621984,
+"path": "res://assets/mixamo/Unarmed Run Forward.fbx",
+"size": 1777952
+},
+"Walking Left Turn.fbx": {
+"clips": ["Walking Left Turn"],
+"deleted": [],
+"mtime": 1791620734,
+"path": "res://assets/mixamo/Walking Left Turn.fbx",
+"size": 1914320
+},
+"Walking Turn 180.fbx": {
+"clips": ["Walking Turn 180"],
+"deleted": [],
+"mtime": 1791620721,
+"path": "res://assets/mixamo/Walking Turn 180.fbx",
+"size": 1854096
+}
 }
