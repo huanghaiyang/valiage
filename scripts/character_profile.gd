@@ -234,6 +234,53 @@ static func _norm(s: String) -> String:
 
 ## 逻辑动作名 → 本档案的实际剪辑名。
 ## 映射值可以是字符串（唯一候选），也可以是数组（按顺序取**库里真实存在**的第一个）。
+## 掌心外法线（**手骨本地空间**，单位向量）：
+##   掌轴 = 腕 → 4 根掌骨(*1_base) 的均值方向；
+##   手宽 = 食指基 → 小指基；
+##   法线 = 掌轴 × 手宽；方向取"**手指卷曲那一侧**"（用指尖 index3/middle3 的位置判定）。
+## 用途：杖身半径补偿 —— 让有粗细的杖沿这个方向推出去，杆的表面贴住掌心。
+static func hand_out_normal(skel: Skeleton3D, bone_name: String) -> Vector3:
+	if skel == null:
+		return Vector3.ZERO
+	var hi := skel.find_bone(bone_name)
+	if hi < 0:
+		return Vector3.ZERO
+	var side := "l"
+	var low := bone_name.to_lower()
+	if low.contains("right") or low.ends_with("r"):
+		side = "r"
+	var hrest := skel.get_bone_global_rest(hi)
+	var ho := hrest.origin
+	var acc := Vector3.ZERO
+	var n := 0
+	for f in ["index", "middle", "ring", "pinky"]:
+		var bi := skel.find_bone("%s1_base.%s" % [f, side])
+		if bi >= 0:
+			acc += skel.get_bone_global_rest(bi).origin - ho
+			n += 1
+	if n == 0:
+		return Vector3.ZERO
+	var palm := acc / float(n)
+	var i1 := skel.find_bone("index1_base." + side)
+	var p1 := skel.find_bone("pinky1_base." + side)
+	if i1 < 0 or p1 < 0:
+		return Vector3.ZERO
+	var across := skel.get_bone_global_rest(i1).origin - skel.get_bone_global_rest(p1).origin
+	var normal := palm.cross(across)
+	if normal.length() < 0.0001:
+		return Vector3.ZERO
+	normal = normal.normalized()
+	var tip := skel.find_bone("index3." + side)
+	if tip < 0:
+		tip = skel.find_bone("middle3." + side)
+	var s := 1.0
+	if tip >= 0:
+		var proj := (skel.get_bone_global_rest(tip).origin - ho).dot(normal)
+		s = signf(proj) if absf(proj) > 0.0001 else 1.0
+	var local := hrest.basis.inverse() * (normal * s)
+	return local.normalized()
+
+
 static func clip_of(profile: Dictionary, logical: String, available := PackedStringArray()) -> String:
 	var m: Dictionary = profile.get("clips", {})
 	# clips 为空且写了 clips_from → 继承另一个档案的动作映射

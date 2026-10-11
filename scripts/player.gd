@@ -41,6 +41,9 @@ var _clip_names := PackedStringArray()
 ## 调试：在右手挂点上渲染一个红球（判断挂点有没有真的跟着手骨）。
 ## 排查"法杖脱离手臂"时打开过，现在关掉；需要再开就设成 true
 @export var debug_hand_socket := false
+## 调试：在握点渲染"与杖同粗、同朝向"的半透明圆柱（穿透显示），
+## 用来目视核对 ①握点位置 ②杖轴朝向 ③半径补偿。测试用，默认开，改完可关。
+@export var debug_grip_cylinder := false
 ## 法杖在手里上下翻转 180°。**本项目的法杖：false = 杖头向上** ✓（你实测确认）
 ## 换别的法杖模型如果杖头朝下，把它改成 true
 @export var staff_flip_in_hand := false
@@ -49,8 +52,23 @@ var _clip_names := PackedStringArray()
 ## 杖身半径外移（米）：手掌握杖时杖"轴"应在掌心外侧约一个半径处，否则杖身插进手里。
 ## 0 = 不偏移；正负号不合就传负值。法杖越粗这个值越大（实测杖径见日志）。
 @export var staff_grip_out := 0.0
-## 沿手指方向的握点位置（0.45 = 掌心中段，0.6 = 更靠指根/六成处）
-@export var staff_grip_along := 0.0
+## ★ 握点（**手骨本地坐标**，骨内单位）—— 这是唯一的握点来源：
+##   运行时会在这个位置渲染一个**透明小球**，法杖的杖身轴线就穿过去（法杖跟着小球走）。
+##   调法：运行游戏 → 检查器里改这个 Vector3 → 小球与法杖**实时一起移动** → 满意后记下数值。
+##   Vector3.ZERO = 改用自动算法（网格掌心中心 → 骨骼算法回退）。
+@export var staff_grip_local := Vector3.ZERO
+## 握点小球半径（米）：只在下面两个调试开关打开时才画 ✓
+@export var staff_grip_marker_r := 0.035
+## 调试①：青色小球 = 法杖轴线穿过的握点（`staff_grip_local`）—— **默认关闭** ✓
+@export var debug_grip_marker := false
+## 调试②：橙色玻璃球 = 包住整个拳头的实时拳心（半径按骨点最大距离算）—— **默认关闭** ✓
+@export var debug_fist_sphere := false
+## 调试③：**握点相关的诊断日志总开关**（默认关闭 ✓ 需要排查时打开 ✓）
+## 收进去的：`[staff] 握点/掌心偏移`、`[握持对照]`、`[拳心] 自动标定`、`[握点核对]`、
+##           `[法杖自检]`、`[外八自检]`、`[站姿自检]`、`HeldStaff | 握点比例/悬浮基准`
+@export var debug_verbose := false
+## 沿手指方向的握点系数（仅当 staff_grip_local == ZERO 时用于自动算法）
+@export var staff_grip_along := 1.0
 const CHARACTER_SCENE := "res://assets/models/characters/Mage.glb"   # 旧默认，仅作回退参考
 # Mage 模型身体（头顶）原始约 2.94m，缩到 0.368 → 角色约 1.08m（门 1.7m 的约 64%）
 const CHARACTER_SCALE := 0.368
@@ -350,6 +368,9 @@ func _ensure_loop_anims() -> void:
 
 func _physics_process(delta: float) -> void:
 	_debug_geom_check()
+	_sync_grip_target()
+	_auto_fist_calib()
+	_update_fist_marker(delta)
 	if _step_cooldown > 0.0:
 		_step_cooldown = maxf(0.0, _step_cooldown - delta)
 	# 滞空兜底：长时间处于跳跃状态说明落地事件漏了，强制复位状态机
@@ -554,7 +575,7 @@ func _attach_held_staff(inst: Node) -> void:
 		push_warning("[staff] 角色 %s 上找不到右手骨骼 %s，法杖无法挂载" % [
 			String(_profile.get("label", character_id)), str(_profile.get("hand_bones", []))])
 		return
-	print("[staff] 手部挂点 = %s" % slot.name)
+	if debug_verbose: print("[staff] 手部挂点 = %s" % slot.name)
 	held_staff = load("res://scripts/held_staff.gd").new()
 	held_staff.name = "HeldStaff"
 	# 位置与朝向都归零：尺寸/握点/前倾角全由 HeldStaff 自己按目标长度与世界方向算
@@ -568,13 +589,50 @@ func _attach_held_staff(inst: Node) -> void:
 	held_staff.grip_out = staff_grip_out
 	# 握持角：档案里从参考动作（Torch Idle）解出来的固定角；为 ZERO 时回退到旧的 rest 标定
 	held_staff.hold_rot_deg = _profile.get("staff_hold_rot_deg", Vector3.ZERO)
+	held_staff.debug_grip_cylinder = debug_grip_cylinder
+	held_staff.debug_verbose = debug_verbose
 	# 手骨是腕关节时，把法杖挪进掌心（BoneAttachment3D 自己的 position 每帧会被骨骼姿态覆盖，只能交给模型）
 	if slot is BoneAttachment3D:
 		var att := slot as BoneAttachment3D
 		var off := CharProfile.hand_grip_offset(att.get_skeleton(), att.bone_name, staff_grip_along)
+		var sk_inst := inst.find_child("Skeleton3D", true, false) as Skeleton3D
+		# ★ 握点优先级：① 检查器里手调的 staff_grip_local（推荐，可实时调）
+		#               ② 网格掌心中心（自动）
+		#               ③ 骨骼算法（回退）
+		if staff_grip_local.length() > 0.0001:
+			off = staff_grip_local
+			if debug_verbose: print("[staff] 握点 = 手调 staff_grip_local %s（%.1f cm）—— 运行时改它会实时跟着动 ✓" % [
+				str(staff_grip_local.snapped(Vector3(0.001, 0.001, 0.001))),
+				staff_grip_local.length() * _auto_scale * 100.0])
+		else:
+			var pc := _palm_center_local(att, sk_inst)
+			if pc.length() > 0.0001:
+				off = pc * staff_grip_along
+				if debug_verbose: print("[staff] 握点 = 网格掌心中心 %s × along %.2f → %.1f cm" % [
+					str(pc.snapped(Vector3(0.001, 0.001, 0.001))), staff_grip_along,
+					off.length() * _auto_scale * 100.0])
 		held_staff.grip_offset = off
-		print("[staff] 掌心偏移 %s（骨内单位，约 %.1f cm 世界）" % [
+		# ★ 真正的握点偏移放在 HeldStaff **自身 position** 上：父节点就是挂点（手骨），
+		#   坐标系天然正确 ✓。若放在 _model.position，会被 HeldStaff 的"杖的朝向"带歪 ✗
+		#   （症状：球与杖轴对不上、杖轴偏出掌心几厘米）
+		held_staff.position = off
+		# 注意：这里**不要**换算"腕→握点"的世界距离 —— 加载时 global_transform 还没就绪 ✗
+		#       （会打出 700+ cm 的假数）；可信的那一行在自检里（约 2 秒后）✓
+
+		if debug_verbose: print("[staff] 掌心偏移 %s（骨内单位，约 %.1f cm 世界）" % [
 			str(off.snapped(Vector3(0.001, 0.001, 0.001))), off.length() * _auto_scale * 100.0])
+		# 透明小球（青色）= 握点目标标记：**只在调试开关打开时创建** ✓
+		if debug_grip_marker:
+			_add_grip_marker(att, off)
+		if false:
+			_add_marker_at_local(att, off, sk_inst)
+		# 半径补偿方向：掌心外法线（杖有粗细，握点在拳心时杆面会压进手掌）
+		# ★ 半径补偿：**已按用户要求关闭** ✗
+		#   原因：把杖沿掌法线推出去一个半径，会让"杖轴"偏离设定的握点 ——
+		#   用户要的是「杖轴正好穿过握点」（手包住杖），而不是「掌心贴住杆面」。
+		#   需要时可在检查器里用 staff_grip_out 手动补一点点（米，可为负）。
+		# held_staff.out_dir = nrm            # ← 想要"杆面贴掌心"时再打开这一行
+		held_staff.out_dir = Vector3.ZERO
 	slot.add_child(held_staff)
 	if debug_hand_socket:
 		_add_hand_debug_marker(slot)
@@ -601,6 +659,315 @@ func _apply_staff(id: String, elem: int) -> void:
 ## 调试：在右手挂点上放一个红色小球（3.5cm，穿透显示）。
 ## 用途：如果球跟着手走 → 挂点是对的（问题在法杖自身的朝向/握点）；
 ##       如果球不跟手 → 挂点没绑上骨骼（要查 BoneAttachment3D / 骨骼名）。
+## 独立参照物（橙色细圆柱）：在给定的**手骨本地偏移**处放一个标记圆柱。
+## 与绿色圆柱（法杖实际握点）对比：重合 = 握点算法正确 ✓
+var _grip_marker: Node3D = null
+var _fist_marker: Node3D = null
+var _fist_log_t := 0.0
+
+
+## 橙色小球：**实时拳心**（当前姿势下四指 12 个关节的平均点）。
+## 与青色球（法杖轴线穿过的固定握点）对比 → 距离即"固定握点 vs 真实拳心"的偏差（厘米）。
+func _ensure_fist_marker(att: Node3D) -> void:
+	if att == null or (_fist_marker != null and is_instance_valid(_fist_marker)):
+		return
+	var mi := MeshInstance3D.new()
+	mi.name = "FistCenterMarker"
+	var sph := SphereMesh.new()
+	var r := maxf(0.008, staff_grip_marker_r) / maxf(0.0001, _auto_scale)
+	sph.radius = r
+	sph.height = r * 2.0
+	sph.radial_segments = 20
+	sph.rings = 12
+	mi.mesh = sph
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(1.0, 0.5, 0.05, 0.18)          # 橙色玻璃球 = 整个拳头
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.no_depth_test = true
+	mi.material_override = mat
+	att.add_child(mi)
+	_fist_marker = mi
+	print("[拳心球] 橙色球已创建（半径 %.1f cm）→ 每帧标出实时拳心 ✓" % (
+		maxf(0.008, staff_grip_marker_r) * 100.0))
+
+
+## 拳头的"包围半径"（手骨本地）：采样骨点到拳心的**最大距离** ×1.15
+## → 用来画一个**包住整个拳头**的玻璃球 ✓
+func _fist_radius_local(att: BoneAttachment3D, sk: Skeleton3D, center_local: Vector3) -> float:
+	if att == null or sk == null:
+		return 0.0
+	var hi := sk.find_bone(att.bone_name)
+	if hi < 0:
+		return 0.0
+	var side := "l"
+	var low := att.bone_name.to_lower()
+	if low.contains("right") or low.ends_with("r"):
+		side = "r"
+	var hxf := sk.global_transform * sk.get_bone_global_pose(hi)
+	var r := 0.0
+	for f in ["index", "middle", "ring", "pinky"]:
+		for seg in ["1_base", "1", "2", "3"]:
+			var bi := sk.find_bone("%s%s.%s" % [f, seg, side])
+			if bi < 0:
+				continue
+			var p := hxf.basis.inverse() * ((sk.global_transform * sk.get_bone_global_pose(bi).origin) - hxf.origin)
+			r = maxf(r, center_local.distance_to(p))
+	return r * 1.15
+
+
+## 每帧把橙色球放到实时拳心（半径=整个拳头的包围半径），并报告与"固定握点"的距离。
+## 仅在 debug_fist_sphere 打开时工作 ✓（关掉时也省掉每帧 16 次骨点采样 ✓）
+func _update_fist_marker(delta: float) -> void:
+	if not debug_fist_sphere:
+		return
+	if held_staff == null or body == null:
+		return
+	var att := held_staff.get_parent() as BoneAttachment3D
+	var sk := body.find_child("Skeleton3D", true, false) as Skeleton3D
+	if att == null or sk == null:
+		return
+	_ensure_fist_marker(att)
+	if _fist_marker == null or not is_instance_valid(_fist_marker):
+		return
+	var fc := _fist_center_local(att, sk)
+	if fc.length() < 0.0001:
+		return
+	_fist_marker.position = fc
+	# ★ 半径 = 包住整个拳头的包围半径（玻璃球），并降低不透明度便于透视
+	var fr := _fist_radius_local(att, sk, fc)
+	if fr > 0.0001:
+		var sm2: SphereMesh = (_fist_marker as MeshInstance3D).mesh as SphereMesh
+		if sm2 != null and not is_equal_approx(sm2.radius, fr):
+			sm2.radius = fr
+			sm2.height = fr * 2.0
+	_fist_log_t += delta
+	if _fist_log_t >= 1.0:
+		_fist_log_t = 0.0
+		var d: float = (fc - held_staff.grip_offset).length() * _auto_scale * 100.0
+		print("[拳头球] 实时拳心 %s｜球半径(整个拳头) %.2f cm｜杖轴握点 %s｜差 %.2f cm %s" % [
+			str(fc.snapped(Vector3(0.001, 0.001, 0.001))), fr * _auto_scale * 100.0,
+			str(held_staff.grip_offset.snapped(Vector3(0.001, 0.001, 0.001))),
+			d, "✓ 重合" if d < 0.3 else "✗ 有偏差"])
+
+
+## 透明小球：**握点目标标记**（法杖的杖身轴线就穿过它）。
+## 运行中在检查器改 staff_grip_local，小球与法杖会实时一起移动。
+func _add_grip_marker(att: Node3D, local: Vector3) -> void:
+	if att == null:
+		return
+	if _grip_marker != null and is_instance_valid(_grip_marker):
+		_grip_marker.queue_free()
+		_grip_marker = null
+	var mi := MeshInstance3D.new()
+	mi.name = "GripMarker"
+	var sph := SphereMesh.new()
+	sph.radius = staff_grip_marker_r / maxf(0.0001, _auto_scale)
+	sph.height = sph.radius * 2.0
+	sph.radial_segments = 20
+	sph.rings = 12
+	mi.mesh = sph
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(0.1, 0.95, 1.0, 0.75)         # 青色（更不透明、更显眼）
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.no_depth_test = true                                # 隔着手指也能看到
+	mi.material_override = mat
+	mi.position = local
+	att.add_child(mi)
+	_grip_marker = mi
+	print("[握点小球] 已放在 %s（半径 %.1f cm）→ 法杖轴线会穿过它 ✓" % [
+		str(local.snapped(Vector3(0.001, 0.001, 0.001))), staff_grip_marker_r * 100.0])
+	# 手骨本地轴的世界朝向：调 staff_grip_local 时照这个推（+Y 通常沿手骨指向指尖）
+	var b := att.global_transform.basis.orthonormalized()
+	print("[握点小球] 手骨本地轴的世界朝向：+X %s｜+Y %s｜+Z %s" % [
+		str(b.x.snapped(Vector3(0.01, 0.01, 0.01))),
+		str(b.y.snapped(Vector3(0.01, 0.01, 0.01))),
+		str(b.z.snapped(Vector3(0.01, 0.01, 0.01)))])
+
+
+## 运行中同步握点：检查器里改 staff_grip_local / 小球半径 → 小球与法杖实时跟着动
+func _sync_grip_target() -> void:
+	if held_staff == null:
+		return
+	if staff_grip_local.length() > 0.0001 and held_staff.grip_offset != staff_grip_local:
+		held_staff.grip_offset = staff_grip_local
+		held_staff.position = staff_grip_local
+		held_staff.request_place()
+		if _grip_marker != null and is_instance_valid(_grip_marker):
+			_grip_marker.position = staff_grip_local
+		print("[握点小球] 更新 → %s（离腕 %.1f cm）" % [
+			str(staff_grip_local.snapped(Vector3(0.001, 0.001, 0.001))),
+			staff_grip_local.length() * _auto_scale * 100.0])
+	if _grip_marker != null and is_instance_valid(_grip_marker):
+		var mr := staff_grip_marker_r / maxf(0.0001, _auto_scale)
+		var sm: SphereMesh = (_grip_marker as MeshInstance3D).mesh as SphereMesh
+		if sm != null and not is_equal_approx(sm.radius, mr):
+			sm.radius = mr
+			sm.height = mr * 2.0
+
+
+## ★ 拳心（手骨本地偏移）：用**当前姿势**下"四指各节关节（*1/*2/*3）"的平均位置。
+## 手指卷起来时这些点正好围在杖轴周围 → 平均值 ≈ 杖轴位置 = **拳心** ✓
+## （比"掌心网格体积中心"准：后者会被掌肉/前臂顶点带偏 ✗）
+func _fist_center_local(att: BoneAttachment3D, sk: Skeleton3D) -> Vector3:
+	if att == null or sk == null:
+		return Vector3.ZERO
+	var hi := sk.find_bone(att.bone_name)
+	if hi < 0:
+		return Vector3.ZERO
+	var side := "l"
+	var low := att.bone_name.to_lower()
+	if low.contains("right") or low.ends_with("r"):
+		side = "r"
+	var hg := sk.get_bone_global_pose(hi)
+	var hxf := sk.global_transform * hg                     # 当前姿势（不是 rest ✓）
+	var sum := Vector3.ZERO
+	var n := 0
+	for f in ["index", "middle", "ring", "pinky"]:
+		# ★ 必须把"掌骨基 *1_base"也算进来：手指各节关节都在**卷曲外侧** ✗，
+		#   只用它们的平均值会落在通道外（实测球偏外约 3cm ✗）；
+		#   加上掌骨基 → 把中心拉回掌心一侧 = 手指真正围出来的"通道中心" ✓
+		for seg in ["1_base", "1", "2", "3"]:
+			var bi := sk.find_bone("%s%s.%s" % [f, seg, side])
+			if bi < 0:
+				continue
+			sum += sk.global_transform * sk.get_bone_global_pose(bi).origin
+			n += 1
+	if n == 0:
+		return Vector3.ZERO
+	var c := sum / float(n)
+	var local := hxf.basis.inverse() * (c - hxf.origin)
+	return local
+
+
+## 一次性"拳心自动标定"：等动画跑起来（约 0.5 s，姿势已就位）后，
+## 用当前姿势的四指关节均值定出手骨本地"拳心"偏移，并应用到法杖与小球的握点。
+## 为什么不在加载时算：那时骨架还没被动画摆出姿势（是 rest）→ 手指是伸直的 ✗
+func _auto_fist_calib() -> void:
+	if _fist_calib_done or held_staff == null:
+		return
+	_fist_frames += 1
+	if _fist_frames < 30:
+		return
+	var att := held_staff.get_parent() as BoneAttachment3D
+	var sk := body.find_child("Skeleton3D", true, false) as Skeleton3D if body != null else null
+	if att == null or sk == null:
+		return
+	_fist_calib_done = true
+	# ★ 只在"用户没有指定握点"（staff_grip_local == 0）时才自动标定。
+	#   否则会把你手调的值覆盖掉 ✗（症状：怎么改都在同一个位置 ✗）
+	if staff_grip_local.length() > 0.0001:
+		if debug_verbose: print("[拳心] 你已指定 staff_grip_local = %s → 不做自动标定（不会被覆盖 ✓）" % [
+			str(staff_grip_local.snapped(Vector3(0.001, 0.001, 0.001)))])
+		return
+	var fc := _fist_center_local(att, sk)
+	if fc.length() < 0.0001:
+		return
+	staff_grip_local = fc
+	held_staff.grip_offset = fc
+	held_staff.position = fc
+	held_staff.request_place()
+	if _grip_marker != null and is_instance_valid(_grip_marker):
+		_grip_marker.position = fc
+	if debug_verbose: print("[拳心] 自动标定完成 → staff_grip_local = %s（离腕 %.2f cm）｜法杖已重新摆放 ✓" % [
+		str(fc.snapped(Vector3(0.001, 0.001, 0.001))), fc.length() * _auto_scale * 100.0])
+
+
+var _fist_calib_done := false
+var _fist_frames := 0
+
+
+func _add_marker_at_local(att: BoneAttachment3D, local: Vector3, _sk: Skeleton3D) -> void:
+	var mi2 := MeshInstance3D.new()
+	mi2.name = "HandCenterMarker"
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = 0.004 / maxf(0.0001, _auto_scale)
+	cyl.bottom_radius = cyl.top_radius
+	cyl.height = 0.16 / maxf(0.0001, _auto_scale)
+	cyl.radial_segments = 20
+	mi2.mesh = cyl
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(1.0, 0.55, 0.1, 0.85)         # 橙色
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.no_depth_test = true
+	mi2.material_override = mat
+	mi2.position = local
+	att.add_child(mi2)
+	if debug_verbose: print("[握持对照] 橙色圆柱（网格掌心中心）已放在 %s ✓｜与绿色圆柱重合 = 握点正确 ✓" % [
+		str(local.snapped(Vector3(0.001, 0.001, 0.001)))])
+
+
+## 网格"握点中心"（**手骨本地偏移**）：只用手部网格顶点，不依赖任何骨骼/握持算法。
+## ★ 取样中心改用"**四指指根（近节 *1）的均值**"、半径 3.5 cm：
+##   旧做法以**腕**为中心取 12 cm 内的顶点 → 把**前臂**顶点也算进来，中心被拉向腕侧 ✗
+##   （实测小球落在指节外侧 ✗）。现在只取"手指卷起来夹住杖的那块体积" → 就是握点中心 ✓
+func _palm_center_local(att: BoneAttachment3D, sk: Skeleton3D) -> Vector3:
+	if att == null or sk == null:
+		return Vector3.ZERO
+	var hi := sk.find_bone(att.bone_name)
+	if hi < 0:
+		return Vector3.ZERO
+	var side := "l"
+	var low := att.bone_name.to_lower()
+	if low.contains("right") or low.ends_with("r"):
+		side = "r"
+	var anchor := Vector3.ZERO
+	var an := 0
+	for f in ["index", "middle", "ring", "pinky"]:
+		var ki := sk.find_bone("%s1.%s" % [f, side])
+		if ki < 0:
+			ki = sk.find_bone("%s1_base.%s" % [f, side])
+		if ki >= 0:
+			anchor += sk.get_bone_global_rest(ki).origin
+			an += 1
+	var rest := sk.get_bone_global_rest(hi)
+	anchor = rest.origin if an == 0 else anchor / float(an)
+	var r_skel := 0.035 / maxf(0.0001, _auto_scale)        # 世界 3.5 cm → 骨架单位
+	var sum := Vector3.ZERO
+	var n := 0
+	var to_skel := sk.global_transform.affine_inverse()
+	for mi in _all_meshes(att):
+		var mesh: Mesh = (mi as MeshInstance3D).mesh
+		if mesh == null:
+			continue
+		var xf := to_skel * (mi as Node3D).global_transform
+		for s in mesh.get_surface_count():
+			var arr: Array = mesh.surface_get_arrays(s)
+			if arr.is_empty() or arr[Mesh.ARRAY_VERTEX] == null:
+				continue
+			var verts: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+			for v in verts:
+				var p: Vector3 = xf * v
+				if p.distance_to(anchor) <= r_skel:
+					sum += p
+					n += 1
+	if n < 50:
+		if debug_verbose: print("[握持对照] 取样顶点太少（%d）→ 回退骨骼算法" % n)
+		return Vector3.ZERO
+	var c := sum / float(n)
+	var local := rest.basis.inverse() * (c - rest.origin)
+	if debug_verbose: print("[握持对照] 握点中心：取样中心=四指指根｜半径3.5cm｜顶点 %d｜骨内偏移 %s｜距腕 %.2f cm" % [
+		n, str(local.snapped(Vector3(0.001, 0.001, 0.001))), local.length() * _auto_scale * 100.0])
+	return local
+
+
+func _all_meshes(from: Node) -> Array:
+	var out: Array = []
+	var root2: Node = from
+	while root2.get_parent() != null:
+		root2 = root2.get_parent()
+	var stack: Array[Node] = [root2]
+	while not stack.is_empty():
+		var cur: Node = stack.pop_back()
+		if cur is MeshInstance3D:
+			out.append(cur)
+		for c in cur.get_children():
+			stack.append(c)
+	return out
+
+
 func _add_hand_debug_marker(slot: Node3D) -> void:
 	var mi := MeshInstance3D.new()
 	mi.name = "HandSocketDebug"
@@ -626,6 +993,10 @@ var _geom_frames := 0
 
 
 func _debug_geom_check() -> void:
+	# 全部自检日志（[法杖自检]/[外八自检]/[站姿自检]/[握点核对]/[握点一致性]）
+	# 都收在 debug_verbose 里 → 默认不打 ✓（需要排查时在检查器里打开 ✓）
+	if not debug_verbose:
+		return
 	if _geom_checked or held_staff == null or body == null:
 		return
 	_geom_frames += 1
@@ -654,14 +1025,59 @@ func _debug_geom_check() -> void:
 		"跟手 ✓" if d_hand < 0.02 else "没跟手 ✗"])
 	print("[法杖自检] 法杖世界包围盒 高 %.3f m｜挂点是否落在杖身上 = %s" % [
 		box.size.y, "是 ✓（手握着杖）" if on_staff else "否 ✗（杖没在手里）"])
+	# 握点一致性核对（决定性 ✓，只在青色小球打开时有意义）：
+	#   法杖的握点 = HeldStaff 的全局原点（模型被摆成"握点落在原点"✓）
+	#   青球 = 挂点 + grip_offset（直接挂在挂点上 ✓）
+	#   → 两者必须重合；不重合就说明坐标系用错了 ✗
+	if debug_grip_marker and held_staff != null and _grip_marker != null and is_instance_valid(_grip_marker):
+		var a := (held_staff as Node3D).global_position
+		var b := (_grip_marker as Node3D).global_position
+		print("[握点一致性] 法杖握点 %s｜青球 %s｜差 %.2f cm %s" % [
+			str(a.snapped(Vector3(0.001, 0.001, 0.001))),
+			str(b.snapped(Vector3(0.001, 0.001, 0.001))),
+			a.distance_to(b) * 100.0,
+			"✓ 重合（坐标系正确）" if a.distance_to(b) < 0.003 else "✗ 不重合（坐标系错了）"])
+	# 握点核对（自检时刻变换已就绪，数值才可信）：
+	# 腕 → 握点 的世界距离；以及"1 cm 等于多少本地单位"（换算基准）
+	if held_staff != null and slot is Node3D:
+		var sxf2 := (slot as Node3D).global_transform
+		var gpt: Vector3 = sxf2 * held_staff.grip_offset
+		print("[握点核对] 腕→握点 世界距离 %.2f cm｜本地偏移 %s｜1 cm ≈ %.2f 本地单位（_auto_scale %.5f）" % [
+			(gpt - sxf2.origin).length() * 100.0,
+			str(held_staff.grip_offset.snapped(Vector3(0.001, 0.001, 0.001))),
+			1.0 / maxf(0.00001, _auto_scale), _auto_scale])
 	# 杖身方向（HeldStaff 的 +Y 就是杖身）与竖直的夹角：站立时应接近 0°
 	var axis := (held_staff as Node3D).global_transform.basis.y.normalized()
 	var ang := rad_to_deg(axis.angle_to(Vector3.UP))
 	print("[法杖自检] 杖身方向 %s｜与竖直夹角 %.1f° → %s" % [
 		str(axis.snapped(Vector3(0.001, 0.001, 0.001))), ang,
 		"竖直 ✓" if ang < 15.0 else "偏斜"])
-	# 外八自检：两脚在**当前动画姿势**下的水平朝向，相对"两脚平均方向"（= 正前方）
+	# 握持自检：量"腕 → 掌骨(*1_base) → 近节(*1)"的距离，
+	# 用来决定法杖轴线该落在手掌哪里（staff_grip_along=1.0 表示落在掌骨起点）
 	var sk2 := body.find_child("Skeleton3D", true, false) as Skeleton3D
+	if sk2 != null:
+		var hb := sk2.find_bone("hand.l")
+		if hb >= 0:
+			var wo := sk2.global_transform * sk2.get_bone_global_pose(hb).origin
+			var base_sum := 0.0
+			var base_n := 0
+			var knuck_sum := 0.0
+			var knuck_n := 0
+			for fi in ["index", "middle", "ring", "pinky"]:
+				var bi2 := sk2.find_bone(fi + "1_base.l")
+				if bi2 >= 0:
+					base_sum += wo.distance_to(sk2.global_transform * sk2.get_bone_global_pose(bi2).origin)
+					base_n += 1
+				var ki := sk2.find_bone(fi + "1.l")
+				if ki >= 0:
+					knuck_sum += wo.distance_to(sk2.global_transform * sk2.get_bone_global_pose(ki).origin)
+					knuck_n += 1
+			if base_n > 0 and knuck_n > 0:
+				var d_base := base_sum / float(base_n)
+				var d_knuck := knuck_sum / float(knuck_n)
+				print("[握持自检] 腕→掌骨均值 %.3f m｜腕→近节(指根)均值 %.3f m｜当前 along=%.2f out=%.3f｜along 建议 ≈ %.2f" % [
+					d_base, d_knuck, staff_grip_along, staff_grip_out,
+					(d_knuck / maxf(0.0001, d_base)) * 0.75])
 	if sk2 != null:
 		var fl := sk2.find_bone("foot.l")
 		var fr := sk2.find_bone("foot.r")

@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cyhv3yjm6i6gm"]
+
+[ext_resource type="Script" path="res://tools/grip_shot.gd" id="1_gripshot"]
+
+[node name="GripShot" type="Node"]
+script = ExtResource("1_gripshot")

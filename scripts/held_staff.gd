@@ -27,6 +27,45 @@ var grip_frac := GRIP_FRAC
 ## 杖身**半径**方向的外移量（米）：手掌握着杖时，杖的"轴"应该在掌心外侧
 ## 约一个半径处，否则杖身会插进手里。0 = 不偏移（旧行为）。
 var grip_out := 0.0
+## 掌心外法线（**手骨本地空间**，由 player.gd 按手部几何算好）：
+## 用于"半径补偿"—— 把杖沿这个方向推出一个**杆半径**，让杆的表面贴着掌心，
+## 而不是让有粗细的杖压进手里（用户："总感觉法杖的横截面半径没算进去"）。
+var out_dir := Vector3.ZERO
+## 调试：在握点渲染一个"与杖同粗、同朝向"的半透明圆柱（穿透显示），
+## 用来目视核对 ① 握点位置 ② 杖轴朝向 ③ 半径补偿 对不对。
+var debug_grip_cylinder := false
+var _grip_cyl_done := false
+## 调试：打印"握点高度切片"的顶点统计（默认关闭 ✓ 每帧/每次摆放都会打，很吵 ✗）
+var debug_slice := false
+## 诊断日志总开关（由 player.gd 的 debug_verbose 传进来 ✓，默认关闭 ✓）
+var debug_verbose := false
+
+
+## 圆柱挂在 HeldStaff 自身：+Y 就是杖身方向，原点就是挂点（= 握点）
+func _add_grip_debug_cylinder(r_local: float, grip_pos: Vector3) -> void:
+	if _grip_cyl_done:
+		return
+	_grip_cyl_done = true
+	var mi := MeshInstance3D.new()
+	mi.name = "GripDebugCylinder"
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = maxf(0.0005, r_local)
+	cyl.bottom_radius = maxf(0.0005, r_local)
+	cyl.height = 0.14 / maxf(0.0001, _parent_scale)     # 世界 14 cm 长的一段杖身
+	cyl.radial_segments = 24
+	cyl.rings = 1
+	mi.mesh = cyl
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(0.15, 1.0, 0.35, 0.5)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.no_depth_test = true
+	mi.material_override = mat
+	mi.position = grip_pos
+	add_child(mi)
+	print("HeldStaff | 调试圆柱：世界半径 %.2f cm｜长 14.0 cm｜中心 %s（杖身轴线经过点）✓" % [
+		r_local * _parent_scale * 100.0,
+		str(grip_pos.snapped(Vector3(0.001, 0.001, 0.001)))])
 ## 握持角（相对手骨的固定旋转，度）：由 tools/solve_staff_hold.gd 从参考动作解出。
 ## 非零时直接用它当本地朝向（不再用"骨骼 rest + 世界前倾"那套标定）。
 var hold_rot_deg := Vector3.ZERO
@@ -61,6 +100,12 @@ var _parent_scale := 1.0
 ## 握点偏移（模型局部单位，负值）。_place() 里量出来存下，_process 的悬浮基于它。
 var _grip_y := 0.0
 var _need_place := false
+var _hover_logged := false
+
+
+## 请求"重新摆放"（下一帧重新量模型/重算握点）。运行中改 grip_offset 后调用即可生效。
+func request_place() -> void:
+	_need_place = true
 var _pending_glow: Dictionary = {}
 
 
@@ -149,22 +194,43 @@ func _place() -> void:
 		cz = float(slice[1])
 		shaft_r = float(slice[2])
 		slice_n = int(slice[3]) if slice.size() > 3 else 0
+	# ★ 半径补偿：握点在"拳心"时，杖的**表面**会压进掌心 —— 需要沿掌心外法线
+	#   再推出一个"杖身半径"，让杆的表面正好贴着掌心。方向由 player.gd 算好
+	#   （朝手指卷曲那一侧，用指尖位置判定），这里只需要乘上实测半径。
+	if out_dir.length() > 0.0001 and shaft_r > 0.0:
+		var w_local := shaft_r * sc                    # = 世界半径 ÷ 父级缩放
+		_model.position += out_dir.normalized() * w_local
+		if debug_verbose:
+			print("HeldStaff | 半径补偿：沿掌心外法线推出 %.2f cm（实测杖径 %.2f cm）" % [
+				w_local * _parent_scale * 100.0, shaft_r * 2.0 * sc * _parent_scale * 100.0])
+	# 调试圆柱：与杖同粗、同朝向、同握点 —— 用来目视核对"位置/朝向/半径"三件事
+	if debug_grip_cylinder:
+		# ★ 圆柱中心 = 杖身轴线经过的点 = grip_offset +（半径补偿的位移）
+		#   注意不能用 _model.position：那是法杖**模型底部**的偏移（为了让握点落到原点）
+		var grip_local := grip_offset
+		if out_dir.length() > 0.0001 and shaft_r > 0.0:
+			grip_local = grip_offset + out_dir.normalized() * (shaft_r * sc)
+		_add_grip_debug_cylinder(shaft_r * sc if shaft_r > 0.0 else 0.01, grip_local)
 	_grip_y = -gy * sc                     # 存下来：悬浮是在这个基准上叠加
-	# 掌心偏移（手骨是腕关节时，把杖挪到掌心里；由 player.gd 按角色档案算好）
-	_model.position = Vector3(-cx * sc, _grip_y, -cz * sc) + grip_offset
+	# ★ 握点偏移由**父节点（挂点）的 position** 承担 —— 见 player.gd: held_staff.position = 握点。
+	#   这里**不能再加** grip_offset ✗：_model.position 属于 HeldStaff 的局部空间，
+	#   而那个空间带着**杖的朝向** → 偏移会被杖的旋转带歪（症状：杖轴偏出掌心几厘米 ✗）。
+	_model.position = Vector3(-cx * sc, _grip_y, -cz * sc)
 	# 杖身半径外移（沿手骨的本地 X 轴；正负号不合就传负值）：
 	# 让"杖的轴线"落在掌心外侧约一个半径处，杖身才不会插进手里。
 	if absf(grip_out) > 0.0001:
 		_model.position.x += grip_out / _parent_scale
 		print("HeldStaff | 杖身半径外移 %.1f cm（世界）" % (grip_out * 100.0))
-	print("HeldStaff | 握点比例 %.2f（翻转=%s）｜世界长 %.3f m｜握点处杖径 ≈ %.2f cm｜切片顶点 %d｜原点离挂点 %.3f m" % [
-		gf, str(flip_in_hand), _model_h * sc * _parent_scale,
-		shaft_r * 2.0 * sc * _parent_scale * 100.0,
-		slice_n,
-		absf(_grip_y) * _parent_scale])
+	if debug_verbose:
+		print("HeldStaff | 握点比例 %.2f（翻转=%s）｜世界长 %.3f m｜握点处杖径 ≈ %.2f cm｜切片顶点 %d｜原点离挂点 %.3f m" % [
+			gf, str(flip_in_hand), _model_h * sc * _parent_scale,
+			shaft_r * 2.0 * sc * _parent_scale * 100.0,
+			slice_n,
+			absf(_grip_y) * _parent_scale])
 	if grip_offset.length() > 0.0001:
-		print("HeldStaff | 应用掌心偏移 %s（骨内单位，约 %.1f cm 世界）" % [
-			str(grip_offset.snapped(Vector3(0.001, 0.001, 0.001))), grip_offset.length() * _parent_scale * 100.0])
+		if debug_verbose:
+			print("HeldStaff | 应用掌心偏移 %s（骨内单位，约 %.1f cm 世界）" % [
+				str(grip_offset.snapped(Vector3(0.001, 0.001, 0.001))), grip_offset.length() * _parent_scale * 100.0])
 
 
 func _sys_def() -> Dictionary:
@@ -249,7 +315,13 @@ func _process(delta: float) -> void:
 	_apply_pose(delta)
 	# 悬浮：沿世界竖直轻轻上下（不是模型局部轴 —— 那个已经被倾斜过了）
 	_hover_t += delta * HOVER_SPEED
+	# ★ 握点偏移已改由父节点 position 承担 ✓ → 这里不能再加 grip_offset（否则双重偏移 ✗）
 	_model.position.y = _grip_y + sin(_hover_t) * HOVER_AMOUNT / _world_to_local()
+	if not _hover_logged:
+		_hover_logged = true
+		if debug_verbose:
+			print("HeldStaff | 悬浮基准 = _grip_y %.3f + 握点 Y %.3f → 模型 Y %.3f（不再丢偏移 ✓）" % [
+				_grip_y, grip_offset.y, _model.position.y])
 	if _glow != null:
 		_pulse += delta * PULSE_SPEED
 		_glow.light_energy = (1.0 + 0.35 * sin(_pulse)) * 1.1
@@ -461,8 +533,9 @@ func _shaft_slice(y0: float, band: float) -> Array:
 				sx += p.x
 				sz += p.z
 				n += 1
-		print("HeldStaff | 切片调试：%s 顶点 %d｜y %.3f~%.3f｜带内 %d（y0=%.3f band=%.3f）" % [
-			String(mi.name), mesh_total, ymin, ymax, mesh_in, y0, band])
+		if debug_slice:
+			print("HeldStaff | 切片调试：%s 顶点 %d｜y %.3f~%.3f｜带内 %d（y0=%.3f band=%.3f）" % [
+				String(mi.name), mesh_total, ymin, ymax, mesh_in, y0, band])
 	if n < 8:
 		return []
 	var cx := sx / float(n)
