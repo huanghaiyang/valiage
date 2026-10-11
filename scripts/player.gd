@@ -67,6 +67,12 @@ var _clip_names := PackedStringArray()
 ## 收进去的：`[staff] 握点/掌心偏移`、`[握持对照]`、`[拳心] 自动标定`、`[握点核对]`、
 ##           `[法杖自检]`、`[外八自检]`、`[站姿自检]`、`HeldStaff | 握点比例/悬浮基准`
 @export var debug_verbose := false
+## 法杖「松握」程度：1 = 朝向世界稳定（跑动时杖不再跟着手臂前后甩 ✓），0 = 旧的刚性跟随 ✗
+@export var staff_world_stable := 1.0
+## 稳定时杖的前后倾角（度）：正值 = 杖头朝前 / 杖尾向后（沿角色朝向 ✓）
+@export var staff_world_lean_deg := 0.0
+## ★ 跑动时额外的杖身倾角（度，按速度 0→1 渐变）：正 = 杖头朝前、**杖尾向后拖** ✓（更自然 ✓）
+@export var staff_run_lean_deg := 12.0
 ## 沿手指方向的握点系数（仅当 staff_grip_local == ZERO 时用于自动算法）
 @export var staff_grip_along := 1.0
 const CHARACTER_SCENE := "res://assets/models/characters/Mage.glb"   # 旧默认，仅作回退参考
@@ -591,6 +597,10 @@ func _attach_held_staff(inst: Node) -> void:
 	held_staff.hold_rot_deg = _profile.get("staff_hold_rot_deg", Vector3.ZERO)
 	held_staff.debug_grip_cylinder = debug_grip_cylinder
 	held_staff.debug_verbose = debug_verbose
+	# 「松握」：朝向世界稳定（0=刚性跟手 ✗ / 1=完全稳定 ✓）—— 修"跑动时杖尾前倾" ✗
+	held_staff.world_stable = staff_world_stable
+	held_staff.world_lean_deg = staff_world_lean_deg
+	held_staff.world_run_lean_deg = staff_run_lean_deg
 	# 手骨是腕关节时，把法杖挪进掌心（BoneAttachment3D 自己的 position 每帧会被骨骼姿态覆盖，只能交给模型）
 	if slot is BoneAttachment3D:
 		var att := slot as BoneAttachment3D

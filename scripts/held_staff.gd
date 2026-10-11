@@ -39,6 +39,15 @@ var _grip_cyl_done := false
 var debug_slice := false
 ## 诊断日志总开关（由 player.gd 的 debug_verbose 传进来 ✓，默认关闭 ✓）
 var debug_verbose := false
+## ★ 世界朝向稳定（0~1）：手上其实是"松握" —— 位置跟手 ✓，但**朝向钉在世界空间** ✓。
+##   1.0 = 完全稳定（跑动时杖不再跟着手臂甩 ✓，物理上更合理 ✓）
+##   0.0 = 旧的刚性跟随（杖随手臂旋转 ✗，跑步时"杖尾前倾" ✗）
+var world_stable := 1.0
+## 稳定时杖的前后倾角（度）：**正 = 杖头朝前 / 杖尾向后** ✓（沿角色朝向 ✓，不是世界轴 ✓）
+var world_lean_deg := 0.0
+## ★ 跑动时额外的前后倾（度，按速度 0→1 渐变）：
+##   正 = 杖头朝前、**杖尾向后拖** ✓（跑起来更自然 ✓）；0 = 跑动也保持竖直
+var world_run_lean_deg := 12.0
 
 
 ## 圆柱挂在 HeldStaff 自身：+Y 就是杖身方向，原点就是挂点（= 握点）
@@ -313,6 +322,51 @@ func _process(delta: float) -> void:
 		_pending_glow = {}
 		return
 	_apply_pose(delta)
+	# ★ 世界朝向稳定（"松握"）：位置仍然跟手 ✓（父节点就是手骨 ✓），
+	#   但把**朝向**钉回世界空间 —— 跑步时杖不再跟着手臂前后甩 ✗
+	#   原理：模型的"握点"被摆在 HeldStaff 原点 ✓ → 绕原点旋转**不会**让握点离开手心 ✓
+	if world_stable > 0.0001:
+		# ★ 目标朝向 = 世界竖直 + 沿**角色朝向**的前后倾：
+		#   站立 → 基本竖直 ✓；跑动 → 杖头朝前 / **杖尾向后拖** ✓（按速度渐变 ✓）
+		#   注意：倾斜必须沿角色朝向 ✗不要绕世界 X 轴（那样方向会随角色转身而错 ✓）
+		var run_f := clampf(_owner_speed() / RUN_FULL_SPEED, 0.0, 1.0)
+		var deg_w := world_lean_deg + world_run_lean_deg * run_f
+		var tilt_w := deg_to_rad(deg_w)
+		var fwd_w := _facing()
+		if fwd_w.length() < 0.001:
+			fwd_w = Vector3.BACK
+		fwd_w = fwd_w.normalized()
+		var ycol_w := (Vector3.UP * cos(tilt_w) + fwd_w * sin(tilt_w)).normalized()
+		var zcol_w := (-fwd_w - ycol_w * (-fwd_w).dot(ycol_w))
+		if zcol_w.length() < 0.001:
+			zcol_w = Vector3.BACK
+		zcol_w = zcol_w.normalized()
+		var xcol_w := ycol_w.cross(zcol_w).normalized()
+		var up_basis := Basis(xcol_w, ycol_w, zcol_w)
+		if flip_in_hand:
+			up_basis = up_basis * Basis(Vector3.RIGHT, PI)
+		# ★★ 只改**本节点的局部旋转** ✓ —— 绝对不要读写 global_transform ✗：
+		#   ① 写 global 会连带重算**位置** → 与手骨的运动打架 → 抖动 ✗
+		#   ② 全局↔局部换算里带缩放（BoneAttachment 的换算不干净）→ 缩放逐帧累积 →
+		#      法杖"越变越大" ✗✗（v3 的 bug）
+		#   ③ 本节点自己的 basis.get_scale() 是**稳定值**（挂载/摆放时定好的 ✓），
+		#      所以用它的逆运算做"世界 → 局部"是安全的 ✓ 不会形成反馈 ✗
+		var par := get_parent() as Node3D
+		if par != null:
+			# ★★ 误差伺服（最稳 ✓）：不猜"局部目标" ✗（模型自身还有一层内部旋转 ✗），
+			#   而是每帧**量出当前杖身方向** → 算出把它转到目标方向所需的旋转 →
+			#   只叠加 k 比例 ✓。这样对未知的内部旋转/缩放都免疫 ✓，也绝不会累积 ✗。
+			var cur_dir := _model.global_transform.basis.y.normalized()   # 模型 +Y = 杖身 ✓
+			if cur_dir.length() > 0.0001 and absf(cur_dir.dot(ycol_w)) < 0.99995:
+				var q := Quaternion(cur_dir, ycol_w)          # 当前方向 → 目标方向 的旋转 ✓
+				var delta_rot := Basis(q)
+				var par_rot := _pure_rot(par.global_transform.basis)
+				# 世界旋转差 → 本节点的局部旋转差（左乘父级旋转的逆、右乘父级旋转 ✓）
+				var local_delta := par_rot.inverse() * delta_rot * par_rot
+				var sc_now := basis.get_scale()               # 只读**自己**的缩放 ✓（不回读全局 ✗）
+				var k := clampf(world_stable * delta * 8.0, 0.0, 1.0)
+				# 局部：右乘"阻尼后的旋转增量" ✓（只动旋转 ✓ 缩放原样写回 ✓）
+				basis = (_pure_rot(basis) * Basis.IDENTITY.slerp(local_delta, k)).scaled(sc_now)
 	# 悬浮：沿世界竖直轻轻上下（不是模型局部轴 —— 那个已经被倾斜过了）
 	_hover_t += delta * HOVER_SPEED
 	# ★ 握点偏移已改由父节点 position 承担 ✓ → 这里不能再加 grip_offset（否则双重偏移 ✗）
@@ -325,6 +379,15 @@ func _process(delta: float) -> void:
 	if _glow != null:
 		_pulse += delta * PULSE_SPEED
 		_glow.light_energy = (1.0 + 0.35 * sin(_pulse)) * 1.1
+
+
+## 取出 basis 的纯旋转（只去掉缩放，保留旋转方向 ✓）
+func _pure_rot(b: Basis) -> Basis:
+	var s := b.get_scale()
+	return Basis(
+		b.x / maxf(absf(s.x), 0.000001),
+		b.y / maxf(absf(s.y), 0.000001),
+		b.z / maxf(absf(s.z), 0.000001))
 
 
 func _world_to_local() -> float:
@@ -431,8 +494,11 @@ func _apply_pose(delta: float) -> void:
 				world_h, float(_sys_def().get("world_len", staff_len)) * len_scale,
 				_model_h, _model.scale.x, _parent_scale, hand.global_position.distance_to(gp)])
 	var sc := basis.get_scale()          # 保留挂载时算好的缩放
-	basis = _local_basis.scaled(sc)
-	# 刚性固定：不再做任何自转（否则又变成'自己转圈'）
+	if world_stable <= 0.0001:
+		# 旧的刚性跟随：朝向 = 手骨朝向（跑动时会随手臂甩 ✗）
+		basis = _local_basis.scaled(sc)
+	# ★ world_stable > 0 时这里**不写朝向** ✓ —— 交给 _process 里的"世界朝向稳定"独占：
+	#   否则两边每帧互相覆盖 → 稳态仍以跟手为主（跑动时杖尾朝前 ✗）+ 抖动 ✗
 
 
 func _owner_body() -> Node3D:
