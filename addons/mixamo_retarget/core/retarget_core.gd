@@ -80,6 +80,141 @@ static func target_aliases(slot: String) -> Array:
 
 # ------------------------------------------------------------------ 映射
 
+## 纠正"劈叉"：把整条腿绕**前向轴**向内收，使「两脚横向间距 / 腿长」≈ ratio。
+## 与 fix_foot_splay 一样，只改**烘焙用的 rest**（不动模型、不动绑定）。
+## 同时把髋部抬高一点点，抵消"腿变竖直后脚会下沉"的副作用。
+static func _fix_leg_splay(tgt_skel: Skeleton3D, parents: PackedInt32Array,
+		rest_local: Array[Transform3D], rest_global: Array[Transform3D],
+		order: PackedInt32Array, ratio: float) -> int:
+	var hip := tgt_skel.find_bone("root.x")
+	if hip < 0:
+		hip = tgt_skel.find_bone("Hips")
+	if hip < 0:
+		return 0
+	var ho: Vector3 = rest_global[hip].origin
+	# 前向参考：两脚 rest 水平方向的平均（对"外八"取平均即为正前方，无需假设模型朝向）
+	var dl := _bone_horiz_dir(tgt_skel, tgt_skel.find_bone("foot.l")) if tgt_skel.find_bone("foot.l") >= 0 else Vector3.FORWARD
+	var dr := _bone_horiz_dir(tgt_skel, tgt_skel.find_bone("foot.r")) if tgt_skel.find_bone("foot.r") >= 0 else Vector3.FORWARD
+	var fwd: Vector3 = dl + dr
+	fwd.y = 0.0
+	if fwd.length() < 0.01:
+		return 0
+	fwd = fwd.normalized()
+	var fixed := 0
+	var lift := 0.0
+	for side in ["l", "r"]:
+		var thigh := tgt_skel.find_bone("thigh_stretch." + side)
+		if thigh < 0:
+			thigh = tgt_skel.find_bone("thigh." + side)
+		var ankle := tgt_skel.find_bone("foot." + side)
+		if thigh < 0 or ankle < 0:
+			continue
+		var v: Vector3 = rest_global[ankle].origin - ho          # 髋 → 踝（骨架空间）
+		var leg_len := v.length()
+		if leg_len < 0.0001 or v.y > 0.0:
+			continue
+		var cur := atan2(absf(v.x), absf(v.y))                   # 当前外张角（额状面）
+		if cur < deg_to_rad(2.0):
+			continue
+		var want := asin(clampf(ratio * 0.5, 0.0, 0.9))          # 目标外张角（比例 → 角度）
+		if cur - want < deg_to_rad(1.0):
+			continue
+		var sx := signf(v.x) if absf(v.x) > 0.0001 else 1.0
+		var v_new := Vector3(sx * sin(want), -cos(want), fwd.z * 0.0 + v.normalized().z).normalized() * leg_len
+		var axis := v.cross(v_new)
+		if axis.length() < 0.000001:
+			continue
+		var q := Quaternion(axis.normalized(), v.angle_to(v_new))     # 骨架空间旋转
+		var p := parents[thigh]
+		var pb := rest_global[p].basis.orthonormalized() if p >= 0 else Basis()
+		var q_local := pb.inverse() * Basis(q) * pb
+		rest_local[thigh] = Transform3D((q_local * rest_local[thigh].basis).orthonormalized(), rest_local[thigh].origin)
+		lift += maxf(0.0, (Basis(q) * v).y - v.y) * -1.0              # 腿变竖直 → 脚会下沉，记录需要抬高多少
+		fixed += 1
+	if fixed > 0:
+		# 用修正后的 rest_local 重建 global（拓扑序），再抬髋补偿下沉
+		for i in order:
+			var p2 := parents[i]
+			rest_global[i] = rest_local[i] if p2 < 0 else rest_global[p2] * rest_local[i]
+		if lift > 0.0001:
+			var avg_lift := lift / float(fixed)
+			rest_local[hip] = Transform3D(rest_local[hip].basis, rest_local[hip].origin + Vector3(0, avg_lift, 0))
+			for i in order:
+				var p3 := parents[i]
+				rest_global[i] = rest_local[i] if p3 < 0 else rest_global[p3] * rest_local[i]
+	return fixed
+
+
+## 把脚/脚趾的 rest 绕**世界竖直轴**转正：两脚朝向对齐"两脚平均方向"（= 正前方）。
+## 返回被修正的骨骼数。**只改烘焙用的 rest，不动模型资源、不动绑定。**
+static func _fix_foot_splay(tgt_skel: Skeleton3D, parents: PackedInt32Array,
+		rest_local: Array[Transform3D], rest_global: Array[Transform3D],
+		order: PackedInt32Array) -> int:
+	var n := tgt_skel.get_bone_count()
+	var feet := {}
+	for i in n:
+		var bn := tgt_skel.get_bone_name(i).to_lower()
+		if not (bn.contains("foot") or bn.contains("toe")):
+			continue
+		var side := ""
+		if bn.contains("left") or bn.ends_with("l") or bn.contains(".l"):
+			side = "l"
+		elif bn.contains("right") or bn.ends_with("r") or bn.contains(".r"):
+			side = "r"
+		if side == "":
+			continue
+		var is_foot := bn.contains("foot")
+		var cur_is_foot := feet.has(side) and String(tgt_skel.get_bone_name(int(feet[side]))).to_lower().contains("foot")
+		if not feet.has(side) or (is_foot and not cur_is_foot):
+			feet[side] = i
+	if feet.size() < 2:
+		return 0
+	var dirs := {}
+	for side in feet.keys():
+		dirs[side] = _bone_horiz_dir(tgt_skel, int(feet[side]))
+	var avg: Vector3 = (dirs["l"] as Vector3) + (dirs["r"] as Vector3)
+	avg.y = 0.0
+	if avg.length() < 0.01:
+		return 0
+	avg = avg.normalized()
+	var fixed := 0
+	for side in feet.keys():
+		var bi := int(feet[side])
+		var d: Vector3 = dirs[side]
+		var yaw := d.signed_angle_to(avg, Vector3.UP)      # 该脚相对正前方的偏角（外八为正/负取决于左右）
+		if absf(yaw) < deg_to_rad(1.0):
+			continue
+		var p := parents[bi]
+		var axis := Vector3.UP
+		if p >= 0:
+			axis = rest_global[p].basis.inverse() * Vector3.UP
+		if axis.length() < 0.0001:
+			continue
+		var corr := Basis(axis.normalized(), yaw)
+		rest_local[bi] = Transform3D(corr * rest_local[bi].basis, rest_local[bi].origin)
+		fixed += 1
+	# 用修正后的 rest_local 重建 global（拓扑序：父先子后，脚趾会跟着脚一起转）
+	for i in order:
+		var p := parents[i]
+		rest_global[i] = rest_local[i] if p < 0 else rest_global[p] * rest_local[i]
+	return fixed
+
+
+## 骨骼"自身朝向"的水平分量（rest 下：骨原点 → 最长的子骨方向）
+static func _bone_horiz_dir(skel: Skeleton3D, idx: int) -> Vector3:
+	var o := skel.get_bone_global_rest(idx).origin
+	var best := Vector3.ZERO
+	for c in skel.get_bone_count():
+		if skel.get_bone_parent(c) == idx:
+			var d := skel.get_bone_global_rest(c).origin - o
+			if d.length() > best.length():
+				best = d
+	if best.length() < 0.0001:
+		best = skel.get_bone_global_rest(idx).basis.y
+	best.y = 0.0
+	return best.normalized() if best.length() > 0.0001 else Vector3.FORWARD
+
+
 static func build_mapping(src_skel: Skeleton3D, tgt_skel: Skeleton3D) -> Dictionary:
 	var tgt_index := {}
 	for i in tgt_skel.get_bone_count():
@@ -241,6 +376,23 @@ static func bake(src_ap: AnimationPlayer, src_skel: Skeleton3D, tgt_skel: Skelet
 
 	var order_src := _topo(src_skel)
 	var order_tgt := _topo(tgt_skel)
+	# 修正"模型 rest 本身外八"：把脚/脚趾的 rest 绕**世界竖直轴**转正，
+	# 使两脚朝向等于"两脚平均方向"（= 正前方）。
+	# 为什么在烘焙期做：外八来自**目标模型的绑定姿势**，动画只是保留它；
+	# 这里改的是**烘焙用的 rest**（不动模型、不动绑定），重定向结果就不会外八了。
+	var foot_fixed := 0
+	# 先"收腿"（劈叉）再"转正脚掌"（外八）—— 都用修正后的 rest，顺序有影响，必须腿在前
+	var leg_fixed := 0
+	if bool(opts.get("fix_leg_splay", true)):
+		var ratio := float(opts.get("leg_stance_ratio", 0.25))
+		leg_fixed = _fix_leg_splay(tgt_skel, tgt_parent, tgt_rest_local, tgt_rest_global, order_tgt, ratio)
+		if leg_fixed > 0:
+			print("[烘焙] 腿部收拢：%d 根骨骼（目标站姿比 %.2f）" % [leg_fixed, ratio])
+	if bool(opts.get("fix_foot_splay", true)):
+		foot_fixed = _fix_foot_splay(tgt_skel, tgt_parent, tgt_rest_local, tgt_rest_global, order_tgt)
+		if foot_fixed > 0:
+			print("[烘焙] 脚部 rest 转正：%d 根骨骼" % foot_fixed)
+
 	var src_of_tgt := {}
 	for si in mapping.keys():
 		src_of_tgt[int(mapping[si])] = int(si)
@@ -299,6 +451,21 @@ static func bake(src_ap: AnimationPlayer, src_skel: Skeleton3D, tgt_skel: Skelet
 				continue
 			# 原地化基准：本条动画第一个键上的髋部水平位置（X/Z 锁在它上面，Y 保留）
 			hips0 = Vector3.ZERO
+			# 跳跃类剪辑：竖直位移也锁掉（opts.zero_pos_y = 名称片段数组，默认 ["Jump"]）
+			# 注意：take 名常是 "mixamo_com"，真正的动作名在**源文件名**上，
+			#       所以匹配串 = take 名 + 源场景根名 + opts.file_hint
+			var zero_y := false
+			var zero_keys: Array = opts.get("zero_pos_y", ["Jump"])
+			var rootn: Node = src_ap
+			while rootn != null and rootn.get_parent() != null:
+				rootn = rootn.get_parent()
+			var hay := "%s %s %s" % [clip_name, String(rootn.name) if rootn != null else "",
+				String(opts.get("file_hint", ""))]
+			hay = hay.to_lower()
+			for zk in zero_keys:
+				if hay.contains(String(zk).to_lower()):
+					zero_y = true
+					break
 			if in_place and hips_src >= 0 and poss_all.has(hips_src):
 				var hti: int = int(poss_all[hips_src])
 				if src_anim.track_get_key_count(hti) > 0:
@@ -358,6 +525,10 @@ static func bake(src_ap: AnimationPlayer, src_skel: Skeleton3D, tgt_skel: Skelet
 						if in_place and bi == hips_src:
 							pv.x = hips0.x          # 锁水平位移（保留 Y 起伏），避免循环弹回
 							pv.z = hips0.z
+						if zero_y and bi == hips_src:
+							# 跳跃类剪辑：竖直位移也锁掉 —— 引擎自己有跳跃物理，
+							# 否则"动画的弧线 + 物理的抛物线"两条曲线叠加，看起来就是抖动/发飘
+							pv.y = hips0.y
 						local.origin = pv
 					g_s[bi] = local
 				for bi in order_src:
@@ -553,6 +724,7 @@ static func bake_all(src_dir: String, tgt_scene_path: String, opts: Dictionary =
 				mapping.size(), pos_scale, src_hips, tgt_hips, yaw_deg])
 		var o := opts.duplicate()
 		o["path_prefix"] = path_prefix
+		o["file_hint"] = base          # 源文件名（如 "Standing Torch Jump"）——供剪辑名匹配用
 		o["yaw_offset_deg"] = (yaw_deg if bool(opts.get("auto_yaw", true)) else 0.0) + float(opts.get("yaw_offset_deg", 0.0))
 		o["pos_scale_mode"] = String(opts.get("pos_scale_mode", "auto"))
 		var r := bake(sap, sskel, tgt_skel, mapping, o)

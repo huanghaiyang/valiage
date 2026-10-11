@@ -11,7 +11,7 @@ extends SceneTree
 
 const Core := preload("res://addons/mixamo_retarget/core/retarget_core.gd")
 const SRCDIR := "res://assets/models/mixamo"
-const TGT := "res://assets/models/characters/森林男.glb"
+const TGT := "res://assets/models/characters/主角.glb"
 const OUT := "res://assets/animations/_selftest_mixamo.tres"
 
 var _tgt_skel: Skeleton3D

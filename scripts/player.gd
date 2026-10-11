@@ -26,8 +26,9 @@ var _spell_casting := false
 var _interact := ""                 # "", "sit", "sleep", "climb"（家具互动）
 var _interact_top_y := 0.0        # 爬梯目标顶 y
 
-## 角色档案 id（见 scripts/character_profile.gd）：换模型只改这里，或换一份档案
-@export var character_id := "forest"
+## 角色档案 id（见 scripts/character_profile.gd）：换模型只改这里，或加一份档案
+## "zhujue" = 主角（唯一；旧的 KayKit "mage" 档案也在，便于回退对比）
+@export var character_id := "zhujue"
 var _profile: Dictionary = {}
 ## 本次角色的目标身高（米）
 var target_height := 1.5
@@ -659,6 +660,49 @@ func _debug_geom_check() -> void:
 	print("[法杖自检] 杖身方向 %s｜与竖直夹角 %.1f° → %s" % [
 		str(axis.snapped(Vector3(0.001, 0.001, 0.001))), ang,
 		"竖直 ✓" if ang < 15.0 else "偏斜"])
+	# 外八自检：两脚在**当前动画姿势**下的水平朝向，相对"两脚平均方向"（= 正前方）
+	var sk2 := body.find_child("Skeleton3D", true, false) as Skeleton3D
+	if sk2 != null:
+		var fl := sk2.find_bone("foot.l")
+		var fr := sk2.find_bone("foot.r")
+		if fl >= 0 and fr >= 0:
+			var dl := _bone_horiz_dir(sk2, fl)
+			var dr := _bone_horiz_dir(sk2, fr)
+			var avg := dl + dr
+			avg.y = 0.0
+			avg = avg.normalized() if avg.length() > 0.01 else Vector3.FORWARD
+			var al := rad_to_deg(dl.signed_angle_to(avg, Vector3.UP))
+			var ar := rad_to_deg(dr.signed_angle_to(avg, Vector3.UP))
+			print("[外八自检] 左脚 %+.1f°｜右脚 %+.1f° → %s" % [
+				al, ar, "基本朝前 ✓" if (absf(al) < 8.0 and absf(ar) < 8.0) else "仍外八 ✗"])
+			# 站姿宽度（劈叉程度）：两脚间距投影到**角色自身的左右轴**上，再除以髋高
+			var hip := sk2.find_bone("root.x")
+			if hip < 0:
+				hip = sk2.find_bone("Hips")
+			if hip >= 0:
+				var a1 := sk2.global_transform * sk2.get_bone_global_pose(fl).origin
+				var a2 := sk2.global_transform * sk2.get_bone_global_pose(fr).origin
+				var ho := (sk2.global_transform * sk2.get_bone_global_pose(hip).origin).y
+				var lateral := (body as Node3D).global_transform.basis.x.normalized()
+				var w := absf((a1 - a2).dot(lateral))
+				print("[站姿自检] 两脚间距 %.3f m｜髋高 %.3f m｜比值 %.2f → %s" % [
+					w, ho, w / maxf(0.001, ho),
+					"正常 ✓" if (w / maxf(0.001, ho)) < 0.35 else "偏宽（劈叉感）✗"])
+
+
+## 骨骼"自身朝向"的水平分量（当前动画姿势下：骨原点 → 最长的子骨方向，世界空间）
+func _bone_horiz_dir(sk: Skeleton3D, idx: int) -> Vector3:
+	var o := sk.global_transform * sk.get_bone_global_pose(idx).origin
+	var best := Vector3.ZERO
+	for c in sk.get_bone_count():
+		if sk.get_bone_parent(c) == idx:
+			var d := (sk.global_transform * sk.get_bone_global_pose(c).origin) - o
+			if d.length() > best.length():
+				best = d
+	if best.length() < 0.0001:
+		best = (sk.global_transform.basis * sk.get_bone_global_pose(idx).basis).y
+	best.y = 0.0
+	return best.normalized() if best.length() > 0.0001 else Vector3.FORWARD
 
 
 func _mesh_aabb_world(n: Node) -> AABB:
@@ -903,17 +947,34 @@ func _update_move_anim() -> void:
 		_move_anim = ANIM_IDLE
 		_play_anim(ANIM_IDLE)
 
-## 起跳：播放跳跃动画，滞空期间保持
-func on_jump() -> void:
+## 起跳：播放跳跃动画，滞空期间保持。
+## ★ 动画与物理对齐（保持原 speed/gravity 手感，改动画一侧）：
+##   源动作 Standing Torch Jump 是三段式：0~0.51 下蹲蓄力｜0.51~0.935 腾空（0.425s）｜0.935~1.7 落地缓冲。
+##   1) 起跳直接 seek 到 0.51（否则空中播的是"下蹲"）；
+##   2) 腾空段按"物理滞空 / 0.425"反向缩放播放速度 → 腾空结束时正好落地；
+##   3) 落地后由 _update_move_anim/on_land 恢复 1.0× 播落地缓冲。
+const JUMP_AIR_START := 0.51
+const JUMP_AIR_SECONDS := 0.425
+
+
+func on_jump(air_time := 0.722) -> void:
 	if anim_player == null:
 		return
 	_jump_air = true
 	_action_active = false
 	_play_anim("Jump_Full_Long")
+	if anim_player.current_animation != "":
+		anim_player.seek(JUMP_AIR_START, true)
+		anim_player.speed_scale = JUMP_AIR_SECONDS / maxf(0.05, air_time)
+		print("[跳跃] 滞空 %.3f s → 腾空段 %.3f s，播放速度 ×%.2f" % [
+			air_time, JUMP_AIR_SECONDS, anim_player.speed_scale])
 
 ## 落地：恢复移动/Idle
 func on_land() -> void:
 	_jump_air = false
+	# 腾空段的慢放只用于空中：落地立刻恢复 1.0× 播落地缓冲、并回到移动/Idle
+	if anim_player != null:
+		anim_player.speed_scale = 1.0
 	if _action_active:
 		return
 	_update_move_anim()

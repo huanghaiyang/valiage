@@ -2,21 +2,21 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://j1hs3a4odbm2"
-path.bptc="res://.godot/imported/森林男_d7815c32-969b-4da4-8feb-693cce7933f1_basecolor.jpg-ee185ce173236d12388063647b7299c7.bptc.ctex"
-path.astc="res://.godot/imported/森林男_d7815c32-969b-4da4-8feb-693cce7933f1_basecolor.jpg-ee185ce173236d12388063647b7299c7.astc.ctex"
+uid="uid://dq64njslxwp5o"
+path.bptc="res://.godot/imported/主角_4a05a9ff-3c10-490c-ba8e-d166992e6896_basecolor.jpg-eda06b4b35f7f6072fa0a10cbd59df0e.bptc.ctex"
+path.astc="res://.godot/imported/主角_4a05a9ff-3c10-490c-ba8e-d166992e6896_basecolor.jpg-eda06b4b35f7f6072fa0a10cbd59df0e.astc.ctex"
 metadata={
 "imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
-"md5": "1b089fb893182ca7f69a731d55c96a07"
+"md5": "72262c6d9727a56789e06b79718d5851"
 }
 
 [deps]
 
-source_file="res://assets/models/characters/森林男_d7815c32-969b-4da4-8feb-693cce7933f1_basecolor.jpg"
-dest_files=["res://.godot/imported/森林男_d7815c32-969b-4da4-8feb-693cce7933f1_basecolor.jpg-ee185ce173236d12388063647b7299c7.bptc.ctex", "res://.godot/imported/森林男_d7815c32-969b-4da4-8feb-693cce7933f1_basecolor.jpg-ee185ce173236d12388063647b7299c7.astc.ctex"]
+source_file="res://assets/models/characters/主角_4a05a9ff-3c10-490c-ba8e-d166992e6896_basecolor.jpg"
+dest_files=["res://.godot/imported/主角_4a05a9ff-3c10-490c-ba8e-d166992e6896_basecolor.jpg-eda06b4b35f7f6072fa0a10cbd59df0e.bptc.ctex", "res://.godot/imported/主角_4a05a9ff-3c10-490c-ba8e-d166992e6896_basecolor.jpg-eda06b4b35f7f6072fa0a10cbd59df0e.astc.ctex"]
 
 [params]
 

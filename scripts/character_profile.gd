@@ -10,23 +10,20 @@ extends RefCounted
 ##   * 手部挂点用**名字列表**查找（hand.r / RightHand / handslot_r…），换骨架也能挂上法杖。
 
 const PROFILES := {
-	## 森林男（Tripo3D 白模 + Auto-Rig Pro 骨架），动画来自 Mixamo 重定向烘焙库
-	"forest": {
-		"label": "森林男",
-		"scene": "res://assets/models/characters/森林男.glb",
+	## 主角（Tripo + ARP 骨架）—— 当前唯一角色，动作映射直接写在本档案里
+	"zhujue": {
+		"label": "主角",
+		"scene": "res://assets/models/characters/主角.glb",
 		"height": 1.5,
-		"lib": "res://assets/animations/mixamo.tres",
+		"lib": "res://assets/animations/zhujue.tres",
 		"hand_bones": ["hand.l", "hand_l", "LeftHand", "mixamorig_LeftHand",
 			"handslot_l", "hand_L", "Wrist_L", "Left_Hand",
-			# 兜底：模型只有右手骨骼时也还能挂上
 			"hand.r", "hand_r", "RightHand", "mixamorig_RightHand", "handslot_r"],
-		## 握持角（相对手骨的固定旋转，单位度）：由 tools/solve_staff_hold.gd 解出 ——
-		## 在 "Standing Torch Idle 01" 的手骨姿势下，让杖身（模型 +Y）**竖直**。
-		## Vector3.ZERO = 关闭（回退到旧的"骨骼 rest + 前倾 60°"标定）。
-		"staff_hold_rot_deg": Vector3(-75.8, -54.3, -22.6),
+		## 握持角：tools/solve_staff_hold.gd 解出（Torch Idle 手骨姿势下让杖身竖直）
+		"staff_hold_rot_deg": Vector3(-61.6, -45.0, -29.5),
 		"clips": {
 			# —— 移动（用户规格：Torch 系列；走和跑共用一条，跑用 1.4× 速度）——
-			"Idle": ["Standing Torch Idle 01", "Unarmed Idle", "Great Sword Idle"],
+			"Idle": ["test", "Standing Torch Idle 01", "Unarmed Idle", "Great Sword Idle"],
 			"Walking_A": ["Standing Torch Run Forward", "Great Sword Run", "Standard Walk"],
 			"Running_A": ["Standing Torch Run Forward", "Great Sword Run", "Fast Run"],
 			# 侧移 / 转向：用 Torch 的左右走与 90° 转身（比原来的"用冲刺凑"贴合）
@@ -77,8 +74,8 @@ const PROFILES := {
 static func get_profile(id: String) -> Dictionary:
 	if PROFILES.has(id):
 		return PROFILES[id]
-	push_warning("[CharacterProfile] 未知角色 id=%s，回退到 forest" % id)
-	return PROFILES["forest"]
+	push_warning("[CharacterProfile] 未知角色 id=%s，回退到 zhujue（主角）" % id)
+	return PROFILES["zhujue"]
 
 
 static func ids() -> Array:
@@ -237,6 +234,11 @@ static func _norm(s: String) -> String:
 ## 映射值可以是字符串（唯一候选），也可以是数组（按顺序取**库里真实存在**的第一个）。
 static func clip_of(profile: Dictionary, logical: String, available := PackedStringArray()) -> String:
 	var m: Dictionary = profile.get("clips", {})
+	# clips 为空且写了 clips_from → 继承另一个档案的动作映射
+	# （法师与森林男同一套 Mixamo 逻辑名/剪辑名，不用重复维护一份 40 项的映射表）
+	if m.is_empty() and profile.has("clips_from"):
+		var src: Dictionary = PROFILES.get(String(profile["clips_from"]), {})
+		m = src.get("clips", {})
 	var v: Variant = m.get(logical, logical)
 	if v is Array:
 		var cands: Array = v

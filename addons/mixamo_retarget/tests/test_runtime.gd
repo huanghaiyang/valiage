@@ -4,7 +4,7 @@ extends SceneTree
 
 const Core := preload("res://addons/mixamo_retarget/core/retarget_core.gd")
 const RT := preload("res://addons/mixamo_retarget/runtime/mix_retarget_node.gd")
-const TGT := "res://assets/models/characters/森林男.glb"
+const TGT := "res://assets/models/characters/主角.glb"
 const SRC := "res://assets/mixamo"
 const CLIP := "Standard Walk"
 

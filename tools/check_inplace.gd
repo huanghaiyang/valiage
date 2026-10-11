@@ -2,7 +2,7 @@ extends SceneTree
 
 ## 诊断：库里的动画在髋（root.x）上有没有**水平位移**（自带前向位移 → 循环时会"前跑一段又退回"）
 
-const P := "res://assets/animations/mixamo.tres"
+const P := "res://assets/animations/zhujue.tres"
 
 func _initialize() -> void:
 	var lib: AnimationLibrary = ResourceLoader.load(P, "AnimationLibrary", ResourceLoader.CACHE_MODE_IGNORE)

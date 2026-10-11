@@ -51,7 +51,7 @@ func _xform(a: AABB, xf: Transform3D) -> AABB:
 
 
 func _initialize() -> void:
-	var prof := CharProfile.get_profile("forest")
+	var prof := CharProfile.get_profile("zhujue")
 	var ps: PackedScene = load(String(prof["scene"]))
 	_tgt = ps.instantiate()
 	root.add_child(_tgt)

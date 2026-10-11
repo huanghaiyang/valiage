@@ -8,7 +8,7 @@ const CharProfile := preload("res://scripts/character_profile.gd")
 ##   3) 动画库里每条轨道都能从"模型根的子节点 AnimationPlayer"解析（轨道路径 root/Skeleton3D:骨骼）
 ##   4) 右手挂点能按名字列表找到（hand.r）
 
-const PROF_ID := "forest"
+const PROF_ID := "zhujue"
 
 var _tgt: Node3D
 var _skel: Skeleton3D

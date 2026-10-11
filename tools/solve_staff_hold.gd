@@ -3,8 +3,8 @@ extends SceneTree
 ## 解"握持角"：在 Standing Torch Idle 01 的手骨姿势下，让法杖的杖身（模型 +Y）
 ## 对准世界竖直所需要的**本地角度**（相对手骨）。解出来就能写进角色档案当默认值。
 
-const TGT := "res://assets/models/characters/森林男.glb"
-const LIB := "res://assets/animations/mixamo.tres"
+const TGT := "res://assets/models/characters/主角.glb"
+const LIB := "res://assets/animations/zhujue.tres"
 const CLIP := "Standing Torch Idle 01"
 const BONE := "hand.l"
 const RAD2DEG := 57.29577951308232
@@ -27,14 +27,28 @@ func _find(n: Node, cls: String) -> Node:
 
 
 func _initialize() -> void:
-	var ps: PackedScene = load(TGT)
+	# 可用命令行指定角色与动画库：
+	#   godot --headless --path <项目> --script res://tools/solve_staff_hold.gd -- <模型路径> <动画库路径>
+	var args := OS.get_cmdline_user_args()
+	var tgt := TGT
+	var lib_p := LIB
+	if args.size() >= 1:
+		tgt = args[0]
+	if args.size() >= 2:
+		lib_p = args[1]
+	print("目标 = %s｜库 = %s｜剪辑 = %s" % [tgt.get_file(), lib_p.get_file(), CLIP])
+	var ps: PackedScene = load(tgt)
+	if ps == null:
+		print("✗ 模型载入失败：" + tgt)
+		quit()
+		return
 	_model = ps.instantiate()
 	root.add_child(_model)
 	_ap = _find(_model, "AnimationPlayer") as AnimationPlayer
 	if _ap == null:
 		_ap = AnimationPlayer.new()
 		_model.add_child(_ap)
-	var lib: AnimationLibrary = load(LIB)
+	var lib: AnimationLibrary = load(lib_p)
 	if lib != null:
 		_ap.add_animation_library("", lib)
 	_skel = _find(_model, "Skeleton3D") as Skeleton3D

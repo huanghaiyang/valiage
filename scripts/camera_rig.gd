@@ -9,6 +9,8 @@ extends Node3D
 
 @export var move_speed := 5.0
 @export var run_speed := 9.0
+## 跳跃：保持原手感（初速 6.5 / 重力 18 → 滞空 2v/g = 0.722 s、峰值 1.17 m）。
+## 动画侧由 player.on_jump(滞空秒数) 自动把"腾空段"拉伸到这个时长，保证两者匹配。
 @export var jump_speed := 6.5
 @export var gravity := 18.0
 ## 坡度速度规则（只影响"平常走路/跑步"的水平速度）：
@@ -570,7 +572,7 @@ func _physics_process(delta: float) -> void:
 	var space_now := Input.is_key_pressed(KEY_SPACE)
 	if space_now and not _space_prev and player.is_on_floor():
 		_velocity_y = jump_speed
-		player.on_jump()
+		player.on_jump(2.0 * jump_speed / gravity)   # 把本次滞空时长交给动画，用于拉伸腾空段
 	_space_prev = space_now
 
 	# ★ 先把水平移动按**平滑地面**投影一次，并把投影得到的 y 分量带上：

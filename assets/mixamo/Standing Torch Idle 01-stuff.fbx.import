@@ -3,13 +3,13 @@
 importer="scene"
 importer_version=1
 type="PackedScene"
-uid="uid://chluumx11i1st"
-path="res://.godot/imported/森林男.glb-06b628dc2cc0279769a94e9eddaf46f3.scn"
+uid="uid://j4cxe6ol8a2r"
+path="res://.godot/imported/Standing Torch Idle 01-stuff.fbx-4a5fbf40631804459587033c22349231.scn"
 
 [deps]
 
-source_file="res://assets/models/characters/森林男.glb"
-dest_files=["res://.godot/imported/森林男.glb-06b628dc2cc0279769a94e9eddaf46f3.scn"]
+source_file="res://assets/mixamo/Standing Torch Idle 01-stuff.fbx"
+dest_files=["res://.godot/imported/Standing Torch Idle 01-stuff.fbx-4a5fbf40631804459587033c22349231.scn"]
 
 [params]
 
@@ -32,7 +32,7 @@ meshes/force_disable_compression=false
 skins/use_named_skins=true
 animation/import=true
 animation/fps=30
-animation/trimming=false
+animation/trimming=true
 animation/remove_immutable_tracks=true
 animation/import_rest_as_RESET=false
 import_script/path=""
@@ -40,6 +40,7 @@ materials/extract=0
 materials/extract_format=0
 materials/extract_path=""
 _subresources={}
-gltf/naming_version=2
-gltf/embedded_image_handling=1
-gltf/texture_map_mode=1
+fbx/importer=0
+fbx/allow_geometry_helper_nodes=false
+fbx/embedded_image_handling=1
+fbx/naming_version=2

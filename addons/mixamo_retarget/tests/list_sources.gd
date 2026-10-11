@@ -35,7 +35,7 @@ func _initialize() -> void:
 		print("  " + String(d))
 
 	# 现有动画库的增量状态
-	var lib_path := "res://assets/animations/mixamo.tres"
+	var lib_path := "res://assets/animations/zhujue.tres"
 	if ResourceLoader.exists(lib_path):
 		var lib: AnimationLibrary = ResourceLoader.load(lib_path, "AnimationLibrary", ResourceLoader.CACHE_MODE_IGNORE)
 		var man: Dictionary = lib.get_meta("mixamo_sources", {}) if lib != null else {}

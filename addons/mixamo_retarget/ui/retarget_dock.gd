@@ -13,8 +13,8 @@ extends VBoxContainer
 const Core := preload("res://addons/mixamo_retarget/core/retarget_core.gd")
 
 const DEFAULT_SRC_DIR := "res://assets/mixamo"
-const DEFAULT_TGT := "res://assets/models/characters/森林男.glb"
-const DEFAULT_OUT := "res://assets/animations/mixamo.tres"
+const DEFAULT_TGT := "res://assets/models/characters/主角.glb"
+const DEFAULT_OUT := "res://assets/animations/zhujue.tres"
 
 var src_dir_edit: LineEdit
 var tgt_edit: LineEdit
@@ -25,6 +25,11 @@ var auto_yaw_check: CheckBox
 var incremental_check: CheckBox
 var prune_check: CheckBox
 var pose_check: CheckBox
+## rest 修正 / 烘焙选项（新增：修劈叉、修外八、原地化）
+var leg_fix_check: CheckBox
+var stance_spin: SpinBox
+var foot_fix_check: CheckBox
+var inplace_check: CheckBox
 var yaw_spin: SpinBox
 var clip_tree: Tree
 var log_view: RichTextLabel
@@ -124,6 +129,37 @@ func _build_ui() -> void:
 	pose_check.text = "保留静止姿势"
 	pose_check.tooltip_text = "勾上后不再跳过幅度≈0 的 take（坐姿/躺姿这类静态 pose 会被烘进库）"
 	inc_row.add_child(pose_check)
+
+	# —— 烘焙修正：改的是**烘焙用的 rest**，不动模型资源、不动绑定；重烘即可逆 ——
+	var fix_row := HFlowContainer.new()
+	fix_row.add_theme_constant_override("h_separation", 6)
+	_host.add_child(fix_row)
+	leg_fix_check = CheckBox.new()
+	leg_fix_check.text = "收腿（修劈叉）"
+	leg_fix_check.button_pressed = true
+	leg_fix_check.tooltip_text = "模型 rest 本身双腿张开（劈叉）时，烘焙时把整条腿绕前向轴向内收，并抬高髋部补偿"
+	fix_row.add_child(leg_fix_check)
+	var l4 := Label.new()
+	l4.text = "目标站姿比"
+	fix_row.add_child(l4)
+	stance_spin = SpinBox.new()
+	stance_spin.min_value = 0.05
+	stance_spin.max_value = 0.60
+	stance_spin.step = 0.01
+	stance_spin.value = 0.25
+	stance_spin.custom_minimum_size.x = 78
+	stance_spin.tooltip_text = "两脚横向间距 / 腿长：0.25 ≈ 自然站姿，越小站得越窄"
+	fix_row.add_child(stance_spin)
+	foot_fix_check = CheckBox.new()
+	foot_fix_check.text = "脚掌转正（修外八）"
+	foot_fix_check.button_pressed = true
+	foot_fix_check.tooltip_text = "模型 rest 脚掌外撇时，烘焙时把脚掌绕世界竖直轴转正"
+	fix_row.add_child(foot_fix_check)
+	inplace_check = CheckBox.new()
+	inplace_check.text = "原地化"
+	inplace_check.button_pressed = true
+	inplace_check.tooltip_text = "去掉动作自带的水平位移（否则循环播放会出现「跑一段又退回」）"
+	fix_row.add_child(inplace_check)
 
 	var btn_row := HFlowContainer.new()
 	btn_row.add_theme_constant_override("h_separation", 4)
@@ -247,6 +283,11 @@ func _opts() -> Dictionary:
 		"yaw_offset_deg": float(yaw_spin.value),
 		"skip_static": not pose_check.button_pressed,
 		"prune_missing": prune_check.button_pressed,
+		# rest 修正 / 烘焙选项（新面板控件）
+		"fix_leg_splay": leg_fix_check.button_pressed,
+		"leg_stance_ratio": float(stance_spin.value),
+		"fix_foot_splay": foot_fix_check.button_pressed,
+		"in_place": inplace_check.button_pressed,
 	}
 
 
