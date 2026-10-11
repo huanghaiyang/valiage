@@ -60,8 +60,9 @@ func _initialize() -> void:
 	ResourceSaver.save(lib2, OUT)
 	var man2: Dictionary = lib2.get_meta("mixamo_sources", {})
 	var recorded := (man2.get(victim_file, {}).get("deleted", []) as Array).has(victim)
-	print("【2】删除「%s」（属于 %s）：删了 %d 条 → 库内 %d 条（原 %d）｜清单登记 deleted=%s" % [
-		victim, victim_file, n, lib2.get_animation_list().size(), before, recorded])
+	var still_listed := (man2.get(victim_file, {}).get("clips", []) as Array).has(victim)
+	print("【2】删除「%s」（属于 %s）：删了 %d 条 → 库内 %d 条（原 %d）｜清单 deleted=%s｜clips 里还残留=%s" % [
+		victim, victim_file, n, lib2.get_animation_list().size(), before, recorded, still_listed])
 
 	# 3) 篡改签名 → 增量重烘该源
 	var man3: Dictionary = lib2.get_meta("mixamo_sources", {})
@@ -78,8 +79,10 @@ func _initialize() -> void:
 		victim_file, r2["updated"], lib3.get_animation_list().size(), victim, came_back])
 	print("     库内：%s" % _names(lib3))
 
-	var ok := (lib3.get_animation_list().size() == before - 1) and not came_back and recorded and n == 1
-	print("【结论】%s" % ("删除 + 增量不复活：OK ✓" if ok else "有问题 ✗"))
+	# 断言（不再比"总条数"：临时库只有 2 个源的记录，增量更新会把目录里
+	# 其余源也一并烘进来，这是正确行为）
+	var ok := not came_back and recorded and not still_listed and n == 1
+	print("【结论】%s" % ("删除 + 清单同步 + 增量不复活：OK ✓" if ok else "有问题 ✗"))
 	DirAccess.remove_absolute(abs_out)
 	print("（临时库已删除）")
 	quit()

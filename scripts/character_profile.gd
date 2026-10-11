@@ -23,7 +23,9 @@ const PROFILES := {
 		"staff_hold_rot_deg": Vector3(-61.6, -45.0, -29.5),
 		"clips": {
 			# —— 移动（用户规格：Torch 系列；走和跑共用一条，跑用 1.4× 速度）——
-			"Idle": ["test", "Standing Torch Idle 01", "Unarmed Idle", "Great Sword Idle"],
+			# 注意："-stuff" 那条是**改过 rest** 的版本 —— 手臂相对旋转≈0，重定向后会变成夹臂，
+			#       所以排在原版之后（原版可用时就用原版）。
+			"Idle": ["Standing Torch Idle 01", "Standing Torch Idle 01-stuff", "Unarmed Idle", "Great Sword Idle"],
 			"Walking_A": ["Standing Torch Run Forward", "Great Sword Run", "Standard Walk"],
 			"Running_A": ["Standing Torch Run Forward", "Great Sword Run", "Fast Run"],
 			# 侧移 / 转向：用 Torch 的左右走与 90° 转身（比原来的"用冲刺凑"贴合）

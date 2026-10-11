@@ -753,6 +753,29 @@ static func bake_all(src_dir: String, tgt_scene_path: String, opts: Dictionary =
 	tgt_root.free()
 	if String(res["error"]) == "" and master.get_animation_list().is_empty():
 		res["error"] = "没有生成任何动画（源文件里没有可用动作？）"
+	# ★ 全量烘焙也要写 mixamo_sources 清单：否则库里没有源记录 →
+	#   ①「源列表」看不到来源；② 之后「增量更新」会因为没有签名而全部重烘、
+	#   ③ 手动删除的 deleted 记录也会丢（删除时找不到归属源）。
+	if String(res["error"]) == "":
+		var manifest := {}
+		for c in res["clips"]:
+			var fkey := String(c["file"])
+			var rec: Dictionary = manifest.get(fkey, {"clips": [], "deleted": []})
+			(rec["clips"] as Array).append(String(c["name"]))
+			manifest[fkey] = rec
+		for path in files:
+			var key := String(path).get_file()
+			if not manifest.has(key):
+				continue
+			var sig := _file_sig(String(path))
+			var rec2: Dictionary = manifest[key]
+			rec2["size"] = sig["size"]
+			rec2["mtime"] = sig["mtime"]
+			rec2["path"] = String(path)
+			if not rec2.has("deleted"):
+				rec2["deleted"] = []
+			manifest[key] = rec2
+		master.set_meta("mixamo_sources", manifest)
 	res["library"] = master
 	res["yaw_deg"] = yaw_deg
 	res["pos_scale"] = pos_scale
@@ -926,14 +949,19 @@ static func bake_update(existing_lib_path: String, src_dir: String, tgt_scene_pa
 			(res["clips"] as Array).append(c)
 		for path in todo:
 			var key := String(path).get_file()
+			var old_rec: Dictionary = manifest.get(key, {})
+			var del_names: Array = old_rec.get("deleted", [])
 			var names: Array = []
 			for c in r["clips"]:
 				if String(c["file"]) == key:
-					names.append(String(c["name"]))
+					var nm2 := String(c["name"])
+					# ★ 手动删除过的剪辑不再记进 clips，保持清单与实际库内容一致
+					if del_names.has(nm2):
+						continue
+					names.append(nm2)
 			var sig2 := _file_sig(String(path))
-			var old_rec: Dictionary = manifest.get(key, {})
 			manifest[key] = {"size": sig2["size"], "mtime": sig2["mtime"], "clips": names,
-				"path": String(path), "deleted": old_rec.get("deleted", [])}
+				"path": String(path), "deleted": del_names}
 		res["measures"] = r["measures"]
 		res["warnings"] = r["warnings"]
 
@@ -1018,6 +1046,10 @@ static func delete_clips(lib: AnimationLibrary, names: PackedStringArray) -> int
 			var rec: Dictionary = manifest[key]
 			var clips: Array = rec.get("clips", [])
 			if clips.has(cn):
+				# ★ 从该源的 clips 列表里同步移除（否则 .tres 的 metadata/mixamo_sources
+				#   里还留着已删除的动画，源列表/增量判断都会对不上）
+				clips.erase(cn)
+				rec["clips"] = clips
 				var del: Array = rec.get("deleted", [])
 				if not del.has(cn):
 					del.append(cn)
