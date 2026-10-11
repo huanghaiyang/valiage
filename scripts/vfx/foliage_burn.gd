@@ -13,7 +13,39 @@ extends Node3D
 ##   get_parent().add_child(b)      # 放到场景里
 ##   b.burn_node(plant_node)        # 点着它
 
+##
+## ── 所属系统 ────────────────────────────────────────────────
+##   VFX / 法术特效层（scripts/vfx/）。由法术脚本命中植被时**动态 new** 出来，
+##   不是场景里预先摆好的节点；没有 @tool，只在运行时工作。
+##
+## ── 关键依赖 ────────────────────────────────────────────────
+##   · 着色器：res://assets/shaders/burn_foliage.gdshader（叠加层/接管材质）
+##   · 噪声：res://assets/textures/法术特效/Noise1_tiled.png（燃烧斑点）
+##   · 外部材质：addons/simplegrasstextured 的草（MultiMeshInstance3D + 自定义 shader）、
+##     assets/shaders/vegetation_wind.gdshader、tree_burn_keep* 等自带 burn 的着色器
+##   · 风系统：scripts/wind.gd —— 它每帧只更新**它自己收集**的材质；
+##     本文件复制出来的材质不在名单里，所以要用 _copy_wind_params 每帧抄参数
+##   · 调用方：法术脚本先算好 burn_center / burn_radius / preset_mm / preset_indices，
+##     再调用 burn_node()
+##
+## ── 主要对外接口 ────────────────────────────────────────────
+##   · burn_node(node, delay) -> bool   点着一株植被（唯一入口）
+##   · is_done() -> bool                本次燃烧是否收尾（供法术轮询回收）
+##   · 供法术在点燃前赋值的变量：burn_center / burn_radius /
+##     preset_mm / preset_indices / preset_delays
+##   · 常量 WIND_PARAMS：需要从原材质抄到副本上的风参数名单
+##
+## ── 已知的坑 ────────────────────────────────────────────────
+##   · 同一株重复点燃会互相覆盖 burn/ash → **闪烁**；现用节点 meta("burning")
+##     与 _busy_instances 实例级占用表做防重入（见 burn_node / _claim_instances）。
+##   · MultiMesh 的 use_custom_data 必须在**创建时**打开，运行时改会被引擎忽略。
+##   · 逐实例燃烧只烧圈内实例，MultiMesh 节点**永远不能被隐藏**（否则成片草消失）。
+##   · 材质副本必须每帧抄风参数，否则烧起来的草会立刻停止摆动。
+##   · 状态记在节点 meta 上，场景重载即重置，不做持久化。
+# ==================== 常量与导出参数 ====================
+## 燃烧叠加层着色器：burn/ash 进度、斑点噪声、遮罩、以及 vertex() 摆动都在它里面。
 const SHADER := "res://assets/shaders/burn_foliage.gdshader"
+## 燃烧斑点的平铺噪声贴图；noise_scale 决定它在世界空间里的尺度（越大斑点越碎）。
 const NOISE := "res://assets/textures/法术特效/Noise1_tiled.png"
 
 @export var burn_time := 7.0          ## 斑点扩大所需时间（草/花用 ✓ 用户要求：草可以快 ✓）
@@ -30,8 +62,14 @@ const NOISE := "res://assets/textures/法术特效/Noise1_tiled.png"
 ##     而「火焰灼烧」整体约 9.55 秒。原来设 8 秒 -> 火还在烧、草就开始长回来
 ##     （实测：火里长草）。所以默认给 18 秒，等火灭了再慢慢恢复。
 @export var regrow_time := 18.0       ## 烧毁后"缓缓长回来"的时长（见 _process 里的 regrow 逻辑 ✓）
+## 火星数量，同时也是火星池的大小（MultiMesh.instance_count）。
+## 调大 → 同一时刻的火花更多，但每帧要写的实例变换也更多；调小 → 稀稀拉拉、远处看不见。
 @export var spark_count := 18         ## 火星数量
+## 单个火星的基准寿命（秒）。实际寿命 = 本值 × 每次随机 0.6~1.2。
+## 调大 → 火星飞得更高更久，但池子固定，可见火花的密度会下降。
 @export var spark_lifetime := 1.1
+## 单颗火星的边长（米，QuadMesh 的正方形尺寸）。
+## 调大 → 远处也看得见，但会糊成一片发光斑；0.03 在正常视距下约几个像素。
 @export var spark_size := 0.03
 ## 摆动幅度（米，逐株再随机一次）——"类似不规则风动"
 @export var sway_amt := 0.075
@@ -51,11 +89,21 @@ const NOISE := "res://assets/textures/法术特效/Noise1_tiled.png"
 ##   正确做法是"逐实例燃烧"（INSTANCE_CUSTOM），尚未实现 -> 先关掉。
 @export var burn_multimesh := true
 
+# ==================== 运行时状态 ====================
+## 本次燃烧的目标根节点（burn_node 的第一个参数）。网格/MultiMesh/材质都从它递归收集；
+## 目标被释放时 _process 会提前退出，不会因此崩溃。
 var _target: Node3D = null
+## 目标子树里收集到的所有 MeshInstance3D（树干/树叶等普通网格体，深度优先顺序）。
 var _meshes: Array[MeshInstance3D] = []
 var _multimeshes: Array[MultiMeshInstance3D] = []   ## addon 的草丛是 MultiMesh 节点
+## 接管/叠加前的材质快照：[{n=节点, m=原 material_override, o=原 material_overlay}...]。
+## 只有"非保留型"目标收尾时才用它还原（见 _finish）；保留型树木刻意不还原。
 var _prev_override: Array = []
+## 本株的燃烧叠加层/接管材质（由 burn_foliage.gdshader 现场创建）。
+## 只有"叠加层/接管"路线会创建它；逐实例路线与材质内建 burn 路线下它保持 null。
 var _mat: ShaderMaterial = null
+## "材质内建 burn"路线上，为每个网格面复制出来的材质副本（逐株独立，不污染共享 .tres）。
+## 与 _shader_src 一一对应；逐帧只写这些副本的 burn/ash，并抄风参数。
 var _shader_mats: Array[ShaderMaterial] = []
 ## ★ 逐实例燃烧：要烧的 MultiMesh 实例列表 [{mmi, i, phase, delay, done}]
 ## ★ 风系统每帧只写**它自己收集的材质**（scripts/wind.gd 的 _mats_ours/_mats_sgt）；
@@ -73,6 +121,8 @@ const WIND_PARAMS := [
 ## 与 _shader_mats 一一对应的"原材质"（风参数的来源）
 var _shader_src: Array[ShaderMaterial] = []
 
+## 逐实例待烧清单：[{mmi, i, phase, delay, done(, done_t)}]（三项含义见 _start_multimesh_burn）。
+## done_t 是"进入长回阶段"的时刻，惰性写入；清单非空即代表本次走逐实例路线。
 var _mm_burn: Array = []
 var _reported := false            ## 1 秒的状态汇报只打一次
 ## ★ 本控制器正在烧的实例集合：{MultiMeshInstance3D 的 instance_id -> {实例下标: true}}
@@ -92,6 +142,9 @@ var preset_indices: Array = []
 ## ★ 每实例的**点燃延迟**（秒，与 preset_indices 一一对应）。空 = 用随机错开。
 ##   火焰推进靠它让草按"离角色的距离"依次烧起来（波前），而不是整片一起黑。
 var preset_delays: Array = []
+## 内部计时（秒）。注意 delay > 0 时它会被设成**负值**，_process 先空转、到 0 才开始烧。
+## 收尾标记：_finish 置 true，is_done() 直接返回它；置真后 _process 不再推进。
+## 本株的随机相位（0~TAU）：让每株的斑点扩散与摆动互不同步，同批点燃也不会整齐划一。
 var _t := 0.0
 var _done := false
 var _phase := 0.0
@@ -102,9 +155,15 @@ var _sp := PackedVector3Array()       ## 位置（本节点局部坐标）
 var _sv := PackedVector3Array()       ## 速度
 var _sl := PackedFloat32Array()       ## 剩余寿命
 var _surface := PackedVector3Array()  ## 表面点池（取自真实顶点）
+## 本控制器专用的随机源（_ready 里 randomize）。
+## 斑点相位、摆动幅度、火星散布、兜底点燃延迟都取它；每控制器一份，互不干扰。
 var _rng := RandomNumberGenerator.new()
 
 
+# ==================== 生命周期 ====================
+## 引擎回调：随机化内部随机源，并把 _process **默认关掉**——没点燃的控制器不该每帧跑。
+## 参数：无。返回：无。副作用：只改自身状态（不动场景树、不发信号、不读文件）。
+## 真正打开 _process 的是 burn_node() 成功之后；_process 自己会在烧完时再关回去。
 func _ready() -> void:
 	set_process(false)
 	_rng.randomize()
@@ -145,9 +204,15 @@ func _planned_mm_indices() -> Dictionary:
 	return out
 
 
+# ==================== 跨控制器实例占用（实例级防重入） ====================
 ## 这些实例里是否有别的控制器正在烧（跨控制器共享，静态表）
 static var _busy_instances: Dictionary = {}
 
+## 检查 planned 里的实例是否**已经被别的控制器占用**（实例级防重入的查询步骤）。
+## 参数 planned：{MultiMeshInstance3D 的 instance_id: {实例下标: true}}，由 _planned_mm_indices 生成。
+## 返回：true = 无重叠、可以烧；false = 有实例正在烧，调用方应当放弃本次点燃。
+## 副作用：**只读**共享表 _busy_instances，不改任何状态（登记在 _register_instances）。
+## 注意：只要**任一**实例重叠就整体放弃（同一片草允许第二发点燃它自己那块地）。
 func _claim_instances(planned: Dictionary) -> bool:
 	for mid in planned:
 		var busy: Dictionary = _busy_instances.get(mid, {})
@@ -157,6 +222,11 @@ func _claim_instances(planned: Dictionary) -> bool:
 	return true
 
 
+## 登记本次**真正要烧**的实例：写进跨控制器共享的 _busy_instances，同时记进本控制器的
+## 账本 _mm_owner（_release_instances 靠它归还）。
+## 参数 planned：同 _claim_instances。返回：无。
+## 副作用：修改 static 共享表；_mm_owner 按 MultiMesh 分桶记录实例下标。
+## 注意：必须"先 _claim_instances 成功、再 _register_instances"，否则会抢占别人的草。
 func _register_instances(planned: Dictionary) -> void:
 	for mid in planned:
 		var busy: Dictionary = _busy_instances.get(mid, {})
@@ -173,6 +243,11 @@ func _register_instances(planned: Dictionary) -> void:
 		(_mm_owner[mid2] as Dictionary)[int(e["i"])] = true
 
 
+## 归还本控制器占用的全部实例（收尾时由 _finish 调用，与 _register_instances 配平）。
+## 参数：无。返回：无。
+## 副作用：从共享表 _busy_instances 删除对应下标（桶空了就删桶），清空 _mm_owner；
+##   节点已失效时跳过（不会报错）。
+## 注意：漏掉这一步会造成**占用泄漏**——同一片草以后再也点不着，且没人报错。
 func _release_instances() -> void:
 	for e in _mm_burn:
 		var mmi := e["mmi"] as MultiMeshInstance3D
@@ -188,6 +263,19 @@ func _release_instances() -> void:
 	_mm_owner.clear()
 
 
+# ==================== 点燃入口 ====================
+## 点着一株植被 —— 本文件唯一的公开入口。
+## 参数 n：目标根节点。可以是单个 MeshInstance3D，也可以含多个网格的父节点；
+##   传 MultiMeshInstance3D（addon 的整片草）时走**逐实例燃烧**分支。
+## 参数 delay：点燃延迟（秒）。>0 时把内部计时 _t 设成 -delay，使这株比同伴晚烧起来
+##   （法术用 preset_delays 做"火焰波前"）。默认 0.0（立即烧）。
+## 返回：true = 已接管并开始燃烧；false = 跳过。跳过原因：找不到网格 /
+##   该节点已在燃烧 / 已烧毁 / burn_multimesh 关闭 / 圈内实例与别处重叠 /
+##   草材质不支持 INSTANCE_CUSTOM / burn_foliage.gdshader 加载失败。
+## 副作用（成功时）：递归收集网格、改材质（material_overlay 或 material_override）、
+##   创建火星子节点 "BurnSparks"、登记实例占用、可选地写实例 custom data、开启 _process。
+## 注意：**失败也可能已经写了副作用**——节点级目标的 meta("burning") 在几何体检查之前
+##   就设好了（见函数中段），所以调用方不要假设返回 false 就等于什么都没改。
 ## 点着一株植被。返回是否成功（找不到网格就失败）
 func burn_node(n: Node3D, delay: float = 0.0) -> bool:
 	# ★★ 按目标分档燃烧时长（用户要求 ✓）：**草可以快 ✓ 树要慢慢慢 ✓**
@@ -277,6 +365,8 @@ func burn_node(n: Node3D, delay: float = 0.0) -> bool:
 			continue
 		var aabb := mi.mesh.get_aabb()
 		var xf := mi.global_transform
+		# 取 AABB 的 8 个角点：i 的三个二进制位分别代表 x/y/z 方向是否加 size，
+		# 遍历完只留下**世界 Y 的最低/最高**（给摆动做高度加权用，别的分量不关心）。
 		for i in range(8):
 			var c2 := aabb.position + Vector3(
 					aabb.size.x if (i & 1) != 0 else 0.0,
@@ -396,6 +486,7 @@ func burn_node(n: Node3D, delay: float = 0.0) -> bool:
 	return true
 
 
+# ==================== 材质解析工具（贴图 / 透明度 / 遮罩通道） ====================
 ## 找"原贴图"当遮罩：用它的 alpha 裁出植被真实轮廓（否则烧出来是方块斑块）。
 ## ★ 草的材质是**自定义 ShaderMaterial**（.tres），没有 albedo_texture 这种固定名字，
 ##   所以要枚举它的参数、挑出贴图参数 —— 这样"取不到贴图"的问题就解决了。
@@ -512,6 +603,7 @@ func _shader_supports_instance_burn(m: Material) -> bool:
 	return sm.shader.code.contains("INSTANCE_CUSTOM")
 
 
+# ==================== 逐实例燃烧（SGT 整片草 / INSTANCE_CUSTOM） ====================
 ## 启动逐实例燃烧：只挑**圈内**的实例，各自带随机相位与错开延迟
 func _start_multimesh_burn() -> bool:
 	_mm_burn.clear()
@@ -619,6 +711,7 @@ func _copy_wind_params(i: int) -> void:
 			dst.set_shader_parameter(p, v)
 
 
+# ==================== 材质内建 burn 路线（复制材质，逐株独立） ====================
 ## 走"改材质内建 burn"：给每个网格复制一份材质（共享 .tres 不能直接改，
 ## 否则所有同类植被会一起烧），之后逐帧只写这些副本的 burn / ash。
 func _apply_in_shader_burn() -> void:
@@ -762,6 +855,13 @@ func _mask_channel_of(m: Material, tex_uniform: String) -> int:
 	return 3
 
 
+## 从材质里挑一张"最像 albedo"的贴图，作为燃烧叠加层的颜色与遮罩来源。
+## 参数 m：任意 Material（StandardMaterial3D 直接取 albedo_texture）。
+## 返回：挑中的 Texture2D；确实没有贴图时 null（调用方据此走"跳过叠加"安全阀）。
+## 说明：自定义 ShaderMaterial 没有固定参数名，所以枚举 shader 的 uniform 表，
+##   先用关键字白名单（albedo/color/base/grass…）命中，并用黑名单
+##   （noise/normal/height/mask/rough…）排除干扰贴图，都不命中时用第一张纹理兜底。
+## 副作用：无（纯查询）。
 func _texture_from_material(m: Material) -> Texture2D:
 	if m == null:
 		return null
@@ -803,6 +903,7 @@ func _texture_from_material(m: Material) -> Texture2D:
 	return null
 
 
+# ==================== 表面点采样与火星 ====================
 ## 从真实顶点采样"表面点"：火星从这里生出来
 func _collect_surface_points() -> void:
 	_surface.clear()
@@ -858,6 +959,12 @@ func _collect_surface_points() -> void:
 		_surface.append(Vector3.ZERO)
 
 
+## 创建火星节点（MultiMeshInstance3D，节点名 "BurnSparks"）并初始化状态数组。
+## 外观：unshaded + 加法混合 + billboard 的橙色小方片 —— 不吃光照、不投影，
+##   所以在夜里/焦黑模型上也看得见。
+## 池大小固定为 spark_count；_sl 全填 -1 表示"全部空闲"，等 _update_sparks 第一帧才重生。
+## 副作用：若已有旧火星节点会先 queue_free 再重建；add_child 到本控制器下（局部坐标即本节点坐标）。
+## 注意：重复调用会丢掉正在飞的火星（_resize 复位），所以正常只在 burn_node 里调一次。
 func _build_sparks() -> void:
 	if _sparks != null and is_instance_valid(_sparks):
 		_sparks.queue_free()
@@ -888,6 +995,14 @@ func _build_sparks() -> void:
 		_sl[i] = -1.0
 
 
+## 每帧驱动：累加时间 → 第 1 秒上报一次诊断 → 算 burn/ash → 写材质或实例 custom data → 更新火星。
+## 参数 delta：帧间隔（秒），由引擎传入。
+## 返回：无。
+## 副作用：改材质参数 / MultiMesh 的实例 custom data / 火星实例变换；
+##   收到尾时会调用 _finish()（内部 set_process(false) 停掉自己）。
+## 提前退出条件：已 _done、目标已被释放、或 delay 未到（_t < 0，只累加时间不干活）。
+## 注意：三条渲染路线（逐实例 / 材质内建 burn / 叠加层）在下面用 if-elif-elif 分支，
+##   互斥，不会互相覆盖；逐实例与材质内建路线各自 return，只有叠加层路线走到末尾的收尾判断。
 # ---------------------------------------------------------------- 每帧
 func _process(delta: float) -> void:
 	if _done or _target == null or not is_instance_valid(_target):
@@ -920,8 +1035,11 @@ func _process(delta: float) -> void:
 		else:
 			print("[植被燃烧·1s] %s | **什么都没挂上**（无逐实例/无材质副本/无叠加层）"
 					% _target.name)
+	# 时间轴（单株，秒）：[0, burn_time] 斑点扩散 → 再用 char_hold 秒全焦黑停留
+	# → 最后用 ash_time 秒灰化消失。三段首尾相接、互不重叠，所以停留期内 ash 恒为 0。
 	var burn := clampf(_t / maxf(burn_time, 0.01), 0.0, 1.0)
 	var ash := 0.0
+	# 停留期结束才开始灰化：保证"先烧透、再停留、最后消失"的观感顺序。
 	if _t > burn_time + char_hold:
 		ash = clampf((_t - burn_time - char_hold) / maxf(ash_time, 0.01), 0.0, 1.0)
 	if not _mm_burn.is_empty():
@@ -943,10 +1061,17 @@ func _process(delta: float) -> void:
 		_mat.set_shader_parameter("burn", burn)
 		_mat.set_shader_parameter("ash", ash)
 	_update_sparks(delta, burn)
+	# 只有"叠加层/材质内建 burn"两条路线会走到这里收尾；逐实例路线已在上面 return。
 	if ash >= 1.0:
 		_finish()
 
 
+## 每帧推进火星：空闲的按概率在**真实表面点**上重生，存活的做减速上升运动并随寿命缩小。
+## 参数 delta：帧间隔（秒）；burn：当前燃烧进度 0~1（>=1 时不再重生新火星）。
+## 返回：无。
+## 副作用：写火星 MultiMesh 的实例变换（死亡/空闲的实例被丢到 y=-999 藏起来）。
+## 注意：_surface 为空时必须跳过重生，否则 posmod 取模会崩；_collect_surface_points
+##   末尾有"至少塞一个原点"的兜底，专门防这种情况。
 func _update_sparks(delta: float, burn: float) -> void:
 	if _sparks == null or not is_instance_valid(_sparks):
 		return
@@ -971,6 +1096,7 @@ func _update_sparks(delta: float, burn: float) -> void:
 		mm.set_instance_transform(i, Transform3D(b, _sp[i]))
 
 
+# ==================== 目标分类与收尾 ====================
 ## ★★ 目标是否"保留型"（木质：烧完**留下焦黑** ✓ 不消失 ✓）
 ##   用户要求：叶子靠**材质 alpha 淡出**到透明 ✓ → 同一节点上的枝干必须**不被隐藏** ✓
 ##   判定依据（任一 ✓）：材质 shader 是 tree_burn_keep ✓ ／ 资源 meta burn_mode == "wood" ✓
@@ -1005,6 +1131,14 @@ func _target_is_keep() -> bool:
 	return false
 
 
+## 收尾：标记完成、关掉 _process、归还实例占用、熄灭火星，再按目标类型**冻结或还原**外观。
+## 参数：无。返回：无。
+## 副作用：清 _mm_custom_on；移除 meta("burning")；**可能**隐藏目标节点；
+##   保留型树木会写 meta("burned_out") 并把材质副本定在终态；
+##   普通植被则还原 material_override / material_overlay（避免被对象池复用时还带着焦黑）。
+## 注意：逐实例路线刻意**不清零** custom data、不隐藏 MultiMesh、不还原 use_custom_data ——
+##   清零等于"草又冒出来"，还原等于抹掉每个实例的数据。
+## 注意：没有防重入保护，正常只被 _process 调用一次（_done 会在下一次 _process 开头拦住）。
 func _finish() -> void:
 	_done = true
 	set_process(false)
@@ -1066,5 +1200,9 @@ func _finish() -> void:
 			nd.material_overlay = d["o"]
 
 
+## 本次燃烧是否已经收尾（法术/管理器可轮询它来决定何时回收本控制器节点）。
+## 参数：无。返回：_done（true = 已烧完，或已被放弃）。
+## 副作用：无。
+## 注意：只表示"收尾动作跑过了"，**不代表目标已经看不见**——保留型树木会一直以焦黑可见。
 func is_done() -> bool:
 	return _done

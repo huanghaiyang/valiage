@@ -16,22 +16,61 @@ extends Node3D
 ## 对外接口与其它术法一致：
 ##   setup / start_cast / stop_cast / is_casting / aim_dir / origin_global / ran_out_of_mana
 
+# ==================== 文件头补充：依赖 / 接口 / 不变量 / 已知坑 ====================
+# 【所属系统】法术特效层（一次性法术"流水治疗"）。不是 autoload：由施法器按
+#   data/spell_sheet.json 里的 water_heal 条目实例化，加进场景树后靠自己的 _process 驱动。
+# 【autoload 依赖】Mana：读 Mana.get("current")、调 Mana.try_spend(cost)。
+#   ★ Mana.try_spend() 在余额不足时会把 current 扣到 0 再返回 false，所以 start_cast() 必须先
+#     自己比较大小，不能只信 try_spend 的返回值（否则"放不出来还把蓝清空"，实测 5 -> 0）。
+# 【资源依赖】assets/shaders/water_veil.gdshader（体表水膜）、
+#   assets/shaders/water_stream.gdshader（实体螺旋水带管身）、
+#   assets/textures/法术特效/T_VFX_Noise_9.PNG（水膜/水带/水汽共用噪声贴图）、
+#   scripts/spells/spell_sheet.gd + data/spell_sheet.json（数值表，id = SHEET_ID = "water_heal"）。
+# 【协作脚本】scripts/spells/spell_caster.gd：每帧轮询 wants_cast_anim() / is_casting() /
+#   ran_out_of_mana()，并负责在换法术或退出场景时释放本节点；本节点靠 _exit_tree() 摘掉水膜。
+# 【主要对外接口】setup(player, staff) / start_cast() / stop_cast()（空实现，一次性法术不能被松手打断）
+#   / is_casting() / wants_cast_anim() / aim_dir() / origin_global() / ran_out_of_mana()。
+# 【核心不变量】(1) 体表曲面表 + 两条水带网格只在"选中法术时"预热一次（_warmup），运行期只做查表插值
+#   和跟随，不再重算（蒙皮网格的 CPU 顶点是绑定姿势，重算结果一样，还会因空格子导致抖动）；
+#   (2) 水膜靠 MeshInstance3D.material_overlay 贴在角色**原网格**上，_restore() 必须逐个还原旧
+#   overlay，否则角色会永久粘一层水；(3) 实体水带节点挂在角色节点下、位置用**玩家局部坐标**，
+#   靠父子关系跟随位移/弹跳/转身，禁止每帧重建；(4) 水带淡出必须从进入淡出时的实际不透明度
+#   (_tube_fade0) 开始降，不能写死 1.0（写死会"隐藏后猛地一亮再消失"）。
+# 【已知坑】① Mana.try_spend 会清空余额；② 体表螺旋亮带与实体水带不能同时亮（同一股水画两遍，
+#   交叉淡入淡出时会闪），所以体表 stream_fade 全程为 0；③ 水珠必须各自带随机重生延迟，否则整批
+#   同帧生成/同帧落地/同帧重生，掉成"一帘"；④ 曲面表空格子(=0)参与插值会被拉到 0 导致穿模，
+#   只能"两侧都有值才插值"；⑤ 中轴不能用全体 AABB 质心定，会被法杖/手臂带偏（实测偏到穿身）。
+# 【坐标系约定】全部用 Godot 世界坐标：_center_world 的 y 恒为 0（只表示中轴 xz）；高度以
+#   _feet_world 为基准，用 _height_world 归一化到 0~1（0 = 脚底，1 = 头顶）。
+# ==================== 资源路径与数值表 id ====================
+## 体表水膜着色器：铺在角色自己的网格上（material_overlay）。本文件会写它的参数
+## center_xz / feet_y / body_h / climb / veil / stream_fade，以及创建时的 turns / flow_speed / noise_tex。
 const VEIL_SHADER := "res://assets/shaders/water_veil.gdshader"
+## 实体螺旋水带着色器：逐条管身。本文件写它的 climb（0→1 爬升）、fade（不透明度）、
+## flow_speed、noise_tex。两条水带共用一份材质，所以两条永远同步。
 const STREAM_SHADER := "res://assets/shaders/water_stream.gdshader"
+## 水膜 / 水带 / 水汽 / 水珠共用的噪声贴图。路径含中文目录，改名时四处一起生效（都引用本常量）。
 const NOISE_TEX := "res://assets/textures/法术特效/T_VFX_Noise_9.PNG"
+## 数值表访问入口（preload 的静态脚本）：SHEET.has(id) 判条目是否存在，
+## SHEET.f(id, key, fallback) 取浮点值并在缺键时返回 fallback。用 preload 避免运行时读文件。
 const SHEET := preload("res://scripts/spells/spell_sheet.gd")
+## 本术法在数值表里的 id（也是施法器查表/实例化的键）。改名必须同步改 data/spell_sheet.json。
 const SHEET_ID := "water_heal"
 
 # ★ 数值全部来自 data/spell_sheet.json（改表即可，不用改代码）。
 #   下面的默认值只是表缺失时的兜底。
+# ==================== 可调数值（默认值仅作数值表缺失时的兜底） ====================
 @export var mana_cost := 20.0         ## 一次性单次耗蓝（表: mana_cost）
 @export var hold_time := 7.0          ## 薄膜覆盖阶段的持续时间（表: duration）
 @export var climb_time := 1.15        ## 水流缠绕上升（表: cast_climb）
 @export var veil_time := 0.55         ## 汇聚成膜（表: cast_veil）
 @export var fade_time := 0.7          ## 淡出（表: fade_time）
+# 下面两个参数只影响观感、不改逻辑：turns 越大螺旋越密（也越容易看出分格/折角）；
+# texture_scroll 越大水纹流动越快，成膜与水带共用，水带侧再乘 1.6 提速（见 _make_stream_mat）。
 @export var turns := 2.2              ## 缠绕圈数
 @export var texture_scroll := 0.55    ## 流动速度
 
+# ==================== 实体螺旋水带参数 ====================
 # ---- 实体螺旋水带（缠绕上升阶段的主体）----
 ## 水带管半径（米）。细一点才贴得紧：管心离皮肤的距离 = 这个值 × 1.25
 @export var stream_radius := 0.028
@@ -40,6 +79,7 @@ const SHEET_ID := "water_heal"
 @export var stream_segments := 120    ## 沿管的环数（44 太疏，螺旋会一段一段的 -> 折角）
 @export var stream_sides := 8         ## 截面边数（5 边是五棱柱，看得出面片）
 
+# ==================== 真实曲面采样参数 ====================
 # ---- 真实曲面采样（替代 AABB 包络）----
 ## ★ 曲面只在**技能发动那一刻算一次**（不做定时重算）。
 ##   之前按 surface_refresh 定时重算是白做功：角色身体 7 个网格是蒙皮网格，
@@ -48,10 +88,12 @@ const SHEET_ID := "water_heal"
 @export var surface_h_bins := 48
 @export var surface_a_bins := 48
 
+# ==================== 水汽参数 ====================
 # ---- 水汽（成膜阶段身体周围飘散的雾气）----
 @export var mist_amount := 28
 @export var mist_lifetime := 2.2
 
+# ==================== 水珠参数 ====================
 # ---- 水珠（成膜阶段从头顶往下掉落）----
 @export var drop_count := 48
 ## 水珠生成点距**身体表面**的距离（米）。需求：1cm
@@ -67,48 +109,95 @@ const SHEET_ID := "water_heal"
 @export var drop_start_spread := 1.6
 
 # 0 = 关 / 1 = 上升 / 2 = 成膜与维持 / 3 = 淡出
+# ==================== 状态机常量 ====================
+## 空闲：未施法。初始态，也是 _cleanup() 之后的终态（此时 _process 只做跟随，无任何表现）。单位/取值：枚举 0。
 const ST_OFF := 0
+## 上升：climb_time 秒内两股流水从脚底交错爬到头顶（climb 0→1）。由 start_cast() 进入。
 const ST_RISE := 1
+## 成膜与维持：先用 veil_time 秒汇聚成膜（veil 0→1）+ 水带交叉淡出，随后累计 _hold_t 到 hold_time。
 const ST_VEIL := 2
+## 淡出：fade_time 秒内 veil 与水带一起降到 0，结束后 _cleanup() 回 ST_OFF。
 const ST_FADE := 3
 
+# ==================== 实例状态（施法中 / 预热缓存） ====================
+## 施法标志：start_cast() 里置 true。★ 本文件内**没有**把它置回 false 的代码（推测外部只把它当
+## 快照查询，或节点会被整体替换）；判断"是否正在施法"请用 is_casting()，不要读这个字段。
 var casting := false
 
+## 施法者（角色根节点）。本文件所有包围盒 / 曲面 / 贴膜都以它为基准；它在换场景时可能失效，
+## 所以每处使用前都做 `!= null` + is_instance_valid() 双重检查。
 var _player: Node3D = null
+## 体表水膜材质（全局一份，贴到角色所有网格的 material_overlay 上）。由 _apply_film() 懒创建，
+## 之后所有参数统一走 _setp()；为 null 表示尚未装配（或着色器缺失，此时设参静默失败）。
 var _mat: ShaderMaterial = null
 var _mesh_prev: Array[Dictionary] = []     ## {mi, prev}
+## 上一次施法是否因**蓝不足**而失败（true = 没发动）。施法器读 ran_out_of_mana() 播"没蓝"反馈；
+## 每次 start_cast() 开头会重置为 false，即使中途 return 也不会残留上一轮的值。
 var _ran_out := false
+## 当前状态：ST_OFF / ST_RISE / ST_VEIL / ST_FADE 之一，只在 _process 的状态机里迁移。
 var _state := ST_OFF
+## 当前状态已经持续的秒数。★ 每次切换状态都必须清零（各迁移点都写了 _state_t = 0.0），
+## 因为它就是各阶段插值系数 k 的分子（k = _state_t / 该阶段时长）。
 var _state_t := 0.0
+## 最近一次算出的角色包围盒：中心取 _center_world 的 xz，y 从脚底到头顶；x/z 尺寸固定写 0.1，
+## 只是占位（这个 AABB 不用于碰撞，只用于调试/兜底记录）。
 var _last_box := AABB()
 
+## 两条实体水带**共用**的材质（所以 climb / fade 一写就是两条同步，错开半圈的视觉效果来自网格相位）。
+## 为 null 表示还没创建；着色器缺失时是个"空材质"，此时 set_shader_parameter 无效果但不报错。
 var _stream_mat: ShaderMaterial = null
+## 两条实体螺旋水带节点（下标 0/1 对应 _make_helix 的 phase 0.0 / 0.5）。它们挂在 _player 下，
+## 位置用玩家局部坐标，因此角色位移/弹跳/转身自动跟随，网格只在发动时设一次、不重建。
 var _streams: Array[MeshInstance3D] = []
 var _profile: Array = []                    ## [y0, y1, 中心(xz), 半宽x, 半厚z]（AABB 兜底用）
 var _surf: Array = []                       ## 真实曲面半径表 [高度分格][方位分格]
+## 曲面表的**实际**高度分格数 = maxi(surface_h_bins, 4)。缓存下来是因为 _surface_dist() 插值时
+## 每帧都要用；改动 @export 只影响下一次 _build_surface_profile()。
 var _sh := 0
+## 曲面表的**实际**方位分格数 = maxi(surface_a_bins, 4)（与 _sh 同理）。
 var _sa := 0
+## 上一次建表扫过的顶点总数（含被抽稀跳过的），自检/调参用；不参与任何运行期计算。
 var _surface_verts := 0
 var _surface_builds := 0                    ## 曲面表构建次数（自检：应为 1）
 var _tube_fade0 := 0.0                      ## 进入淡出时水带的不透明度（淡出从这里往下降）
 
 # 水汽 / 水珠
+## 水汽粒子节点（GPUParticles3D，挂在 _player 下、local_coords=true，跟随角色）。
+## 节点常驻、只切 emitting；_restore() 时才 queue_free。
 var _mist: GPUParticles3D = null
+## 水珠节点（MultiMeshInstance3D，挂在 _player 下）。用 MultiMesh 而不是粒子系统，是为了
+## 能精确控制每颗的落点/落地时刻（见 _spawn_drop / _update_drops）。
 var _drops_node: MultiMeshInstance3D = null
 var _drop_pos := PackedVector3Array()       ## 玩家局部坐标
+## 每颗水珠的当前速度（米/秒，只有 y 分量被重力修改；发射时 y = -drop_initial_speed）。
 var _drop_vel := PackedVector3Array()
+## 每颗水珠的存活位：1 = 正在下落，0 = 未生成或已落地（等 _drop_delay 走完再重生）。
+## 用 PackedByteArray 而不是 bool 数组，纯粹为了紧凑。
 var _drop_alive := PackedByteArray()
 var _drop_delay := PackedFloat32Array()     ## 每颗的**独立随机**重生延迟（错开时间用）
 var _drop_ground := 0.0                     ## 玩家局部的地面高度
 var _drop_sweep := 0.0                      ## 0 = 只从头顶出，1 = 全身
+## 是否允许水珠**重生**：成膜/维持阶段 true，淡出阶段置 false。置 false 后空中已有的水珠仍会落完
+##（只是不再补新的），这样淡出时不会"边淡出边滴水"。
 var _drops_on := false
 var _hold_t := 0.0                          ## 成型后已经覆盖了多久（对比 hold_time）
 var _warm_helix: Array = []                 ## 预热好的两条水带网格（避免施法瞬间建网格）
+## 角色中轴的世界坐标；★ y 恒为 0（只表示 xz），高度信息看 _feet_world / _height_world。
+## 由 _update_body_box() 每帧更新；_build_surface_profile() 内还会用"腿胯高度带"再修正一次。
 var _center_world := Vector3.ZERO
+## 角色最低点的**世界** y（脚底高度）。曲面表分格、水珠生成、局部到世界的高度换算都以它为基准。
 var _feet_world := 0.0
+## 角色全高（世界单位 / 米），下限被夹到 0.2 防止除零与退化网格；默认 1.8 是"还没量到"时的
+## 兜底人体身高（_process 每帧都会用实测值覆盖它）。
 var _height_world := 1.8
 
 
+# ==================== 生命周期与初始化 ====================
+## 节点入树时的初始化：打开逐帧处理，并读一次数值表。
+## 副作用：注册 _process（引擎默认就是 true，这里只是把意图写明）；_load_sheet() 用表中数值
+##   覆盖 @export 变量（表里没有该条目时 push_warning 并保留兜底默认值）。
+## 注意：这里**不**创建材质 / 水带网格 / 贴水膜 —— 角色还没绑定（setup() 尚未调用）；
+##   真正的重活放在 setup() -> call_deferred("_warmup") 里，避免卡住启动或施法那一帧。
 func _ready() -> void:
 	set_process(true)
 	_load_sheet()
@@ -126,6 +215,12 @@ func _load_sheet() -> void:
 	fade_time = SHEET.f(SHEET_ID, "fade_time", fade_time)
 
 
+## 绑定施法者并预热。由施法器在**实例化之后、施法之前**调用一次。
+## 参数 player：角色根节点（Node3D）。之后所有包围盒 / 曲面表 / 贴膜 / 跟随都以它为基准。
+## 参数 staff：法杖节点。★ 函数体里没有使用它（推测是为保持各术法统一的 setup 签名，便于施法器一视同仁）。
+## 副作用：写 _player，然后用 call_deferred("_warmup") 把"扫顶点 + 建网格"推迟到本帧之外 ——
+##   若直接同步执行，调用 setup 的那一帧会明显卡顿（遍历上万顶点 + 建两条管网格）。
+## 注意：重复调用只是换掉 _player；_warmup() 会靠 _mesh_prev 非空判断"已经热了"而提前返回。
 func setup(player: Node3D, staff: Node3D) -> void:
 	_player = player
 	# ★ 提前算好角色曲面：本法术是在**选中时**实例化并 setup 的，
@@ -153,6 +248,7 @@ func _warmup() -> void:
 	_warm_helix = [_make_helix(0.0), _make_helix(0.5)]
 
 
+# ==================== 对外接口 ====================
 # ---------------------------------------------------------------- 对外
 ## 一次性施法：按一次就放完（不用按住）。蓝在**发动瞬间**一次性扣。
 func start_cast() -> void:
@@ -185,6 +281,9 @@ func stop_cast() -> void:
 	pass
 
 
+## 是否处于施法流程中（等价于 _state != ST_OFF，**包含**淡出阶段）。
+## 返回值：true = 特效还在生效；false = 完全空闲。
+## 调用时机：施法器 / UI 随时可读；本函数无副作用、不改任何状态。
 func is_casting() -> bool:
 	return _state != ST_OFF
 
@@ -200,23 +299,41 @@ func wants_cast_anim() -> bool:
 	return false
 
 
+## 上一次 start_cast() 是否因为法力不足而**没有发动**。
+## 返回值：true = 本次失败原因是缺蓝（施法器据此播"没蓝"反馈）；false = 正常发动或其它情况。
+## 注意：该标志只在 start_cast() 开头重置，所以要在发动后尽快读取，否则会被下一轮施法覆盖。
 func ran_out_of_mana() -> bool:
 	return _ran_out
 
 
+## 法术朝向（供特效 / 粒子 / 后续弹道对齐用）：角色基座的 -Z 方向在世界空间的向量
+##（Godot 里 -Z 就是角色正前方）。
+## 返回值：基向量本身，未归一化 —— 无缩放时长度 ≈ 1，角色带缩放时长度会跟着缩放。
+## 注意：_player 为空或失效时退回 Vector3.FORWARD（也是 -Z），保证调用方拿到合法方向而非零向量。
 func aim_dir() -> Vector3:
 	if _player == null or not is_instance_valid(_player):
 		return Vector3.FORWARD
 	return -(_player as Node3D).global_transform.basis.z
 
 
+## 法术起点：施法者的**全局原点**（角色脚下中心附近；既不是法杖尖端，也不是本节点自身位置）。
+## 返回值：_player.global_position；_player 失效时退回自身 global_position（每帧会被 _process 对齐到角色）。
+## 注意：需要把效果挂到某个骨骼/挂点上时别用这个函数，它只给角色原点。
 func origin_global() -> Vector3:
 	if _player == null or not is_instance_valid(_player):
 		return global_position
 	return (_player as Node3D).global_position
 
 
+# ==================== 每帧状态机 ====================
 # ---------------------------------------------------------------- 每帧
+## 每帧驱动整个法术状态机（本文件的核心循环）。
+## 参数 delta：距上一帧的秒数（引擎注入，受 Engine.time_scale 影响），取值 > 0。
+## 副作用：① 把自身 global_position 对齐角色；② 每帧重算包围盒 _update_body_box()（并写 _mat 的
+##   center_xz / feet_y / body_h，重建 _profile）；③ 累加 _state_t 并按状态推进 climb / veil /
+##   stream_fade 及水汽、水珠；④ 可能发生状态迁移 ST_RISE→ST_VEIL→ST_FADE→_cleanup()（回收一切）。
+## 注意：_state_t += delta 在 match **之前**无条件执行，所以每个迁移点都必须自己把 _state_t 清零；
+##   ST_OFF 分支只是 return，也就是"空闲时仍每帧跟随角色"，这是预期行为（开销很小）。
 func _process(delta: float) -> void:
 	if _player != null and is_instance_valid(_player):
 		global_position = _player.global_position
@@ -272,7 +389,13 @@ func _process(delta: float) -> void:
 				_cleanup()
 
 
+# ==================== 状态迁移与清理 ====================
 # ---------------------------------------------------------------- 内部
+## 切换到淡出状态（由 _process 在维持时间用尽时调用）。
+## 前置：只在 ST_RISE / ST_VEIL 两态下生效；已经是 ST_FADE / ST_OFF 时是空操作（幂等，防止重复记录 _tube_fade0）。
+## 副作用：把**当前实际的**水带不透明度存进 _tube_fade0，然后 _state = ST_FADE 且 _state_t = 0.0。
+## 为什么必须记实际值：淡出要从"当前亮度"继续往下降；若写成 fade = 1.0 - k3，成膜阶段已淡到 0 的水带
+##   会在进入淡出时跳回全亮再消失（实测症状 = 水带隐藏后猛地闪一下）。
 func _to_fade() -> void:
 	if _state == ST_RISE or _state == ST_VEIL:
 		# ★ 记下淡出**开始时水带的实际不透明度**，淡出必须从这里继续往下降到 0。
@@ -289,11 +412,20 @@ func _exit_tree() -> void:
 	_restore()
 
 
+## 一次施法彻底结束：状态回 ST_OFF 并做全部还原（_restore）。
+## 调用时机：_process 的 ST_FADE 分支在 k3 >= 1.0 时调用，一个生命周期内只会走到一次。
+## 注意：这里**不**清 _mat / _surf / _warm_helix 等缓存 —— 它们留给下一次施法复用（下次 start_cast
+##   会重新装配水膜和水带，但不必再扫一遍顶点算曲面表）。
 func _cleanup() -> void:
 	_state = ST_OFF
 	_restore()
 
 
+## 还原并释放本次施法产生的一切。由 _cleanup()（正常结束）或 _exit_tree()（换法术 / 退场景）调用。
+## 副作用：① 逐个把角色网格的 material_overlay 还原成 _mesh_prev 里记录的旧值，然后清空 _mesh_prev；
+##   ② 回收两条实体水带（_free_streams）；③ 释放水汽与水珠节点并置 null；④ 置 _drops_on = false。
+## 注意：这是**必须**执行的收尾 —— 漏掉 overlay 还原，角色身上会永久粘一层水膜（实测踩过）；
+##   函数本身幂等（_mesh_prev 清空后重复调用无副作用），因此 _cleanup() 与 _exit_tree() 都调用它。
 func _restore() -> void:
 	for d in _mesh_prev:
 		var mi = d["mi"]
@@ -310,6 +442,10 @@ func _restore() -> void:
 	_drops_on = false
 
 
+## 给体表水膜材质设一个 shader 参数的安全包装。
+## 参数 param：着色器 uniform 名（"climb" / "veil" / "stream_fade" / "center_xz" / "feet_y" / "body_h"）。
+## 参数 v：要写入的浮点值 —— 各阶段进度是 0~1，center_xz/feet_y/body_h 是世界坐标与尺寸。
+## 副作用：写 _mat 的 shader 参数；_mat 为 null 时静默忽略（用于着色器缺失的兜底，避免空引用崩）。
 func _setp(param: String, v: float) -> void:
 	if _mat != null:
 		_mat.set_shader_parameter(param, v)
@@ -321,7 +457,14 @@ func _start_mist(on: bool) -> void:
 		_mist.emitting = on
 
 
+# ==================== 装配（水膜 / 水带 / 水汽 / 水珠） ====================
 # ---------------------------------------------------------------- 装配
+## 装配"一次施法"所需的全部表现：水膜材质 + 贴到所有角色网格 + 两条实体水带 + 水汽 + 水珠。
+## 调用时机：start_cast() 扣蓝成功后调用（每次施法都走一遍）。
+## 副作用：改角色各 MeshInstance3D 的 material_overlay；往 _player 下新增子节点（水带 / 水汽 / 水珠）。
+## 幂等性：材质和水汽/水珠节点只在为空时创建；但**贴膜每次都会重做** —— 若把它塞进"仅当 _mesh_prev
+##   为空"的分支，预热之后水膜就永远贴不上了（实测踩过，见下方注释）。
+## 冷启动兜底：没预热过（_mesh_prev / _surf 为空）就现取网格、现算曲面表；只是慢，结果一致。
 func _apply_film() -> void:
 	if _mat == null:
 		_mat = ShaderMaterial.new()
@@ -376,6 +519,12 @@ func _apply_film() -> void:
 
 
 ## 实时算角色的世界包围盒 -> 中心(xz)/脚底/身高，喂给着色器
+## 产出与副作用：_center_world（中轴 xz，y 恒为 0）、_feet_world（最低点世界 y）、_height_world（全高，
+##   ≥ 0.2）、_last_box（x/z 尺寸写死 0.1 的竖条，仅作记录）；同时写 _mat 的 center_xz / feet_y / body_h；
+##   最后调用 _build_profile() 重建 AABB 兜底剖面。
+## 参数：无（数据来自 _mesh_prev 里缓存的网格）。
+## 注意：只做"网格 AABB 的 8 个角点"世界变换，不遍历顶点，所以每帧调用可以接受；中轴特意取**最高的那个
+##   网格**（躯干）的中心，而不是所有角点的质心 —— 质心会被法杖 / 伸出的手臂拉偏（真实角色实测偏移 0.024~1.043 米）。
 func _update_body_box() -> void:
 	if _player == null or not is_instance_valid(_player):
 		return
@@ -435,6 +584,10 @@ func _update_body_box() -> void:
 	_build_profile()
 
 
+## 递归收集 n 子树里的所有 MeshInstance3D，**追加**到 out（不清空 out，可多次调用累加）。
+## 参数 n：起点节点（通常传角色根节点）。参数 out：输出数组，判空/清空由调用方负责。
+## 副作用：只往 out 里 append，不修改节点树。
+## 用途：身体网格、骨骼附件、法杖等都在角色子树里，一次性全拿到，作为包围盒与曲面表的数据源。
 func _gather_meshes(n: Node, out: Array[MeshInstance3D]) -> void:
 	for c in n.get_children():
 		if c is MeshInstance3D:
@@ -443,6 +596,7 @@ func _gather_meshes(n: Node, out: Array[MeshInstance3D]) -> void:
 			_gather_meshes(c, out)
 
 
+# ==================== 实体螺旋水带（网格生成与跟随） ====================
 # ---------------------------------------------------------------- 实体螺旋水带
 ## 高度剖面：每个角色网格 -> [y0, y1, AABB 中心(xz), 半宽x, 半厚z]（世界坐标）
 ## ★ 存的是**每个网格自己的** AABB，而不是"整体最大半径"。
@@ -604,6 +758,7 @@ func _aabb_dist(hh: float, dir: Vector3) -> float:
 				+ absf(dir.x) * hx + absf(dir.z) * hz
 		best = maxf(best, d)
 		found = true
+	# 该高度没有任何网格覆盖时，给 0.16 米的保守兜底值而不是 0：返回 0 会让水带直接贴身穿模
 	return best if found else 0.16
 
 
@@ -650,6 +805,12 @@ func _surface_dist(hh: float, dir: Vector3) -> float:
 	return d
 
 
+## 创建两条水带**共用**的材质：加载 water_stream.gdshader、噪声贴图，并把 flow_speed 设为
+##   texture_scroll * 1.6（水带比水膜流得快，避免两层水纹同步"打架"），climb = 0、fade = 1 作为初值。
+## 返回值：ShaderMaterial。★ 着色器缺失时返回的是一个**没有 shader 的空材质**并 push_warning
+##（不崩溃），之后 set_shader_parameter 全部无效果，表现为"水带不可见"。
+## 调用时机：_apply_film() 中 _stream_mat 为 null 时创建一次，之后整个生命周期复用。
+## 副作用：只读资源，不改成员状态（返回值交给调用方保存）。
 func _make_stream_mat() -> ShaderMaterial:
 	var m := ShaderMaterial.new()
 	var sh := load(STREAM_SHADER) as Shader
@@ -667,6 +828,11 @@ func _make_stream_mat() -> ShaderMaterial:
 
 
 ## 生成一条螺旋水带的网格：沿高度布环，环心半径取自身体剖面
+## 参数 phase：螺旋起始相位；两条水带分别用 0.0 / 0.5，错开半圈才呈现"交错缠绕"。
+## 返回值：一条沿身高方向、截面略扁（飘带感）的封闭管状 ArrayMesh；坐标为**玩家局部坐标**，原点在脚底中轴。
+## 副作用：无（纯生成：不碰节点、不写成员，只读 _height_world / _center_world / _surf）。
+## 注意：形状是"调用那一刻的快照"（依赖中轴、身高与曲面表），所以最划算的用法是在 _warmup() 里预先算好两份；
+##   顶点量级 ≈ (stream_segments+1) × (stream_sides+1)，segment 越密折角越少但越贵。
 func _make_helix(phase: float) -> ArrayMesh:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -695,11 +861,13 @@ func _make_helix(phase: float) -> ArrayMesh:
 		var r2 := _surface_dist(h2, dir2) + stream_radius * 1.25
 		var c2 := dir2 * r2 + Vector3(0.0, h2, 0.0)
 		var tan := c2 - c
+		# 相邻环几乎重合时切向无定义（长度≈0），退回竖直向上，避免 NaN 法线把整条管网格废掉
 		if tan.length_squared() < 1e-8:
 			tan = Vector3.UP
 		tan = tan.normalized()
 		var radial := dir
 		var bin := tan.cross(radial)
+		# 切向与径向共线时叉积退化（长度≈0），同样退回竖直向上，保证截面基向量始终有效
 		if bin.length_squared() < 1e-8:
 			bin = Vector3.UP
 		bin = bin.normalized()
@@ -753,6 +921,9 @@ func _rebuild_streams() -> void:
 			node.mesh = _make_helix(0.0 if i == 0 else 0.5)   # 冷启动兜底
 
 
+## 释放两条实体水带节点：逐个 queue_free 后清空 _streams。
+## 副作用：把水带从场景树摘掉（帧末真正释放）；**不**释放 _stream_mat，留给下次施法复用。
+## 调用时机：_restore() 中；重复调用安全（数组为空时什么都不做）。
 func _free_streams() -> void:
 	for n in _streams:
 		if n != null and is_instance_valid(n):
@@ -760,8 +931,14 @@ func _free_streams() -> void:
 	_streams.clear()
 
 
+# ==================== 水汽与水珠（成膜阶段的氛围） ====================
 # ---------------------------------------------------------------- 水汽 与 水珠
 ## 水汽：贴在身体周围缓慢上升的淡蓝雾气（成膜阶段）
+## 参数：无。只创建一次（已存在则直接返回），节点常驻到 _restore() 才释放。
+## 副作用：往 _player 下挂一个 GPUParticles3D 并写 _mist；不动其它状态，也不启动发射。
+## 细节：粒子 local_coords = true 且挂在角色下，所以跟随位移/转身；发射球半径取身高一半（≥0.3），
+##   整体抬高到身高的 45% —— 让雾气裹在躯干周围而不是堆在脚底；叠加混合(ADD) + 无光照才有"水汽"的透亮感。
+## 注意：emitting 初值为 false，开关交给 _start_mist(on)。
 func _build_mist() -> void:
 	if _mist != null and is_instance_valid(_mist):
 		return
@@ -815,6 +992,12 @@ func _build_mist() -> void:
 
 
 ## 水珠：MultiMesh（数量少、要精确控制落点，所以用 GDScript 驱动而不是粒子着色器）
+## 参数：无。只创建一次（已存在则直接返回），节点常驻到 _restore() 才释放。
+## 副作用：往 _player 下挂 MultiMeshInstance3D 并写 _drops_node；按 drop_count 分配
+##   _drop_pos / _drop_vel / _drop_alive / _drop_delay，并把 _drop_delay 初始化成**各不相同**的随机值；
+##   记录 _drop_ground = 脚底相对玩家原点的高度（局部坐标）。
+## 为什么用 MultiMesh 而不是粒子：需要逐颗精确控制生成点（体表外 1cm）和落地时刻，粒子系统做不到。
+## 注意：所有位置都存**玩家局部坐标**（节点挂在角色下），落地判定也用局部 y，所以角色水平移动不受影响。
 func _build_drops() -> void:
 	if _drops_node != null and is_instance_valid(_drops_node):
 		return
@@ -854,6 +1037,12 @@ func _build_drops() -> void:
 
 
 ## 生成一颗水珠：位置 = 体表外 drop_gap（1cm）；高度按 sweep 从头顶往下铺开
+## 参数 i：水珠实例下标，必须落在 0 .. drop_count-1（越界会数组错误），由调用方保证。
+## 副作用：写 _drop_pos[i] / _drop_vel[i]（初速 = 向下 drop_initial_speed）/ _drop_alive[i] = 1；
+##   **不**写 MultiMesh 变换（变换统一由 _update_drops() 每帧写）。
+## 细节：先按随机方位查真实曲面半径 _surface_dist()，再沿该方向外推 drop_gap，所以水珠浮在皮肤外 1cm 而不穿身；
+##   高度 hh 取自 [_height_world × (1-_drop_sweep), _height_world] 区间，实现"从头顶开始、逐渐铺到全身"。
+## 注意：写入前用玩家变换的逆矩阵把世界位置换算成**局部坐标**（节点挂在角色下）。
 func _spawn_drop(i: int) -> void:
 	if _player == null or not is_instance_valid(_player):
 		return
@@ -870,6 +1059,11 @@ func _spawn_drop(i: int) -> void:
 	_drop_alive[i] = 1
 
 
+## 每帧推进所有水珠：推进"发射高度带"的扫描、按各自随机延迟重生、重力积分、落地判定与下落拉伸。
+## 参数 delta：帧间隔秒。副作用：写 MultiMesh 的逐实例变换（不存活的实例被挪到 y = -999 的视野外）。
+## 细节：① 落地后置 alive = 0 并抽一个**新的**随机延迟，延迟走完才重生 —— 这是"零落滴下"而不是
+##   "整批一帘"的关键；② _drops_on = false（淡出/结束）时不再重生，只让还空中的落完。
+## 注意：MultiMesh 没有"隐藏单个实例"的开关（visible_instance_count 是整批的），所以隐藏只能靠挪远。
 func _update_drops(delta: float) -> void:
 	if _drops_node == null or not is_instance_valid(_drops_node):
 		return

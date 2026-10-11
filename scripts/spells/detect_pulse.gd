@@ -43,6 +43,37 @@ extends Node3D
 ##   得到很细的线；一串间隔 wavelength 的环从中心向外传播、逐圈按 decay 衰减，
 ##   就是水波那种震荡感。同理不用实体圆环（管子粗、地形上会被埋）。
 
+##
+## ---------------------------------------------------------------- 依赖清单
+##
+## · 自动加载：Mana（scripts/spells/mana.gd）—— 本文件只调用 Mana.try_spend()，
+##   不做回蓝/上限之外的任何操作；扣不动就标记 _ran_out，交给上层/HUD 读走。
+## · 宿主：spell_caster.gd（自动加载为 SpellCaster）在 SPELLS 表里注册本脚本，
+##   由它实例化并调用 setup / start_cast / stop_cast / is_casting。
+##   ★ 单向依赖：本文件**不反向引用** SpellCaster，删掉宿主也照样单独跑（只是没人调用）。
+## · 复用脚本：spell_aim.gd（瞄准方向 + 施法起点，粒子版与着色器版共用一份）；
+##   surface_overlay.gd（挂/还原 material_overlay、球查询 + 碰撞体->可视节点解析）。
+## · 着色器（任一缺失只 push_warning 并降级，**不会报错中断**）：
+##     res://assets/shaders/detect_ripple.gdshader          地面细线波纹
+##     res://assets/shaders/detect_outline.gdshader         逐物体反壳描边
+##     res://assets/shaders/detect_screen_outline.gdshader  屏幕空间描边
+##     res://assets/shaders/detect_scan.gdshader            表面扫描带（挂在描边的 next_pass）
+## · 本文件**不发任何信号**：状态由上层轮询 is_casting() / ran_out_of_mana() 获取；
+##   探测结果也不对外暴露，只体现在画面的轮廓上。
+##
+## ---------------------------------------------------------------- 生命周期与清理红线
+##
+## · 本节点随施法创建、随换术法/结束施法被释放，清理统一走 _exit_tree()。
+## · 凡是"临时挂到别处"的东西都必须在 _exit_tree() 里显式回收：
+##     相机下的全屏面（_screen_quad）、SubViewport 遮罩（_mask_vp/_mask_cam）、
+##     以及各网格的 material_overlay / transparency / layers（经 SurfaceOverlay.detach）。
+##   漏掉任何一项，场景里就会留下永久描边或孤儿节点。
+## · 无头自检时相机通常不跟随玩家，必须把 screen_cull 关掉（见该字段注释），
+##   否则屏幕剔除会把一切命中拒掉；那时该测的是"检测/轮廓/过期"，不是取景。
+##
+## 公共模块：瞄准方向 + 施法起点（flame_jet_particles / flame_visual 等共用同一份，
+## 避免同一段逻辑存两份、只修一处导致两边行为不一致）。
+## 本文件只用它来转发 aim_dir() / origin_global()；波纹本身与朝向无关（圆心固定在施法点）。
 const SpellAim := preload("res://scripts/spells/spell_aim.gd")
 ## ★ 公共模块：物体表面绘制（material_overlay 挂/还原 + 球查询找物体）。
 ##   扇形选点器（火焰推进）用的是同一份 —— 用户要求"别各写一份"。
@@ -56,9 +87,16 @@ const SCREEN_OUTLINE_SHADER := "res://assets/shaders/detect_screen_outline.gdsha
 ## 扫描带：波面经过物体时，一道亮带贴着物体表面推过去（挂在描边的 next_pass 上）
 const SCAN_SHADER := "res://assets/shaders/detect_scan.gdshader"
 
+# ==================== 导出参数 · 表面扫描带 ====================
 # ---- 表面扫描带（进阶效果）：波面在物体表面"游走" ----
+## 是否启用表面扫描带：波面经过物体时，一道亮带贴着它的表面推过去。
+## false = 只留描边；省掉一个 next_pass，低端机可以关掉摊薄像素开销。
 @export var surface_scan := true
+## 扫描带颜色（默认青蓝）。与 line_color / wave_color 同一色系，
+## 让"波纹 + 描边 + 扫描带"被整体识别为同一套探测视觉。
 @export var scan_color := Color(0.35, 0.95, 1.0)
+## 扫描带整体透明度（0~1）。默认 0.85 = 明显但不刺眼；
+## 调到 1.0 在亮地形上容易糊成一片白，调到 0.3 以下基本看不见。
 @export var scan_alpha := 0.85
 @export var scan_band_width := 0.7      ## 前沿亮带宽度（米）
 @export var scan_band_gain := 1.6       ## 前沿亮带强度
@@ -69,7 +107,15 @@ const SCAN_SHADER := "res://assets/shaders/detect_scan.gdshader"
 @export var scan_pattern_freq := 1.4    ## 横向条纹频率（0 = 关）
 @export var scan_pattern_gain := 0.25   ## 横向条纹强度
 
+# ==================== 导出参数 · 核心节奏与耗蓝 ====================
 # ---------------------------------------------------------------- 可调参数
+# ★ 这一段是本文件的三个主旋钮：mana_per_cast / repeat_interval / wave_speed。
+#   三者的组合决定"探一米要花多少蓝" ≈ mana_per_cast / (repeat_interval × wave_speed)，
+#   调平衡先动它们，其余都是观感参数。
+## 每发一圈的耗蓝（Mana 单位；Mana.max_mana 默认 100、regen_per_sec 默认 6/s）。
+## 12.0 的取值意图：约两秒回蓝 —— "点一下放一圈"不心疼，一直按住会明显吃紧。
+## 调大 → 施法更贵，很快 ran_out；调小 → 能连续刷圈，"探测有代价"的设计被削弱。
+## ★ 蓝不够时这一圈**整圈不发**（不是发一半），并置 _ran_out = true 通知上层。
 @export var mana_per_cast := 12.0          ## 每发一圈的耗蓝
 ## 按住时每隔多久再发一圈；0 = 只发一圈。
 ## ★ 真·多圈模式下这个值要**小**：每一圈都是一个独立脉冲（各自一次球查询 + 自己的轮廓时序），
@@ -78,7 +124,10 @@ const SCAN_SHADER := "res://assets/shaders/detect_scan.gdshader"
 @export var wave_speed := 26.0             ## 波面扩张速度（米/秒）—— 太慢会显得拖
 @export var outline_life := 1.0            ## 轮廓显示多久（秒）—— 需求指定 1s
 
+# ==================== 导出参数 · 逐物体描边 ====================
 # ---- 描边：动漫风格（物体保持原样，只在外缘加一圈线）----
+## 描边线颜色（默认青蓝，与波纹/扫描带同色系，一眼能认出是探测效果）。
+## 只影响**线**，不动物体自己的材质。
 @export var line_color := Color(0.30, 0.95, 1.0)
 ## 线宽（**像素**）：按视深度缩放，远近一样粗
 @export var outline_px := 1.0
@@ -91,10 +140,13 @@ const SCAN_SHADER := "res://assets/shaders/detect_scan.gdshader"
 ## 又不至于像早先的实心填充那样糊成黑疙瘩。
 @export_range(0.0, 0.95, 0.01) var ghost := 0.0
 
+# ==================== 导出参数 · 屏幕空间描边与物体遮罩 ====================
 # ---- 屏幕空间描边（推荐）：四周都有线、线宽固定为像素，与视角无关 ----
 ## true = 用屏幕空间后处理描边（全屏 pass，需要 mask 通道才能不描到草）
 ## false = 用**逐物体反壳描边**（material_overlay）—— 草是结构性排除的，推荐
 @export var screen_outline := false
+## 屏幕空间描边的线不透明度（只在 screen_outline = true 时有效）。
+## 0.9 是"线要看得清、又不盖住物体本身"的经验值；调低会让轮廓在亮背景上消失。
 @export var screen_line_alpha := 0.9
 @export var screen_sample_px := 1.0        ## 邻域采样偏移（像素）= 线宽（1.0 ≈ 1px 细线）
 @export var screen_depth_threshold := 2.2  ## 视深度梯度阈值（米）：实测 0.6 会把草也描出来，2.2 只剩大物体
@@ -118,11 +170,15 @@ const MASK_LAYER := 1 << 7
 ## 扫描带一次最多叠加几圈（与 detect_scan.gdshader 里的 vec4[8] 对应）
 const SCAN_MAX_WAVES := 8
 
+# ==================== 导出参数 · 地面波纹 ====================
 # ---- 地面波纹：细线环 + 波前亮带 + 噪声扭曲 ----
+## 波纹颜色（青蓝）。着色器按乘性亮度使用，所以调暗会**同时**削弱细环与波前亮带。
 @export var wave_color := Color(0.35, 0.90, 1.0)
 @export var wavelength := 9.0              ## 相邻细环的间距（米），越小越密（9.0 = 圈数更少）
 @export var sharpness := 180.0             ## 越大，线越细
 @export var decay := 2.8                   ## 后面的环衰减得多快（越大越少）
+## 波纹整体亮度系数。调大 → 直接过曝（细线胀成粗白线，失去"细线"观感）；
+## 调小 → 地面本身较亮时看不见。1.25 是"亮但不糊"的取值。
 @export var wave_intensity := 1.25
 @export var wave_lift := 0.12              ## 波纹抬离地面多少（免得被地表吃掉）
 @export var wave_warp := 0.55              ## 噪声扭曲幅度（米）：0 = 标准圆
@@ -145,18 +201,36 @@ const SCAN_MAX_WAVES := 8
 ## 花草虽然有碰撞体的不多，但 bush / flower / grass_bermuda_01_* 都挂在
 ## WorldBrushInstances 下，靠这几个特征词一次全排掉（不需要额外代码）。
 @export var exclude_name_hints := "terrain,ground,grass,bush,flower,plant,leaf,foliage,weed,shrub,fern,clover,草,花,灌木,植物"
+## 一次球查询最多接受多少条命中（传给 SurfaceOverlay.collect_meshes 的第二个实参）。
+## 512 是"够用且不至于一帧吃太多内存"的经验值：密集场景里**命中数远大于被接受的物体数**
+## （地形、植被、玩家自己、屏外物体都会在后续过滤里被丢掉），
+## 调太小会**凭空漏掉**远处物体（表现为"有的东西扫不出来"），调大只多花一点遍历时间。
 @export var max_results := 512
 
+# ==================== 内部状态 ====================
 ## 波动画：中心到当前半径
+## 当前是否处于"按住施法"状态（由 start_cast / stop_cast 维护）。
+## ★ 它**不代表**还有波纹在飞：松手后立刻变 false，但已发出的波纹会继续扩散、轮廓自然到期。
+## 上层用它判断"这次按住是否还在施法"，所以**不要**拿它当"效果演完了吗"的依据。
 var casting := false
 
+## 瞄准/起点公共模块实例（spell_aim.gd）。本术法不自己算方向，只把它的两个查询转发出去，
+## 保证和别的术法接口一致（见 aim_dir / origin_global）。
 var _aim := SpellAim.new()
+## 玩家根节点引用（由 setup 注入）。用途：取脚下位置当圆心、取它的 collision_mask 当探测掩码、
+## 并在球查询里排除它自己。所有使用点都先查 null / is_instance_valid —— 换场景后它会变野指针。
 var _player: Node3D = null
 var _pulses: Array = []                    ## 在飞的波纹：{center, r, max_r, ripple}
 ## ★ 公共模块实例：挂/还原材质 + 找物体（扇形选点器共用同一份实现）
 var _surface := SurfaceOverlay.new()
 var _outlined: Dictionary = {}             ## 实例 id -> {node, meshes:[{mi, prev}], until}
+## "最近一次尝试发波因为蓝不够而失败"的标志，由 ran_out_of_mana() 对外暴露。
+## ★ 一旦为 true 会**一直保持**到下一次成功扣蓝才复位（见 _emit_pulse）：
+##   这样上层/HUD 在两圈之间的空档里也能稳定读到"没蓝了"，不会一闪而过。
 var _ran_out := false
+## 按住施法时"距下一圈还有多久"的倒计时（秒）。只在 repeat_interval > 0 时被使用：
+## 每发完一圈就重置为 repeat_interval；stop_cast 时归零 ——
+## 于是"松手再按"能**立刻**发出新的一圈，不必等上一轮的余量（手感上不发涩）。
 var _cooldown := 0.0
 ## 自己累加的游戏时钟。★ 刻意**不用 Time.get_ticks_msec()**：
 ## 真实时间不跟随暂停 / Engine.time_scale，也会让"按帧步进"的自检无法推进
@@ -176,7 +250,18 @@ var _mask_cam: Camera3D = null
 var _boxes: Array = []
 
 
+# ==================== 生命周期 ====================
+## 节点进入场景树时由引擎调用（SpellCaster 把它 add_child 到玩家父节点之后）。
+##
+## 参数：无（引擎回调）。返回值：无。
+## 副作用：开启 _process（set_process(true)），并把 process_priority 提到 1000。
+## ★ 优先级必须**很高**（数字越大越晚执行）：本脚本在 _process 里同步遮罩相机，
+##   而相机 rig 的跟随是在它自己的 _process 里做的；顺序反了遮罩就慢一帧，
+##   表现成"轮廓跟不上镜头"（用户报过轮廓延迟）。
+## 注意：这里不读场景、不找玩家（引用一律由 setup 注入），所以可以安全地反复实例化。
 func _ready() -> void:
+	# 显式开启 _process：挂进场景树默认就是开的，写出来是为了表达"每帧都要推进"的意图
+	# （而且如果以后有人把本节点的 process_mode 改掉，这行会提醒他这里的依赖）。
 	set_process(true)
 	# ★ 处理优先级提到很高，让本节点的 _process **在相机 rig 之后**执行。
 	#   遮罩相机是在这里同步主相机变换的；如果它先执行、相机 rig 后执行，
@@ -184,12 +269,32 @@ func _ready() -> void:
 	process_priority = 1000
 
 
+## 由 SpellCaster 在实例化本视觉之后调用一次，注入玩家与法杖引用（接口约定见 spell_caster.gd 的 SPELLS）。
+##
+## 参数：
+##   player — 玩家根节点（Node3D）。后续一切以它的 global_position 作为波纹圆心；
+##            若它恰好是 CollisionObject3D，还会用它的 collision_mask 当探测掩码（见 _mask），
+##            并在球查询里排除它自身（否则每次探测都会把玩家自己描一圈）。
+##   staff  — 手杖节点（Node3D）。本术法**不**从杖头出发（波纹从脚下发），
+##            它只被转交给 SpellAim，用于保持与其它术法的接口一致、并让兜底起点可用。
+## 返回值：无。副作用：写 _player，初始化 _aim（host = self）。
+## 注意：不做校验；传 null 时 _emit_pulse 会直接返回（什么都不放，也不报错）。
 func setup(player: Node3D, staff: Node3D) -> void:
 	_player = player
 	_aim.setup(player, staff, self)
 
 
 # ---------------------------------------------------------------- 对外
+# ==================== 对外接口（SpellCaster 调用） ====================
+## 上层"按住施法"期间**每帧**都会被调用（spell_caster.gd 的施法段：casting 为真就每帧 call 一次）。
+##
+## 参数：无。返回值：无。
+## 副作用：第一次调用（casting 尚为 false）时**立刻**发一圈，并把 casting 置 true；
+##         之后每帧重复调用只维持 casting = true，不再发圈 ——
+##         续发由 _process 里的 _cooldown 倒计时按 repeat_interval 触发。
+## ★ 为什么第一圈要抢在 _process 之前发：等下一帧的话，"按下"与"第一道波纹"之间会空一帧，
+##   手感上像没反应；这里立刻放，按下即有。
+## 注意：本函数可以被安全地重复调用（幂等），上层不必自己去重。
 func start_cast() -> void:
 	if not casting:
 		# 按下那一瞬：立刻发一圈（不等 _process，避免第一帧从静默开始）
@@ -197,6 +302,12 @@ func start_cast() -> void:
 	casting = true
 
 
+## 上层不再按住时**每帧**都会被调用（与 start_cast 交替出现）。
+##
+## 参数：无。返回值：无。
+## 副作用：casting = false；_cooldown 归零（下次按下能立刻出圈）。
+## ★ 刻意**不清理**在飞的波纹与已画出的轮廓（见函数内注释）：
+##   它们是独立于角色的世界事件，松手后该继续扩散/自然到期。
 func stop_cast() -> void:
 	casting = false
 	# ★ 刻意**不**清掉在飞的波纹和已画出的轮廓：
@@ -205,23 +316,60 @@ func stop_cast() -> void:
 	_cooldown = 0.0
 
 
+## 语义：**"当前是否正在按住施法"**，不是"是否还有波纹在飞"。
+##
+## 参数：无。返回值：casting 的当前值（bool）。
+## 调用时机：上层轮询（spell_caster.gd 用 is_casting 判断一次性法术的实例是否演完）。
+## ★ 松手后立刻返回 false，而此时波纹可能还在扩张、轮廓也还亮着 —— 这是有意为之：
+##   若让它等到所有波纹结束，外层会以为"施法还没完"，按住续发的语义会变得含糊。
 func is_casting() -> bool:
 	return casting
 
 
+## 语义：上一发是否因为蓝不够而**没放出来**（_emit_pulse 里的失败标志）。
+##
+## 参数：无。返回值：true = 最近一次尝试扣蓝失败；false = 最近一次扣蓝成功（或还没试过）。
+## 调用时机：上层/HUD 轮询，用于提示"没蓝了"。
+## 注意：它不是"蓝量是否为空"的实时查询 —— 回蓝后也不会自动变回 false，
+##       只有**成功发出**新的一圈（Mana.try_spend 返回 true）才会复位。
 func ran_out_of_mana() -> bool:
 	return _ran_out
 
 
+## 施法朝向（世界空间、水平单位向量），转发自 SpellAim.aim_dir()。
+##
+## 参数：无。返回值：Vector3，长度为 1；所有来源都失效时返回 SpellAim 内部记住的上一次方向。
+## 说明：本术法的波纹是**以施法点为圆心的正圆**，与朝向无关；
+##       保留这个接口只为"和别的术法长得一样"（上层与通用选点不对术法特判）。
 func aim_dir() -> Vector3:
 	return _aim.aim_dir()
 
 
+## 施法起点（世界坐标），转发自 SpellAim.origin_global()（默认取"角色身前"那个点）。
+##
+## 参数：无。返回值：Vector3；拿不到玩家/法杖时返回宿主自身位置。
+## ★ 注意：这**不是**波纹的圆心 —— 圆心用的是 _player.global_position（脚下），
+##   因为地面波纹必须贴地；这里只是给通用逻辑/调试看的接口点。
 func origin_global() -> Vector3:
 	return _aim.origin_global()
 
 
 # ---------------------------------------------------------------- 每帧
+# ==================== 每帧更新 ====================
+## 每帧驱动（process_priority = 1000，排在相机 rig 之后执行，见 _ready）。
+##
+## 参数：delta — 距上一帧的秒数，用于推进 _clock、波纹半径与续发倒计时。
+## 返回值：无。
+## 副作用（顺序敏感，别随意调换）：
+##   1. _clock 累加 —— 自检可手动步进的游戏时钟（见 _clock 注释）；
+##   2. 清空 _boxes —— 它只表示"**本帧**被探测到的物体包围盒"，每帧重建；
+##   3. _tick_pulses 推进所有在飞的波纹并顺带做检测；
+##   4. _update_reveal 把揭示半径写进每个物体的描边 / 扫描带材质；
+##   5. _update_screen_outline 决定全屏描边 pass 是否打开并喂参数；
+##   6. _expire_outlines 还原到期物体的材质。
+## ★ 以上六步在**不施法时也照跑**，只有后面的续发段会 return ——
+##   松手后波纹仍要继续扩张、轮廓仍要到期（这就是"一松手效果就没了"的反例）。
+## 注意：_boxes 必须在检测**之前**清空，否则屏幕描边会拿到上一帧的旧盒子。
 func _process(delta: float) -> void:
 	_clock += delta
 	_boxes.clear()             # 每帧重建：只反映"本帧被探测到的物体"
@@ -241,6 +389,17 @@ func _process(delta: float) -> void:
 
 
 # ---------------------------------------------------------------- 发波
+# ==================== 发波与推进 ====================
+## 发出**一圈**新波纹：扣蓝 → 定圆心 → 推半径上限 → 建波纹平面 → 登记进 _pulses。
+##
+## 参数：无（一切取自成员变量与导出参数）。
+## 返回值：无。
+## 副作用：扣 Mana、写 _ran_out、new 一个 MeshInstance3D 并 add_child 到本节点、_pulses 追加一项。
+## 调用时机：start_cast 的第一次调用；以及按住期间每 repeat_interval 秒一次（见 _process）。
+## 注意：
+##   · 蓝不够时**整圈不发**并置 _ran_out = true（不半发、不留残影）；
+##   · 圆心在这一瞬定死（此后是否跟随角色，由 follow_caster 在 _tick_pulses 里决定）；
+##   · 波纹节点是本节点的子节点，本节点被释放时会跟着没（_exit_tree 再兜一次）。
 func _emit_pulse() -> void:
 	if _player == null or not is_instance_valid(_player):
 		return
@@ -252,6 +411,8 @@ func _emit_pulse() -> void:
 
 	var center := _player.global_position      # 脚下，世界坐标；此后**不再跟随角色**
 	var max_r := _screen_max_radius(center)
+	# 半径上限在**发波这一瞬**算定并写进材质（着色器据此决定细环密度与衰减），
+	# 所以同一条波纹之后不会再因为相机拉远拉近而改尺寸/改形状。
 	var ripple := _make_ripple(max_r)
 	add_child(ripple)
 	ripple.global_position = center + Vector3.UP * wave_lift
@@ -263,12 +424,23 @@ func _emit_pulse() -> void:
 	})
 
 
+## 推进所有在飞的波纹：半径 += wave_speed × delta → 更新视觉 → 做一次检测 → 处理到顶的圈。
+##
+## 参数：delta — 帧间隔（秒）；半径增量乘了 delta，所以扩张速度与帧率无关。
+## 返回值：无。
+## 副作用：改每一项的 r（必要时还有 center）、移动波纹节点、触发 _detect（挂描边）、
+##         到顶时 queue_free 波纹节点、重写 _pulses。
+## ★ 用"重建 alive 列表"而不是边遍历边删：遍历中修改 _pulses 会打乱迭代，
+##   而且"到顶"的圈还要顺手释放自己的节点，分开写更清楚（_expire_outlines 同思路）。
+## 注意：轮廓**不在这里清** —— 它有独立的 outline_life 寿命，由 _expire_outlines 负责。
 func _tick_pulses(delta: float) -> void:
 	if _pulses.is_empty():
 		return
 	var alive: Array = []
 	for p in _pulses:
 		var pulse: Dictionary = p
+		# 半径按 delta 推进而不是固定步长：低帧率时一帧可能跳好几米，
+		# 这正是"检测必须查整球、不能只查薄环"的原因（薄环会漏掉跨过去的那批物体）。
 		pulse["r"] = float(pulse["r"]) + wave_speed * delta
 		var r := float(pulse["r"])
 		var max_r := float(pulse["max_r"])
@@ -294,6 +466,16 @@ func _tick_pulses(delta: float) -> void:
 	_pulses = alive
 
 
+## 把"波前推进到哪"写进波纹材质（progress = radius / max_r，归一到 0~1）。
+##
+## 参数：
+##   node   — 波纹节点（声明成 Variant 是因为从字典里取出来不带类型；null / 已释放会被忽略）。
+##   radius — 当前波面半径（米）。
+##   max_r  — 本圈的最大半径（米），用作归一化分母；maxf(..., 0.001) 是防 0 除。
+## 返回值：无。
+## 副作用：只改着色器参数，**不移动**节点（位置由 _tick_pulses / _emit_pulse 负责）。
+## ★ 传归一化进度而不是米：着色器只关心"推进到几成"，
+##   这样同一条着色器能被任意屏幕尺寸 / 任意 max_r 复用。
 func _apply_ripple(node: Variant, radius: float, max_r: float) -> void:
 	if node == null or not is_instance_valid(node):
 		return
@@ -305,6 +487,20 @@ func _apply_ripple(node: Variant, radius: float, max_r: float) -> void:
 
 
 # ---------------------------------------------------------------- 检测
+# ==================== 检测（球查询 + 过滤） ====================
+## 一次检测：以 center 为球心、radius 为半径做球查询，逐条命中做过滤并挂描边。
+##
+## 参数：
+##   radius — **当前波面半径**（米），直接当作查询球半径（查整球而非薄环，理由见文件头【2】）。
+##   center — 本圈圆心（世界坐标；follow_caster 打开时每帧被刷成角色脚下）。
+##   max_r  — 本圈的最大半径（本函数内不参与裁剪，只随 pulse 传给描边做揭示语义）。
+##   pulse  — 本圈的字典（center/r/max_r/ripple），会原样塞进描边条目，供揭示半径取最大使用。
+## 返回值：无。
+## 副作用：给命中的可视节点挂 material_overlay（或只 mark_layers）、写 _boxes 与 _outlined。
+## 调用时机：_tick_pulses 里每圈每帧一次（本帧最贵的一段：物理查询 + 包围盒计算）。
+## ★ 故意**不用"环形查询"**：整球查询每帧都是全量命中，靠轮廓 1 秒寿命在观感上实现"只亮波前"；
+##   若改成薄环，低帧率会漏检（见文件头【2】的推理）。
+## 注意：max_results 会截断命中列表，物体极密时靠它兜底防止一帧爆量。
 ## 半径内的球形查询；命中 -> 描轮廓
 func _detect(radius: float, center: Vector3, max_r: float, pulse: Dictionary) -> void:
 	if radius <= 0.0:
@@ -319,6 +515,8 @@ func _detect(radius: float, center: Vector3, max_r: float, pulse: Dictionary) ->
 	# ★ 找物体（球查询 + 碰撞体->可视节点解析 + 包围盒）交给**公共模块**，
 	#   扇形选点器用的是同一份实现 —— 两边不再各写一遍。
 	#   球心略微抬高：以角色脚下为中心的话，一半球体在地下，浪费且容易吃到地形。
+	# 把玩家自己排除在球查询之外：不排除的话，玩家身上的碰撞体每次都会被命中，
+	# 于是每一圈探测都会给玩家自己描一圈轮廓（用户会看到"自己被描边"）。
 	var exclude: Array[RID] = []
 	if _player is CollisionObject3D:
 		exclude.append((_player as CollisionObject3D).get_rid())
@@ -347,6 +545,9 @@ func _add_box(box: AABB) -> void:
 	if _boxes.size() >= 16:
 		return
 	var lo := box.position
+	# 0.0025 = (0.05 m)^2：用"5 厘米以内"当近重合判据。
+	# 同一个可视父节点下的多个碰撞体会解析出同一个可视节点、同一个盒子（只差浮点误差），
+	# 不判重的话 16 个名额会被同一个物体占满，别的物体反而进不来。
 	for b in _boxes:
 		if (lo - (b as Array)[0] as Vector3).length_squared() < 0.0025:
 			return
@@ -354,6 +555,7 @@ func _add_box(box: AABB) -> void:
 
 
 # ---------------------------------------------------------------- 物体遮罩（SubViewport）
+# ==================== 物体遮罩（SubViewport） ====================
 ## 把"本帧被探测到的物体"单独渲进一张遮罩图，供屏幕空间描边按像素判定。
 ##
 ## 为什么需要：屏幕描边是纯深度边缘检测，被波扫过的屏幕区域里**所有**深度突变都会出线，
@@ -381,6 +583,8 @@ func _ensure_mask_pass() -> bool:
 	#   （注意不透明几何体不写 alpha，所以判定只能看 RGB，不能看 alpha。）
 	sv.transparent_bg = true
 	sv.size = Vector2i(maxi(1, int(size.x)), maxi(1, int(size.y)))
+	# 每帧都重渲染：遮罩相机每帧跟着主相机同步变换、被探测物体集合也会变，
+	# 用 UPDATE_ONCE / WHEN_VISIBLE 会拿到过期的一帧（表现成轮廓与画面错位）。
 	sv.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	sv.disable_3d = false
 	# ★★ 千万不要给这个子视口设 debug_draw = DEBUG_DRAW_UNSHADED：
@@ -435,6 +639,7 @@ func _sync_mask_camera() -> void:
 			_mask_vp.size = want
 
 
+# ==================== 可探测性过滤（玩家 / 名字 / 地形） ====================
 ## 一组网格的世界包围盒并集（转发到公共模块）
 func _visual_aabb(visual: Node) -> AABB:
 	return SurfaceOverlay.visual_aabb(visual)
@@ -448,6 +653,17 @@ func _resolve_visual(node: Node) -> Node:
 	return SurfaceOverlay.resolve_visual(node)
 
 
+## 可探测性总判定（每个命中问一次）：玩家自身 / 地形与植被关键字 / 是否在地形之上。
+##
+## 参数：
+##   node   — 命中的碰撞体节点（用于"是不是玩家"的判断）。
+##   visual — 解析出来的可视节点（名字过滤要**沿它向上**逐级查父节点）。
+##   center — 本圈圆心；保留参数，当前版本不直接参与判定。
+##   box    — 可视节点的世界包围盒（交给 _above_terrain 当射线起点）。
+## 返回值：true = 这个物体可以描轮廓。
+## 副作用：可能触发一次向下的地形射线（结果按实例缓存在 _terrain_ok，只问一次）。
+## ★ 名字过滤必须从 visual 向上查：地形碰撞体的父节点才是 Terrain3D，
+##   只看碰撞体自己的类名是查不到地形的。
 ## 哪些东西不描轮廓
 func _is_detectable(node: Node, visual: Node, center: Vector3, box: AABB) -> bool:
 	# 玩家自己
@@ -494,6 +710,8 @@ func _above_terrain(visual: Node, box: AABB) -> bool:
 				var query := PhysicsRayQueryParameters3D.create(
 						from, from + Vector3.DOWN * 80.0, layer)
 				ok = not space.intersect_ray(query).is_empty()
+	# 连"否"的结果也缓存：地形不会在同一次施法里凭空出现/消失，
+	# 不缓存的话每圈每帧都要为同一批物体重复打射线，纯属浪费。
 	_terrain_ok[id] = ok
 	return ok
 
@@ -506,6 +724,8 @@ func _terrain_layer() -> int:
 	var tree := get_tree()
 	if tree == null or tree.current_scene == null:
 		return 0
+	# 用显式栈做深度优先遍历而不是递归：场景树深时递归有栈溢出风险；
+	# 这里只关心"找到第一个类名含 terrain 的节点"，遍历顺序无所谓。
 	var stack: Array = [tree.current_scene]
 	while not stack.is_empty():
 		var n := stack.pop_back() as Node
@@ -521,6 +741,12 @@ func _terrain_layer() -> int:
 	return 0
 
 
+## 从 from_node 的子树里找**第一个非 0 的碰撞层**（显式栈做深度优先，顺序无所谓）。
+##
+## 参数：from_node — 遍历起点（调用方传的是"类名含 terrain 的节点"）。
+## 返回值：碰撞层位掩码（int）；找不到返回 0（调用方据此走"无法判定 -> 放行"的降级路径）。
+## 用途：给 _above_terrain 的向下射线当 collision_mask。
+## ★ 只取第一个、不做合并：地形通常就是一个大碰撞体，任何一块能挡住向下的射线都够用。
 func _first_collision_layer(from_node: Node) -> int:
 	var stack: Array = [from_node]
 	while not stack.is_empty():
@@ -536,6 +762,7 @@ func _first_collision_layer(from_node: Node) -> int:
 	return 0
 
 
+# ==================== 屏幕判定与最大半径推导 ====================
 ## 屏幕 1.2 倍区域判定 —— **物体只要有任意一部分落在区域内就算**。
 ##
 ## ★ 不要只判包围盒中心。实测：墓地遗迹的碰撞体明明在玩家 12 米内，但它解析到的
@@ -553,6 +780,8 @@ func _in_screen_margin(box: AABB) -> bool:
 	# 视口尺寸退化或相机投影不可用时不判定（理由见 _camera_usable）
 	if size.x <= 1.0 or size.y <= 1.0 or not _camera_usable(cam, size):
 		return true
+	# screen_margin = 1.2 表示"允许到屏幕的 1.2 倍"，也就是四边各放宽 10%，
+	# 所以外扩量是 (1.2 - 1.0) / 2 = 0.1 → m 乘上宽高就是每边多出来的像素数。
 	var m := (screen_margin - 1.0) * 0.5
 	var lo := Vector2(-m * size.x, -m * size.y)
 	var hi := Vector2((1.0 + m) * size.x, (1.0 + m) * size.y)
@@ -614,6 +843,14 @@ func _camera_usable(cam: Camera3D, size: Vector2) -> bool:
 	return sp.distance_to(size * 0.5) < size.length() * 0.25
 
 
+## 由相机反推"波纹最多该扩到多大"：把视口边框投到角色脚底所在的水平面，
+## 取最远落点距离 × screen_margin，并夹在 max_radius_cap 以内。
+##
+## 参数：center — 本圈圆心（世界坐标）；用它的 y 作为"水平面"的高度。
+## 返回值：最大半径（米）。相机/投影不可用时返回 max_radius_fallback（兜底 16 米）。
+## 副作用：无（纯计算，可安全地每圈调用一次）。
+## 注意：结果只在**发波那一瞬**用一次（写进波纹材质），
+##       所以同一条波纹不会因为之后相机移动而改尺寸或形状。
 ## 屏幕四角/四边投到"角色脚底所在水平面"，取最远距离 × screen_margin
 func _screen_max_radius(center: Vector3) -> float:
 	var cam := _camera()
@@ -625,6 +862,8 @@ func _screen_max_radius(center: Vector3) -> float:
 		return max_radius_fallback
 	var plane := Plane(Vector3.UP, center.y)
 	var best := 0.0
+	# 除了四角，再取四条边的中点：俯视角倾斜时"最远落点"往往出现在屏幕边的中段
+	# （比如画面上边中点在远处的投影比两个角更远），只投四角会低估波纹半径。
 	var uvs := [
 		Vector2(0.0, 0.0), Vector2(1.0, 0.0), Vector2(0.0, 1.0), Vector2(1.0, 1.0),
 		Vector2(0.5, 0.0), Vector2(0.5, 1.0), Vector2(0.0, 0.5), Vector2(1.0, 0.5),
@@ -644,6 +883,7 @@ func _screen_max_radius(center: Vector3) -> float:
 
 
 # ---------------------------------------------------------------- 描边（物体原样 + 外缘一圈线）
+# ==================== 描边：挂载 / 揭示 / 到期 ====================
 ## 给探测到的物体叠加一层描边（material_overlay），**不替换它自己的材质**。
 ##
 ## ★ 为什么不再用 material_override + 实心填充
@@ -693,6 +933,8 @@ func _outline(visual: Node, now: float, pulse: Dictionary) -> void:
 	var cur = entry.get("pulse")
 	if cur == null or float((cur as Dictionary)["r"]) < float(pulse["r"]):
 		entry["pulse"] = pulse
+	# ★ 每次命中都刷新到期时间：多圈连续命中同一个物体时，轮廓不会在两道脉冲之间闪断，
+	#   而是从**最后一次**命中起再活 outline_life 秒。
 	entry["until"] = now + outline_life
 
 
@@ -704,6 +946,8 @@ func _update_reveal() -> void:
 	# 真·多圈：把**当前所有活跃脉冲**打包给扫描带着色器，最多 SCAN_MAX_WAVES 圈。
 	# 于是物体表面会被每一圈**依次**扫过（每一圈都是真实脉冲）。
 	var waves := PackedVector4Array()
+	# 定长数组：着色器里声明的是 vec4 scan_waves[8]，长度必须与 SCAN_MAX_WAVES 一致；
+	# 没被填满的槽位保持为 0，由 wave_count 让着色器忽略它们。
 	waves.resize(SCAN_MAX_WAVES)
 	var wn := 0
 	for p in _pulses:
@@ -739,6 +983,7 @@ func _update_reveal() -> void:
 
 
 # ---------------------------------------------------------------- 屏幕空间描边
+# ==================== 屏幕空间描边 ====================
 ## 相机下挂一个覆盖视野的四边形当作全屏后处理面。
 ## size 取 4×4：相机前 1 米处、fov 45° 时可见范围约 1.5×0.83 米，4 米足够覆盖，
 ## 而且分辨率/宽高比变化也不用重算。
@@ -777,6 +1022,15 @@ func _ensure_screen_quad() -> MeshInstance3D:
 	return mi
 
 
+## 每帧刷新屏幕空间描边：把"半径最大"的活跃脉冲当作波前，并把遮罩图与包围盒喂给着色器。
+##
+## 参数：无。返回值：无。
+## 副作用：可能创建 _screen_quad、切换它的 visible、同步遮罩相机与 SubViewport 尺寸、
+##         写若干个着色器参数（wave_center / wave_radius / mask_tex / box_min…）。
+## 调用时机：_process 每帧（screen_outline = false 时第一行就返回）。
+## 注意：
+##   · 没有活跃脉冲时整块 visible = false，不产生全屏 pass 的开销；
+##   · 波前取"半径最大的那圈"而不是最后一圈 —— 否则揭示半径会往回缩（与 _outline 的取法同理）。
 ## 只有真的有波纹在飞时才打开这个 pass，其余时间整块隐藏（零开销）
 func _update_screen_outline() -> void:
 	if not screen_outline:
@@ -829,6 +1083,12 @@ func _update_screen_outline() -> void:
 	m.set_shader_parameter("box_count", _boxes.size())
 
 
+## 每帧检查描边条目是否到期，到期的**还原物体材质**并从 _outlined 里摘掉。
+##
+## 参数：无。返回值：无。
+## 副作用：调 SurfaceOverlay.detach（恢复 overlay / transparency / layers）、修改 _outlined。
+## ★ 先收集 dead 再统一 erase：正在遍历 _outlined.keys() 时直接 erase 会破坏迭代。
+## 注意：到期只处理"轮廓"；在飞的波纹归 _tick_pulses 管，两者生命周期互相独立。
 func _expire_outlines() -> void:
 	if _outlined.is_empty():
 		return
@@ -843,12 +1103,22 @@ func _expire_outlines() -> void:
 		_outlined.erase(id)
 
 
+## 还原一个描边条目涉及的所有网格。
+##
+## 参数：entry — _outlined 里的一个条目字典（{node, meshes, [mat], [scan], [pulse], until}）。
+## 返回值：无。
+## 副作用：对每个网格调 SurfaceOverlay.detach(id)，把 overlay / transparency / layers 还原；
+##         并把 entry["meshes"] 清空。
+## 注意：网格可能在期前就被释放（换场景 / 物体销毁），所以逐个查 is_instance_valid；
+##       清空 meshes 是为了让"重复清理"变成空操作（_expire_outlines 与 _exit_tree 都会走到这里）。
 func _clear_entry(entry: Dictionary) -> void:
 	# ★ 还原（overlay / 透明度 / 可见层）统一交给公共模块
 	for item in (entry.get("meshes", []) as Array):
 		var mesh := item as MeshInstance3D
 		if mesh != null and is_instance_valid(mesh):
 			_surface.detach(mesh.get_instance_id())
+	# 清空引用：这个条目可能被二次清理（先到期、之后 _exit_tree 又扫一遍），
+	# 留着旧列表只会让重复 detach 白跑；清掉后重入就是空操作。
 	entry["meshes"] = []
 
 
@@ -873,10 +1143,23 @@ func _exit_tree() -> void:
 
 
 # ---------------------------------------------------------------- 小工具
+# ==================== 工具函数与材质工厂 ====================
+## 取本脚本自己的游戏时钟（_clock，单位：秒）。
+##
+## 参数：无。返回值：自节点创建起累加的 delta 之和。
+## ★ 为什么不用 Time.get_ticks_msec()：真实时间**不跟随暂停与 Engine.time_scale**，
+##   而且会让"按帧步进"的无头自检无法推进（实测手动步进 1.25 秒，真实时间没过，
+##   轮廓永远不过期）。用累加 delta 才能让自检的假时间生效。
 func _now() -> float:
 	return _clock
 
 
+## 取当前 3D 相机（返回值可空）。
+##
+## 参数：无。返回值：Camera3D，取不到（视口不存在 / 视口里没有 3D 相机）时返回 null。
+## 副作用：无。
+## 注意：无头运行、切到 UI 子视口等情况下都可能取不到；
+##       所有调用点都必须自己判 null 并走降级路径（兜底半径 / 跳过剔除）。
 func _camera() -> Camera3D:
 	var vp := get_viewport()
 	return vp.get_camera_3d() if vp != null else null
@@ -892,6 +1175,11 @@ func _mask() -> int:
 	return 0xFFFFFFFF
 
 
+## 取节点子树里所有**可见**的 MeshInstance3D（转发到 SurfaceOverlay.visible_meshes）。
+##
+## 参数：node — 起点（通常是解析出来的可视节点）；null 时返回空数组。
+## 返回值：Array（深度优先、含自身；不可见的网格会被跳过）。
+## 用途：挂 material_overlay、把网格标进遮罩层、以及算世界包围盒。
 func _visible_meshes(node: Node) -> Array:
 	return SurfaceOverlay.visible_meshes(node)
 
@@ -950,6 +1238,8 @@ func _make_scan_material() -> ShaderMaterial:
 ## 平面尺寸取 2×max_r，UV 天然铺满，径向距离就是半径 —— 恒为正圆。
 func _make_ripple(max_r: float) -> MeshInstance3D:
 	var plane := PlaneMesh.new()
+	# 2 × max_r 的方片刚好内切整个圆（直径 = 2 × max_r），UV 天然铺满、径向距离就是半径；
+	# maxf(1.0, …) 是防 0：半径为 0 时 PlaneMesh 尺寸为 0，网格会退化到被剔除。
 	plane.size = Vector2.ONE * maxf(1.0, max_r * 2.0)
 	var m := ShaderMaterial.new()
 	var sh := load(RIPPLE_SHADER) as Shader
