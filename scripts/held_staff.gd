@@ -92,6 +92,14 @@ var _grip_cyl_done := false
 var debug_slice := false
 ## 诊断日志总开关（由 player.gd 的 debug_verbose 传进来 ✓，默认关闭 ✓）
 var debug_verbose := false
+## ★ 旋转的**单一真值**（纯旋转，局部空间）：伺服只累加它 ✓
+##   绝不每帧从 basis 反分解"旋转/缩放" ✗ —— 那是一条反馈回路，会逐帧漂移
+##   （症状：角色运动 / 起跳 / 静止时法杖**越来越大** ✗）
+var _root_rot := Basis.IDENTITY
+## ★ 挂载缩放常量：只在挂载与摆放时确定一次，之后**原样写回** ✓（唯一尺寸来源 ✓）
+var _mount_scale := Vector3.ONE
+## 尺寸守卫的计时器（debug_verbose 下每 5 秒打一次）
+var _diag_t := 0.0
 ## ★ 世界朝向稳定（0~1）：手上其实是"松握" —— 位置跟手 ✓，但**朝向钉在世界空间** ✓。
 ##   1.0 = 完全稳定（跑动时杖不再跟着手臂甩 ✓，物理上更合理 ✓）
 ##   0.0 = 旧的刚性跟随（杖随手臂旋转 ✗，跑步时"杖尾前倾" ✗）
@@ -357,6 +365,11 @@ func _place() -> void:
 	var want := float(_sys_def().get("world_len", staff_len)) * len_scale
 	var sc := want / (_model_h * _parent_scale)
 	_model.scale = Vector3.ONE * sc
+	# ★ 记录"挂载缩放"常量与"旋转真值"（只在摆放时更新 ✓）：
+	#   之后每帧只写 basis = _root_rot.scaled(_mount_scale) ✓ —— 缩放不再被反分解，
+	#   从结构上杜绝"越变越大" ✗
+	_mount_scale = basis.get_scale()
+	_root_rot = _pure_rot(basis)
 	# 水平居中 + 把"杖身下三分之一处"对到挂点
 	# ★ flip_in_hand 会把模型绕挂点转 180°（修"杖头朝下"），此时握点比例必须取反：
 	#   否则手会抓在靠近杖头的位置、杖身从手里垂下去（"法杖姿势不对"）。
@@ -610,12 +623,14 @@ func _process(delta: float) -> void:
 				var par_rot := _pure_rot(par.global_transform.basis)
 				# 世界旋转差 → 本节点的局部旋转差（左乘父级旋转的逆、右乘父级旋转 ✓）
 				var local_delta := par_rot.inverse() * delta_rot * par_rot
-				var sc_now := basis.get_scale()               # 只读**自己**的缩放 ✓（不回读全局 ✗）
 				# 比例伺服增益 8.0（单位 1/秒）：k = world_stable × delta × 8 → 60fps 下每帧约 13%，
 				# 约 0.5 s 收敛。只有比例项、没有速度项，所以是"指数逼近"不会过冲（极端速度下会有轻微滞后）
 				var k := clampf(world_stable * delta * 8.0, 0.0, 1.0)
-				# 局部：右乘"阻尼后的旋转增量" ✓（只动旋转 ✓ 缩放原样写回 ✓）
-				basis = (_pure_rot(basis) * Basis.IDENTITY.slerp(local_delta, k)).scaled(sc_now)
+				# ★★ 只累加**纯旋转真值** `_root_rot` ✓，然后 basis = 纯旋转 × **常量缩放** ✓
+				#   绝不每帧 basis.get_scale() 反分解 ✗ —— 那会让"旋转+缩放"逐帧漂移，
+				#   表现为角色运动/起跳/静止时法杖**越来越大** ✗（本次修的 bug）
+				_root_rot = (_root_rot * Basis.IDENTITY.slerp(local_delta, k)).orthonormalized()
+				basis = _root_rot.scaled(_mount_scale)
 	# 悬浮：沿世界竖直轻轻上下（不是模型局部轴 —— 那个已经被倾斜过了）
 	_hover_t += delta * HOVER_SPEED
 	# ★ 握点偏移已改由父节点 position 承担 ✓ → 这里不能再加 grip_offset（否则双重偏移 ✗）
@@ -625,6 +640,16 @@ func _process(delta: float) -> void:
 		if debug_verbose:
 			print("HeldStaff | 悬浮基准 = _grip_y %.3f + 握点 Y %.3f → 模型 Y %.3f（不再丢偏移 ✓）" % [
 				_grip_y, grip_offset.y, _model.position.y])
+	# ★ 尺寸守卫（debug_verbose 下每 5 秒一次）：世界长必须恒为 1.279 m ✓
+	#   行列式 ≈ 1.0 证明"旋转真值"仍是正交纯旋转（没有被缩放污染 ✓）
+	if debug_verbose:
+		_diag_t += delta
+		if _diag_t >= 5.0:
+			_diag_t = 0.0
+			var wl := _model_h * _model.scale.x * _parent_scale
+			print("HeldStaff | [尺寸守卫] 世界长 %.3f m｜本节点缩放 %s｜旋转真值行列式 %.4f" % [
+				wl, str(basis.get_scale().snapped(Vector3(0.0001, 0.0001, 0.0001))),
+				_root_rot.determinant()])
 	if _glow != null:
 		_pulse += delta * PULSE_SPEED
 		# 基线 1.1 与 _build_glow() 里的 light_energy 初值保持一致，±35% 才是"呼吸"而不是跳变
@@ -793,10 +818,11 @@ func _apply_pose(delta: float) -> void:
 			print("HeldStaff | 世界长 %.3f m（目标 %.3f）｜模型局部高 %.2f｜缩放 %.5f × 父级 %.5f｜模型原点离挂点 %.3f m" % [
 				world_h, float(_sys_def().get("world_len", staff_len)) * len_scale,
 				_model_h, _model.scale.x, _parent_scale, hand.global_position.distance_to(gp)])
-	var sc := basis.get_scale()          # 保留挂载时算好的缩放
 	if world_stable <= 0.0001:
 		# 旧的刚性跟随：朝向 = 手骨朝向（跑动时会随手臂甩 ✗）
-		basis = _local_basis.scaled(sc)
+		# ★ 用常量缩放写回 ✓，并同步旋转真值（关掉稳定后再打开时能接上）
+		_root_rot = _local_basis
+		basis = _root_rot.scaled(_mount_scale)
 	# ★ world_stable > 0 时这里**不写朝向** ✓ —— 交给 _process 里的"世界朝向稳定"独占：
 	#   否则两边每帧互相覆盖 → 稳态仍以跟手为主（跑动时杖尾朝前 ✗）+ 抖动 ✗
 
