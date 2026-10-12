@@ -50,6 +50,8 @@
 [ext_resource type="Texture2D" uid="uid://bry1m6v3aok7m" path="res://assets/textures/草地/花草-11.png" id="46_vc5cj"]
 [ext_resource type="MultiMesh" uid="uid://bpx5tubcj6m65" path="res://maps/main_g4_f661c7d8_grass.res" id="47_nvyfr"]
 [ext_resource type="ArrayMesh" path="res://addons/simplegrasstextured/generated/plane_3.tres" id="47_ty1g6"]
+[ext_resource type="Texture2D" uid="uid://y0hwn6faxeqh" path="res://assets/textures/草地/花草-09.png" id="51_bu4jf"]
+[ext_resource type="ArrayMesh" path="res://addons/simplegrasstextured/generated/plane_1.tres" id="52_o7ddy"]
 
 [sub_resource type="ProceduralSkyMaterial" id="sky_mat"]
 sky_top_color = Color(0.7, 0.72, 0.56, 1)
@@ -388,6 +390,61 @@ shader_parameter/burn_char_color = Color(0.06, 0.05, 0.045, 1)
 shader_parameter/burn_ember_color = Color(1, 0.32, 0.05, 1)
 shader_parameter/burn_ember_gain = 0.5
 metadata/SimpleGrassTexturedMaterial = "2.1.0"
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_0loja"]
+render_priority = 0
+shader = ExtResource("16_0ld40")
+shader_parameter/albedo = Color(1, 1, 1, 1)
+shader_parameter/texture_albedo = ExtResource("51_bu4jf")
+shader_parameter/texture_frames = Vector2(1, 1)
+shader_parameter/light_mode = 1
+shader_parameter/alpha_scissor_threshold = 0.5
+shader_parameter/normal_scale = 1.0
+shader_parameter/metallic = 0.0
+shader_parameter/metallic_texture_channel = Vector4(1, 0, 0, 0)
+shader_parameter/roughness = 1.0
+shader_parameter/roughness_texture_channel = Vector4(1, 0, 0, 0)
+shader_parameter/specular = 0.5
+shader_parameter/scale_h = 1.0
+shader_parameter/scale_w = 1.0
+shader_parameter/scale_var = -0.25
+shader_parameter/grass_strength = 0.55
+shader_parameter/optimization_by_distance = false
+shader_parameter/optimization_level = 7.0
+shader_parameter/optimization_dist_min = 10.0
+shader_parameter/optimization_dist_max = 50.0
+shader_parameter/grass_size_y = 1.0
+shader_parameter/interactive_mode = true
+shader_parameter/interactive_level_xz = 3.0
+shader_parameter/interactive_level_y = 0.3
+shader_parameter/sgt_player_pos = Vector3(1000000000, 1000000000, 1000000000)
+shader_parameter/sgt_player_bend_radius = 1.4
+shader_parameter/sgt_player_bend = 1.0
+shader_parameter/sgt_player_radial = 1.2
+shader_parameter/sgt_player_gain = 0.1
+shader_parameter/sgt_player_screen = Vector2(-100000, -100000)
+shader_parameter/sgt_player_screen_r = 0.0
+shader_parameter/sgt_player_depth = 0.0
+shader_parameter/sgt_occl_on = 0.0
+shader_parameter/sgt_occl_px = 1.0
+shader_parameter/sgt_occl_color = Vector4(0.3, 0.17, 0.09, 1)
+shader_parameter/sgt_occl_vp_logical = Vector2(1280, 720)
+shader_parameter/sgt_occl_vp_pixel = Vector2(1280, 720)
+shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
+shader_parameter/sgt_wind_strength = 0.15
+shader_parameter/sgt_wind_turbulence = 1.0
+shader_parameter/sgt_wind_movement = Vector3(0, 0, 0)
+shader_parameter/burn_char_color = Color(0.06, 0.05, 0.045, 1)
+shader_parameter/burn_ember_color = Color(1, 0.32, 0.05, 1)
+shader_parameter/burn_ember_gain = 0.5
+metadata/SimpleGrassTexturedMaterial = "2.1.0"
+
+[sub_resource type="MultiMesh" id="MultiMesh_ids8r"]
+transform_format = 1
+use_custom_data = true
+instance_count = 53
+mesh = ExtResource("52_o7ddy")
+buffer = PackedFloat32Array(0.37956035, 0, 0.92516696, -14.199852, 0, 1, 0, 0, -0.92516696, 0, 0.37956035, -27.161377, 0, 0, 0, 0, 0.35756242, 0, 0.93388927, -15.718498, 0, 1, 0, 0, -0.93388927, 0, 0.35756242, -27.197334, 0, 0, 0, 0, -0.51180726, 0, 0.8591003, -13.758591, 0, 1, 0, 0, -0.8591003, 0, -0.51180726, -27.656883, 0, 0, 0, 0, 0.9056414, 0, -0.4240445, -14.527916, 0, 1, 0, 0, 0.4240445, 0, 0.9056414, -26.647766, 0, 0, 0, 0, 0.07129274, 0, 0.9974554, -15.446388, 0, 1, 0, 0, -0.9974554, 0, 0.07129274, -25.795723, 0, 0, 0, 0, 0.5426095, 0, -0.8399851, -14.280815, 0, 1, 0, 0, 0.8399851, 0, 0.5426095, -25.925629, 0, 0, 0, 0, 0.1612666, 0, -0.9869109, -14.309135, 0, 1, 0, 0, 0.9869109, 0, 0.1612666, -25.104797, 0, 0, 0, 0, 0.6241429, 0, 0.7813102, -15.943954, 0, 1, 0, 0, -0.7813102, 0, 0.6241429, -24.86074, 0, 0, 0, 0, -0.07864801, 0, 0.99690247, -16.051407, 0, 1, 0, 0, -0.99690247, 0, -0.07864801, -25.433609, 0, 0, 0, 0, 0.12294964, 0, -0.9924129, -12.260574, 0, 1, 0, 0, 0.9924129, 0, 0.12294964, -27.809319, 0, 0, 0, 0, -0.3192376, 0, -0.9476747, -11.009399, 0, 1, 0, 0, 0.9476747, 0, -0.3192376, -27.910011, 0, 0, 0, 0, 0.060937967, 0, -0.9981415, -11.599373, 0, 1, 0, 0, 0.9981415, 0, 0.060937967, -28.85334, 0, 0, 0, 0, 0.09175759, 0, 0.99578136, -10.445526, 0, 1, 0, 0, -0.99578136, 0, 0.09175759, -29.272697, 0, 0, 0, 0, -0.87538224, 0, -0.48343143, -9.459373, 0, 1, 0, 0, 0.48343143, 0, -0.87538224, -29.062195, 0, 0, 0, 0, -0.998439, 0, -0.055853046, -8.6491165, 0, 1, 0, 0, 0.055853046, 0, -0.998439, -28.440193, 0, 0, 0, 0, 0.92740524, 0, -0.37405813, -7.9818954, 0, 1, 0, 0, 0.37405813, 0, 0.92740524, -29.846497, 0, 0, 0, 0, 0.11762879, 0, 0.9930576, -7.047241, 0, 1, 0, 0, -0.9930576, 0, 0.11762879, -29.747559, 0, 0, 0, 0, 0.8527514, 0, -0.52231705, -6.86129, 0, 1, 0, 0, 0.52231705, 0, 0.8527514, -27.701385, 0, 0, 0, 0, -0.8724158, 0, -0.48876446, -5.1523438, 0, 1, 0, 0, 0.48876446, 0, -0.8724158, -29.287308, 0, 0, 0, 0, -0.8784428, 0, 0.4778475, -3.5301056, 0, 1, 0, 0, -0.4778475, 0, -0.8784428, -29.134178, 0, 0, 0, 0, -0.23622744, 0, -0.9716978, -4.3466263, 0, 1, 0, 0, 0.9716978, 0, -0.23622744, -26.401634, 0, 0, 0, 0, -0.08428972, 0, 0.9964413, -3.706108, 0, 1, 0, 0, -0.9964413, 0, -0.08428972, -27.1363, 0, 0, 0, 0, 0.067053825, 0, -0.9977494, -3.6334534, 0, 1, 0, 0, 0.9977494, 0, 0.067053825, -24.587494, 0, 0, 0, 0, 0.883721, 0, -0.46801415, -1.6138611, 0, 1, 0, 0, 0.46801415, 0, 0.883721, -25.584618, 0, 0, 0, 0, -0.6788221, 0, -0.73430276, -4.7758713, 0, 1, 0, 0, 0.73430276, 0, -0.6788221, -25.337814, 0, 0, 0, 0, -0.6837058, 0, 0.7297577, -2.324791, 0, 1, 0, 0, -0.7297577, 0, -0.6837058, -23.679428, 0, 0, 0, 0, -0.7640891, 0, -0.6451107, -2.1539536, 0, 1, 0, 0, 0.6451107, 0, -0.7640891, -21.90998, 0, 0, 0, 0, 0.8482836, 0, 0.52954215, -1.2155457, 0, 1, 0, 0, -0.52954215, 0, 0.8482836, -23.269844, 0, 0, 0, 0, 0.86557925, 0, 0.50077194, -3.2388153, 0, 1, 0, 0, -0.50077194, 0, 0.86557925, -19.870735, 0, 0, 0, 0, -0.019795956, 0, -0.999804, -1.7230225, 0, 1, 0, 0, 0.999804, 0, -0.019795956, -17.884438, 0, 0, 0, 0, -0.2842991, 0, -0.95873564, -2.5397797, 0, 1, 0, 0, 0.95873564, 0, -0.2842991, -18.63733, 0, 0, 0, 0, -0.21766822, 0, -0.97602284, -0.18481445, 0, 1, 0, 0, 0.97602284, 0, -0.21766822, -13.989235, 0, 0, 0, 0, 0.29702783, 0, 0.95486885, -0.5425186, 0, 1, 0, 0, -0.95486885, 0, 0.29702783, -14.121582, 0, 0, 0, 0, -0.70529246, 0, 0.7089164, -18.882217, 0, 1, 0, 0, -0.7089164, 0, -0.70529246, -18.54892, 0, 0, 0, 0, -0.23771924, 0, 0.9713339, -17.016441, 0, 1, 0, 0, -0.9713339, 0, -0.23771924, -21.193352, 0, 0, 0, 0, 0.24726959, 0, 0.9689467, -17.433434, 0, 1, 0, 0, -0.9689467, 0, 0.24726959, -22.626251, 0, 0, 0, 0, 0.992546, 0, -0.12187022, -17.52063, 0, 1, 0, 0, 0.12187022, 0, 0.992546, -23.741287, 0, 0, 0, 0, 0.9854385, 0, 0.17003213, -18.011253, 0, 1, 0, 0, -0.17003213, 0, 0.9854385, -24.326149, 0, 0, 0, 0, -0.216517, 0, -0.97627884, -17.776794, 0, 1, 0, 0, 0.97627884, 0, -0.216517, -25.344887, 0, 0, 0, 0, -0.9999585, 0, -0.009109045, -15.481941, 0, 1, 0, 0, 0.009109045, 0, -0.9999585, -26.409584, 0, 0, 0, 0, -0.12902884, 0, 0.99164087, -15.64064, 0, 1, 0, 0, -0.99164087, 0, -0.12902884, -26.724968, 0, 0, 0, 0, -0.9013388, 0, -0.43311465, -12.290672, 0, 1, 0, 0, 0.43311465, 0, -0.9013388, -28.49691, 0, 0, 0, 0, 0.8080808, 0, 0.5890717, -12.748749, 0, 1, 0, 0, -0.5890717, 0, 0.8080808, -27.966309, 0, 0, 0, 0, 0.99968916, 0, -0.024932468, -11.0225525, 0, 1, 0, 0, 0.024932468, 0, 0.99968916, -27.300575, 0, 0, 0, 0, 0.29483548, 0, 0.95554805, -11.12207, 0, 1, 0, 0, -0.95554805, 0, 0.29483548, -28.353065, 0, 0, 0, 0, -0.753781, 0, 0.6571257, -9.098724, 0, 1, 0, 0, -0.6571257, 0, -0.753781, -29.481758, 0, 0, 0, 0, 0.16421627, 0, 0.9864244, -8.562164, 0, 1, 0, 0, -0.9864244, 0, 0.16421627, -29.06105, 0, 0, 0, 0, -0.53255534, 0, -0.8463952, -7.592613, 0, 1, 0, 0, 0.8463952, 0, -0.53255534, -29.240662, 0, 0, 0, 0, 0.47464523, 0, 0.8801772, -7.249359, 0, 1, 0, 0, -0.8801772, 0, 0.47464523, -28.7911, 0, 0, 0, 0, 0.2852612, 0, -0.95844984, -6.308075, 0, 1, 0, 0, 0.95844984, 0, 0.2852612, -28.899452, 0, 0, 0, 0, 0.43849778, 0, 0.89873224, -6.1258163, 0, 1, 0, 0, -0.89873224, 0, 0.43849778, -29.299065, 0, 0, 0, 0, 0.8989652, 0, 0.4380201, -4.5635834, 0, 1, 0, 0, -0.4380201, 0, 0.8989652, -28.713295, 0, 0, 0, 0, 0.7940602, 0, 0.60783917, -4.9276505, 0, 1, 0, 0, -0.60783917, 0, 0.7940602, -27.788177, 0, 0, 0, 0)
 
 [node name="Main" type="Node3D" unique_id=18193326]
 script = ExtResource("1_main")
@@ -2030,3 +2087,25 @@ sgt_tool_shape = {
 metadata/_custom_type_script = "uid://2juaclm8gc1n"
 metadata/SimpleGrassTextured = "2.0.5"
 metadata/sgt_external_id = "g4_f661c7d8"
+
+[node name="蘑菇笔刷" type="MultiMeshInstance3D" parent="." unique_id=1168329582]
+material_override = SubResource("ShaderMaterial_0loja")
+multimesh = SubResource("MultiMesh_ids8r")
+script = ExtResource("19_jscy8")
+mesh_planes = 1
+texture_albedo = ExtResource("51_bu4jf")
+sgt_radius = 2.0
+sgt_density = 1
+sgt_scale = 1.0
+sgt_rotation = 0.0
+sgt_rotation_rand = 1.0
+sgt_dist_min = 0.25
+sgt_follow_normal = false
+sgt_slope = Vector2(0, 45)
+sgt_tool_shape = {
+"airbrush": 1,
+"eraser": 0,
+"pencil": 1
+}
+metadata/_custom_type_script = "uid://2juaclm8gc1n"
+metadata/SimpleGrassTextured = "2.0.5"
