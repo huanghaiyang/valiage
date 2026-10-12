@@ -27,6 +27,17 @@ const AUTO_LOD_CONTROLLER_SCRIPT: Script = preload(
 	"res://addons/world_brush/world_brush_auto_lod_controller.gd"
 )
 
+## 实例判定 + 容器子树扫描（纯静态函数；抽出去才能用 headless 测试覆盖，见该文件头）。
+const INSTANCE_SCAN_SCRIPT: Script = preload(
+	"res://addons/world_brush/world_brush_instance_scan.gd"
+)
+
+## 场景池（一个笔刷 = 一组 .tscn，落点随机挑一个）的纯逻辑：去重 / 有效池 / 加权挑选。
+## 权重是**使用者的数据**（{路径: 正整数}），模块里没有任何与具体模型/命名相关的规则。
+const SCENE_POOL_SCRIPT: Script = preload(
+	"res://addons/world_brush/world_brush_scene_pool.gd"
+)
+
 const RAY_LENGTH: float = 100000.0
 const MAX_RAY_SKIPS: int = 64
 const SAMPLE_VERTICAL_RANGE: float = 100000.0
@@ -73,7 +84,23 @@ const AUTO_LOD_IMPORT_EXTENSIONS := [
 var world_brush_dock: EditorDock
 var dock_content: Control
 
+## 当前笔刷的**主场景**（第一顺位；LOD / auto-LOD / 元数据都以"这一笔实际用的场景"为准）。
 var selected_scene: PackedScene
+
+## 当前笔刷的**额外变体**（除主场景外的场景路径数组，由停靠面板每行的「变体…」设置）。
+## 落点时从「主场景 + 这些变体」里按权重随机挑一个 —— 池里只有主场景就是不随机的普通笔刷。
+## 只存路径而不是 PackedScene：面板切换/重载时路径稳定，场景按需 load（有资源缓存，不贵）。
+var selected_scene_pool: Array[String] = []
+
+## 上面那些路径对应的已加载场景（选中变化或池变化时重建；落点直接取，避免每次 load）。
+var stamp_scene_pool: Array[PackedScene] = []
+
+## 每个池内场景的相对权重（{场景路径: 正整数}；缺省 = 1 = 均匀随机）。
+## 由停靠面板的「Weights」提供，插件不做任何按名字/内容的推断。
+var selected_scene_weights: Dictionary = {}
+
+## 这一笔实际用的场景路径（_paint_scene_instances_live 写进 SOURCE_SCENE_META 用）。
+var last_stamp_source_path: String = ""
 
 var brush_enabled: bool = false
 var brush_radius: float = 5.0
@@ -135,8 +162,12 @@ var stroke_created_container: bool = false
 var painted_instances: Array[Node3D] = []
 var painted_transforms: Array[Transform3D] = []
 
-var erased_instances: Array[Node3D] = []
-var erased_transforms: Array[Transform3D] = []
+## 本次擦除的快照：{"instances", "transforms", "parents", "indices"} 四个平行数组，
+## 由 world_brush_instance_scan.gd 的 detach_instances() 产出、restore_instances() 消费。
+## 为什么记父节点：容器里的实例不一定都是容器的直接子节点 —— 用户（或别的工具）可能把它们
+## 归到一层普通 Node 分组下，撤销必须挂回原分组、原位次，不能一概挂回容器。
+## 为什么是字典而不是四个散装成员：它整批交给撤销/重做，拆开只会多四行搬运代码。
+var erased_batch: Dictionary = {}
 
 
 # =========================================================
@@ -316,6 +347,18 @@ func _connect_dock_signals() -> void:
 	if not _connect_required_signal(
 		&"selected_scene_changed",
 		&"_on_selected_scene_changed"
+	):
+		return
+
+	if not _connect_required_signal(
+		&"scene_variants_changed",
+		&"_on_scene_variants_changed"
+	):
+		return
+
+	if not _connect_required_signal(
+		&"scene_weights_changed",
+		&"_on_scene_weights_changed"
 	):
 		return
 
@@ -723,8 +766,7 @@ func _reset_stroke_data() -> void:
 	painted_instances.clear()
 	painted_transforms.clear()
 
-	erased_instances.clear()
-	erased_transforms.clear()
+	erased_batch = {}
 
 
 func _stamp_brush(
@@ -780,7 +822,7 @@ func _stamp_brush(
 		if affected_count > 0:
 			_set_dock_status(
 				"Erased In Stroke: %d"
-				% erased_instances.size()
+				% _erased_count()
 			)
 		else:
 			_set_dock_status(
@@ -925,9 +967,11 @@ func _paint_scene_instances_live() -> int:
 			INSTANCE_META,
 			true
 		)
+		# 来源场景记"这一笔实际用的那一个"（随机池里可能是任意变体）——
+		# 擦除/扫描、LOD 与 auto-LOD 都靠它认人。
 		instance.set_meta(
 			SOURCE_SCENE_META,
-			selected_scene.resource_path
+			last_stamp_source_path
 		)
 		var authored_basis := (
 			instance.transform.basis
@@ -1003,15 +1047,98 @@ func _paint_scene_instances_live() -> int:
 	return placed_count
 
 
+## 池里所有场景的路径（主场景 + 变体）—— 给 LOD / auto-LOD 判断"这个实例属不属于当前笔刷"。
+func _stamp_pool_paths() -> Array[String]:
+	var paths: Array[String] = []
+
+	if selected_scene != null and not selected_scene.resource_path.is_empty():
+		paths.append(selected_scene.resource_path)
+
+	for path in selected_scene_pool:
+		if not paths.has(path):
+			paths.append(path)
+
+	return paths
+
+
+## 重建"已加载的场景池"（选中场景变化 / 变体池变化时调用一次即可）。
+## 池 = 主场景 + 额外变体；载入失败/不能实例化的路径直接跳过（不报错、不阻塞落点）。
+func _refresh_stamp_scene_pool() -> void:
+	stamp_scene_pool.clear()
+
+	if selected_scene != null:
+		stamp_scene_pool.append(selected_scene)
+
+	for path in selected_scene_pool:
+		var scene := load(path) as PackedScene
+
+		if scene == null:
+			continue
+
+		if not scene.can_instantiate():
+			continue
+
+		if stamp_scene_pool.has(scene):
+			continue
+
+		stamp_scene_pool.append(scene)
+
+
+## 这一笔要用哪个场景：池里只有 1 个就是它；多个则按文件名权重随机挑。
+## 同时把结果记进 last_stamp_source_path（写 SOURCE_SCENE_META 用）。
+func _pick_stamp_scene() -> PackedScene:
+	if selected_scene == null:
+		return null
+
+	if stamp_scene_pool.is_empty():
+		_refresh_stamp_scene_pool()
+
+	if stamp_scene_pool.size() <= 1:
+		last_stamp_source_path = selected_scene.resource_path
+		return selected_scene
+
+	var paths: Array[String] = []
+
+	for scene in stamp_scene_pool:
+		paths.append(scene.resource_path)
+
+	# 权重由面板提供（缺省全 1 = 均匀随机）；模块只做"按给定权重挑"，不推断任何东西。
+	var weights: Array[int] = SCENE_POOL_SCRIPT.weights_for(
+		paths,
+		selected_scene_weights
+	)
+
+	# 显式标类型：SCENE_POOL_SCRIPT 是 Script，静态调用返回 Variant
+	var index: int = SCENE_POOL_SCRIPT.pick_index(
+		random_generator,
+		paths,
+		weights
+	)
+
+	if index < 0 or index >= stamp_scene_pool.size():
+		last_stamp_source_path = selected_scene.resource_path
+		return selected_scene
+
+	var picked := stamp_scene_pool[index]
+	last_stamp_source_path = picked.resource_path
+	return picked
+
+
 func _instantiate_selected_scene() -> Node3D:
+	# ★ 先挑场景：一个笔刷挂一组 .tscn 时，每个落点各自随机（这就是"多选 + 随机摆放"）。
+	var picked_scene := _pick_stamp_scene()
+
+	if picked_scene == null:
+		return null
+
 	if not lod_enabled:
 		return _instantiate_scene_root(
-			selected_scene
+			picked_scene
 		)
 
 	var levels: Array[Dictionary] = [
 		{
-			"scene": selected_scene,
+			"scene": picked_scene,
 			"begin": 0.0,
 			"name": "Near",
 		},
@@ -1033,17 +1160,17 @@ func _instantiate_selected_scene() -> Node3D:
 
 	if levels.size() == 1 and lod_cull_distance <= 0.0:
 		return _instantiate_scene_root(
-			selected_scene
+			picked_scene
 		)
 
 	var group := Node3D.new()
-	group.name = "%s_LOD" % selected_scene.resource_path.get_file().get_basename()
+	group.name = "%s_LOD" % picked_scene.resource_path.get_file().get_basename()
 	group.set_script(LOD_INSTANCE_SCRIPT)
 	group.add_to_group(LOD_NODE_GROUP, true)
 	group.set_meta(LOD_GROUP_META, true)
 	group.set_meta(
 		&"lod_source_scene_path",
-		selected_scene.resource_path
+		picked_scene.resource_path
 	)
 	group.set_meta(&"lod_enabled", lod_enabled)
 	group.set_meta(
@@ -1369,6 +1496,11 @@ func _get_random_scale_factor() -> float:
 # الحذف المباشر
 # =========================================================
 
+## 判定/收集逻辑全部在 world_brush_instance_scan.gd 里（纯静态函数，可被 headless 测试覆盖）。
+## 这里只保留"在哪用"：
+##   · 右键擦除 -> INSTANCE_SCAN_SCRIPT.collect_instances_in_radius()
+##   · 绘制间距 -> INSTANCE_SCAN_SCRIPT.collect_existing_positions()
+## 为什么不在插件里就地实现：EditorPlugin 在编辑器之外实例化不了，留在插件里就没法测。
 func _erase_scene_instances_live() -> int:
 	var edited_root := (
 		get_editor_interface()
@@ -1412,53 +1544,29 @@ func _erase_scene_instances_live() -> int:
 
 		return 0
 
-	var radius_squared := (
-		brush_radius * brush_radius
+	# 注意：必须显式标注类型 —— INSTANCE_SCAN_SCRIPT 是 Script，静态调用返回 Variant，
+	# `:=` 会报 "Cannot infer the type" 并让整个插件加载失败。
+	var matches: Array = INSTANCE_SCAN_SCRIPT.collect_instances_in_radius(
+		stroke_container,
+		surface_position,
+		brush_radius
 	)
 
-	var erased_count: int = 0
+	# 一路拖出来的擦除：每次 stamp 摘一批，并以**追加**方式并进本次 stroke 的快照 ——
+	# 撤销要把整条 stroke 一起还原（覆盖式写入只会还原最后一笔）。
+	INSTANCE_SCAN_SCRIPT.detach_into(
+		erased_batch,
+		matches
+	)
 
-	for child in stroke_container.get_children():
-		if not child is Node3D:
-			continue
+	return _erased_count()
 
-		var instance := child as Node3D
 
-		if not bool(
-			instance.get_meta(
-				INSTANCE_META,
-				false
-			)
-		):
-			continue
-
-		var distance_squared := (
-			_horizontal_distance_squared(
-				instance.global_position,
-				surface_position
-			)
-		)
-
-		if distance_squared > radius_squared:
-			continue
-
-		erased_instances.append(
-			instance
-		)
-
-		erased_transforms.append(
-			instance.global_transform
-		)
-
-		instance.owner = null
-
-		stroke_container.remove_child(
-			instance
-		)
-
-		erased_count += 1
-
-	return erased_count
+## 本次擦除已摘下的实例数（快照里的 instances 数组长度）。
+func _erased_count() -> int:
+	return INSTANCE_SCAN_SCRIPT.snapshot_count(
+		erased_batch
+	)
 
 
 # =========================================================
@@ -1622,6 +1730,8 @@ func _undo_paint_batch(
 	if not is_instance_valid(container):
 		return
 
+	# 注意：这里只**移除**实例、没有挂回动作，所以不需要挂起变体工具
+	# （挂起开关只包住"会 add_child 的"那两处：重做绘制、撤销擦除）。
 	for instance_value in instances:
 		if not instance_value is Node3D:
 			continue
@@ -1658,7 +1768,7 @@ func _undo_paint_batch(
 # =========================================================
 
 func _commit_erase_stroke() -> void:
-	if erased_instances.is_empty():
+	if _erased_count() <= 0:
 		return
 
 	if not is_instance_valid(
@@ -1672,11 +1782,19 @@ func _commit_erase_stroke() -> void:
 		return
 
 	var instances_snapshot: Array = (
-		erased_instances.duplicate()
+		erased_batch.get("instances", []).duplicate()
 	)
 
 	var transforms_snapshot: Array = (
-		erased_transforms.duplicate()
+		erased_batch.get("transforms", []).duplicate()
+	)
+
+	var parents_snapshot: Array = (
+		erased_batch.get("parents", []).duplicate()
+	)
+
+	var indices_snapshot: Array = (
+		erased_batch.get("indices", []).duplicate()
 	)
 
 	var saved_scene_root := stroke_scene_root
@@ -1694,7 +1812,6 @@ func _commit_erase_stroke() -> void:
 	undo_redo.add_do_method(
 		self,
 		&"_redo_erase_batch",
-		saved_container,
 		instances_snapshot
 	)
 
@@ -1704,7 +1821,9 @@ func _commit_erase_stroke() -> void:
 		saved_scene_root,
 		saved_container,
 		instances_snapshot,
-		transforms_snapshot
+		transforms_snapshot,
+		parents_snapshot,
+		indices_snapshot
 	)
 
 	for instance_value in instances_snapshot:
@@ -1728,37 +1847,27 @@ func _commit_erase_stroke() -> void:
 	)
 
 
+## 重做擦除：整批从**各自当前所在的父节点**上摘掉（撤销时已经挂回了原父节点/分组）。
+## 摘除细节在 world_brush_instance_scan.gd 的 detach_instances()，这里只管把快照递过去。
 func _redo_erase_batch(
-	container: Node3D,
 	instances: Array
 ) -> void:
-	if not is_instance_valid(container):
-		return
-
-	for instance_value in instances:
-		if not instance_value is Node3D:
-			continue
-
-		var instance := (
-			instance_value as Node3D
-		)
-
-		if not is_instance_valid(instance):
-			continue
-
-		if instance.get_parent() == container:
-			instance.owner = null
-
-			container.remove_child(
-				instance
-			)
+	INSTANCE_SCAN_SCRIPT.detach_instances(
+		instances
+	)
 
 
+## 撤销擦除：整批挂回快照记录的**原父节点与位次**（父节点可能是容器的子分组，不是容器
+## 本身），再恢复 owner 与全局变换。
+## 挂接细节（含"必须逆序挂回才能还原原顺序"）在 world_brush_instance_scan.gd 的
+## restore_instances()，这里只管把快照递过去、补一次 LOD 子层 owner。
 func _undo_erase_batch(
 	scene_root: Node3D,
 	container: Node3D,
 	instances: Array,
-	transforms: Array
+	transforms: Array,
+	parents: Array,
+	indices: Array
 ) -> void:
 	if not is_instance_valid(scene_root):
 		return
@@ -1774,44 +1883,29 @@ func _undo_erase_batch(
 
 		container.owner = scene_root
 
-	for index in range(
-		instances.size()
-	):
-		var instance_value: Variant = (
-			instances[index]
-		)
+	INSTANCE_SCAN_SCRIPT.restore_instances(
+		instances,
+		parents,
+		indices,
+		transforms,
+		container,
+		scene_root
+	)
+
+	# 距离 LOD 的分组节点，其子层（Near/Medium/Distant）也要跟着 owner 回场景；
+	# 非 LOD 实例在 _assign_lod_child_owners 里直接返回。
+	for instance_value in instances:
+		# 先 is_instance_valid 再 `is`：已释放实例上做类型判断会抛运行期错误。
+		if not is_instance_valid(instance_value):
+			continue
 
 		if not instance_value is Node3D:
 			continue
 
-		var instance := (
-			instance_value as Node3D
-		)
-
-		if not is_instance_valid(instance):
-			continue
-
-		if instance.get_parent() == null:
-			container.add_child(
-				instance,
-				true
-			)
-
-		instance.owner = scene_root
 		_assign_lod_child_owners(
-			instance,
+			instance_value as Node3D,
 			scene_root
 		)
-
-		if index < transforms.size():
-			var saved_transform: Variant = (
-				transforms[index]
-			)
-
-			if saved_transform is Transform3D:
-				instance.global_transform = (
-					saved_transform
-				)
 
 
 func _remove_empty_created_container() -> void:
@@ -2703,6 +2797,9 @@ func _is_slope_allowed(
 	)
 
 
+## 递归收集容器子树里所有实例的位置（判定与递归见 world_brush_instance_scan.gd）。
+## 为什么不能只看直接子节点：实例可能被归到一层普通 Node 分组下，只扫一层会让新刷的实例
+## 叠在已有实例上，minimum_spacing 形同虚设。
 func _get_existing_positions(
 	container: Node3D
 ) -> Array[Vector3]:
@@ -2714,11 +2811,10 @@ func _get_existing_positions(
 	if not container.is_inside_tree():
 		return positions
 
-	for child in container.get_children():
-		if child is Node3D:
-			positions.append(
-				(child as Node3D).global_position
-			)
+	INSTANCE_SCAN_SCRIPT.collect_existing_positions(
+		container,
+		positions
+	)
 
 	return positions
 
@@ -2762,16 +2858,15 @@ func _has_required_spacing(
 	return true
 
 
+## 两个点的**水平**（XZ）距离平方；实现只有一份，在 world_brush_instance_scan.gd。
 func _horizontal_distance_squared(
 	first: Vector3,
 	second: Vector3
 ) -> float:
-	var difference := Vector2(
-		first.x - second.x,
-		first.z - second.z
+	return INSTANCE_SCAN_SCRIPT.horizontal_distance_squared(
+		first,
+		second
 	)
-
-	return difference.length_squared()
 
 
 # =========================================================
@@ -3095,6 +3190,7 @@ func _on_selected_scene_changed(
 		has_surface_hit = false
 		surface_type = ""
 
+		_refresh_stamp_scene_pool()
 		_hide_brush_preview()
 
 		print(
@@ -3103,9 +3199,46 @@ func _on_selected_scene_changed(
 
 		return
 
+	_refresh_stamp_scene_pool()
+
 	print(
 		"World Brush: Selected scene -> ",
-		selected_scene.resource_path
+		selected_scene.resource_path,
+		" | variants ",
+		selected_scene_pool.size()
+	)
+
+
+## 停靠面板每行的「变体…」改了池（传的是**除主场景外**的路径）。
+func _on_scene_variants_changed(
+	paths: Array
+) -> void:
+	selected_scene_pool = SCENE_POOL_SCRIPT.normalize_paths(
+		paths
+	)
+
+	_refresh_stamp_scene_pool()
+
+	print(
+		"World Brush: Variant pool -> ",
+		selected_scene_pool.size(),
+		" extra scene(s) | stamp pool ",
+		stamp_scene_pool.size()
+	)
+
+
+## 停靠面板每行的「Weights」改了权重（{场景路径: 正整数}）。
+## 插件只存不推断：权重怎么来、怎么调是面板的事。
+func _on_scene_weights_changed(
+	weights: Dictionary
+) -> void:
+	selected_scene_weights = weights.duplicate()
+
+	print(
+		"World Brush: Variant weights -> ",
+		selected_scene_weights.size(),
+		" entries | pool ",
+		stamp_scene_pool.size()
 	)
 
 
@@ -3328,11 +3461,13 @@ func _apply_auto_lod_settings_to_existing_instances() -> void:
 	var scene_root := get_editor_interface().get_edited_scene_root()
 	if scene_root == null:
 		return
+	# 命中"整池"而不是只认主场景：带随机变体的笔刷，池里每个变体的实例都该跟着更新
+	var pool_paths := _stamp_pool_paths()
 	var roots: Array[Node3D] = []
 	_collect_painted_instance_roots(scene_root, roots)
 	var updated := 0
 	for instance in roots:
-		if _get_painted_source_path(instance) != selected_scene.resource_path:
+		if not pool_paths.has(_get_painted_source_path(instance)):
 			continue
 		if _apply_auto_lod_to_instance(instance, scene_root):
 			updated += 1
@@ -3486,8 +3621,7 @@ func _apply_lod_settings_to_existing_groups() -> void:
 	if selected_scene == null:
 		return
 
-	var source_path := selected_scene.resource_path
-	if source_path.is_empty():
+	if selected_scene.resource_path.is_empty():
 		return
 
 	var scene_root := (
@@ -3524,7 +3658,7 @@ func _apply_lod_settings_to_existing_groups() -> void:
 			if near_level != null:
 				group_source_path = near_level.scene_file_path
 
-		if group_source_path != source_path:
+		if not _stamp_pool_paths().has(group_source_path):
 			continue
 
 		var settings_changed := (
@@ -3550,7 +3684,8 @@ func _apply_lod_settings_to_existing_groups() -> void:
 		if not settings_changed:
 			continue
 
-		lod_group.set_meta(&"lod_source_scene_path", source_path)
+		# 写回"这一组自己的来源场景路径"（可能是池里任意一个变体），别用主场景覆盖它
+		lod_group.set_meta(&"lod_source_scene_path", group_source_path)
 		lod_group.set_meta(&"lod_enabled", lod_enabled)
 		lod_group.set_meta(&"lod1_scene_path", lod1_path)
 		lod_group.set_meta(&"lod2_scene_path", lod2_path)
@@ -3626,3 +3761,4 @@ func _sync_existing_lod_level(
 	lod_group.add_child(replacement, true)
 	replacement.owner = scene_root
 	_disable_native_lod_ranges(replacement)
+

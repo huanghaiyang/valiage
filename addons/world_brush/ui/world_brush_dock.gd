@@ -1,6 +1,11 @@
 @tool
 extends VBoxContainer
 
+## 场景池纯逻辑（去重 / 有效池 / 权重取值）—— 与插件共用同一份，避免两处语义漂移。
+const SCENE_POOL_SCRIPT: Script = preload(
+	"res://addons/world_brush/world_brush_scene_pool.gd"
+)
+
 
 enum HeightOffsetMode {
 	WORLD_Y,
@@ -10,6 +15,14 @@ enum HeightOffsetMode {
 
 signal selected_scene_changed(scene: PackedScene)
 signal scene_palette_changed(scenes: Array)
+
+## 当前笔刷的"额外变体"变了（传的是**除主场景外**的场景路径）。
+## 插件收到后在落点时从「主场景 + 这些变体」里按权重随机挑一个 —— 这就是"多选 + 随机摆放"。
+signal scene_variants_changed(paths: Array)
+
+## 场景池的权重变了（{场景路径: 正整数}）。默认全 1 = 均匀随机；
+## 插件只按给定权重挑选，**不做任何按名字/内容的推断**（通用性要求）。
+signal scene_weights_changed(weights: Dictionary)
 
 signal brush_enabled_changed(enabled: bool)
 signal brush_radius_changed(radius: float)
@@ -82,6 +95,23 @@ const CONFIG_LOD_CULL_DISTANCE := "lod_cull_distance"
 const CONFIG_AUTO_LOD_ENABLED := "auto_lod_enabled"
 const CONFIG_AUTO_LOD_BIAS := "auto_lod_bias"
 const CONFIG_AUTO_LOD_CULL_DISTANCE := "auto_lod_cull_distance"
+
+## 某个"主场景"的额外变体路径（额外池；主场景本身不用写进来）。
+## 存在每个场景自己的 profile 里（scene_brush_settings/<主场景路径>），与笔刷参数一起持久化。
+const CONFIG_RANDOM_VARIANTS := "random_variants"
+
+## 池内每个场景的相对权重（{场景路径: 正整数}）。默认空 = 全部 1 = 均匀随机。
+## 只存使用者设过的项；插件不做任何推断。
+const CONFIG_RANDOM_VARIANT_WEIGHTS := "random_variant_weights"
+
+## 权重上限（SpinBox 范围；纯为 UI 输入安全，不影响挑选逻辑）
+const VARIANT_WEIGHT_MIN := 1
+const VARIANT_WEIGHT_MAX := 999
+
+## 旧变体工具（addons/variant_tools，已删）把每个来源场景的变体表存在项目设置里。
+## 首次加载时把它迁移进各自的 profile，用户原来那套草地变体配置不用重选。
+## 迁移源里"来源场景自己"也会出现，要剔掉（主场景由行里的 picker 决定）。
+const LEGACY_VARIANT_SETS_SETTING := "variant_tools/sets"
 
 const INTERFACE_SECTION := "interface"
 const CONFIG_INTERFACE_LANGUAGE := "language"
@@ -165,6 +195,14 @@ var scene_rows: Array[Dictionary] = []
 
 var active_picker: EditorResourcePicker
 var selected_scene: PackedScene
+
+## 当前激活场景的"额外变体"路径（不含主场景）。行里的「变体…」按钮改它，
+## 它参与落点随机、也随场景 profile 一起存/取。
+var selected_scene_variants: Array[String] = []
+
+## 当前场景池的权重（{场景路径: 正整数}）；空 = 全部 1 = 均匀随机。
+## 只保存使用者设过的项 —— 插件侧不做任何按名字/内容的推断。
+var selected_scene_weights: Dictionary = {}
 
 
 var brush_enabled: bool = false
@@ -637,6 +675,36 @@ func _tr(
 			"remove_scene_tooltip":
 				return "حذف المشهد من المكتبة."
 
+			"variants_short":
+				return "الأنواع"
+
+			"variants_short_count":
+				return "الأنواع %d"
+
+			"variants_tooltip":
+				return "اختر مشاهد .tscn إضافية لهذه الفرشاة. كل ضربة تختار واحدًا عشوائيًا (بحسب وزن اسم الملف) من المشهد النشط + هذه القائمة. اختيار المشهد النشط فقط يفرّغ القائمة."
+
+			"variants_dialog_title":
+				return "اختر مشاهد الأنواع لهذه الفرشاة (اختيار متعدد)"
+
+			"variants_dialog_filter":
+				return "مشهد"
+
+			"weights_short":
+				return "الأوزان"
+
+			"weights_short_count":
+				return "الأوزان %d"
+
+			"weights_tooltip":
+				return "حدّد الوزن النسبي لكل مشهد في مجموعة هذه الفرشاة (1 = فرصة متساوية). الأوزان بياناتك أنت — لا يُستنتج شيء من أسماء الملفات."
+
+			"weights_dialog_title":
+				return "أوزان مجموعة المشاهد (1 = فرصة متساوية)"
+
+			"weights_dialog_apply":
+				return "تطبيق"
+
 			"enable_brush":
 				return "تفعيل الفرشاة"
 
@@ -772,6 +840,36 @@ func _tr(
 
 		"remove_scene_tooltip":
 			return "Remove Scene"
+
+		"variants_short":
+			return "Variants"
+
+		"variants_short_count":
+			return "Variants %d"
+
+		"variants_tooltip":
+			return "Pick extra .tscn for this brush. Each stamp picks one at random (weighted by file name) from the active scene + this list. Picking only the active scene clears it."
+
+		"variants_dialog_title":
+			return "Pick variant scenes for this brush (multi-select)"
+
+		"variants_dialog_filter":
+			return "Scene"
+
+		"weights_short":
+			return "Weights"
+
+		"weights_short_count":
+			return "Weights %d"
+
+		"weights_tooltip":
+			return "Set the relative weight of each scene in this brush's pool (1 = equal chance). Weights are your data — nothing is guessed from file names."
+
+		"weights_dialog_title":
+			return "Scene pool weights (1 = equal chance)"
+
+		"weights_dialog_apply":
+			return "Apply"
 
 		"enable_brush":
 			return "Enable Brush"
@@ -1532,8 +1630,36 @@ func _add_scene_row(
 		0.0
 	)
 
+	# 「变体…」：给这一行（= 这个笔刷）挂一组额外 .tscn，落点时从「主场景 + 这组」里随机挑。
+	# 只选主场景自己 / 取消 → 池里只剩主场景 → 退化成普通单场景笔刷。
+	var variants_button := Button.new()
+	variants_button.name = "SceneVariantsButton"
+
+	variants_button.custom_minimum_size = Vector2(
+		58.0,
+		0.0
+	)
+
+	# 「权重」：给池内每个场景设相对权重（缺省全 1 = 均匀随机）。
+	# 权重完全是使用者的数据 —— 插件不按文件名/内容推断任何东西。
+	var weights_button := Button.new()
+	weights_button.name = "SceneWeightsButton"
+
+	weights_button.custom_minimum_size = Vector2(
+		54.0,
+		0.0
+	)
+
 	row.add_child(
 		picker
+	)
+
+	row.add_child(
+		variants_button
+	)
+
+	row.add_child(
+		weights_button
 	)
 
 	row.add_child(
@@ -1554,6 +1680,8 @@ func _add_scene_row(
 			"picker": picker,
 			"select_button": select_button,
 			"remove_button": remove_button,
+			"variants_button": variants_button,
+			"weights_button": weights_button,
 		}
 	)
 
@@ -1571,6 +1699,18 @@ func _add_scene_row(
 
 	remove_button.pressed.connect(
 		_on_remove_scene_pressed.bind(
+			picker
+		)
+	)
+
+	variants_button.pressed.connect(
+		_on_scene_variants_pressed.bind(
+			picker
+		)
+	)
+
+	weights_button.pressed.connect(
+		_on_scene_weights_pressed.bind(
 			picker
 		)
 	)
@@ -1635,6 +1775,320 @@ func _on_scene_resource_changed(
 	_emit_active_scene_changed()
 	_emit_all_brush_settings_changed()
 	_save_configuration()
+
+
+## 行里的「变体…」：弹**多选**文件对话框挑一组 .tscn，作为这个笔刷的额外变体池。
+## 记进当前场景的 profile → 随配置持久化；确定后立刻通知插件重建落点池。
+func _on_scene_variants_pressed(
+	picker: EditorResourcePicker
+) -> void:
+	if not is_instance_valid(picker):
+		return
+
+	var packed_scene := picker.edited_resource as PackedScene
+
+	if packed_scene == null:
+		_set_status(
+			"Choose A Scene In This Slot"
+		)
+
+		return
+
+	# 只对"当前激活的笔刷"改池（避免改错了行还不知道）
+	if picker != active_picker:
+		_set_active_picker(picker)
+
+	var dialog := EditorFileDialog.new()
+	dialog.access = EditorFileDialog.ACCESS_RESOURCES
+	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILES
+	dialog.title = _tr("variants_dialog_title")
+	dialog.add_filter("*.tscn", _tr("variants_dialog_filter"))
+
+	if not packed_scene.resource_path.is_empty():
+		dialog.current_dir = packed_scene.resource_path.get_base_dir()
+
+	if dialog.has_signal("files_selected"):
+		dialog.files_selected.connect(
+			_on_scene_variants_selected.bind(dialog)
+		)
+	else:
+		dialog.file_selected.connect(
+			_on_scene_variants_selected_one.bind(dialog)
+		)
+		dialog.multi_selected.connect(
+			_on_scene_variants_selected_multi.bind(dialog)
+		)
+
+	# 关掉对话框就释放（旧变体工具踩过：不释放会留一堆游离 Window）
+	dialog.canceled.connect(dialog.queue_free)
+	dialog.close_requested.connect(dialog.queue_free)
+
+	var base_control := EditorInterface.get_base_control()
+
+	if base_control == null:
+		dialog.free()
+		_set_status("Editor UI Not Available")
+		return
+
+	base_control.add_child(dialog)
+	dialog.popup_centered_ratio(0.6)
+
+
+func _on_scene_variants_selected(
+	files: PackedStringArray,
+	dialog: EditorFileDialog
+) -> void:
+	if is_instance_valid(dialog):
+		dialog.queue_free()
+
+	_apply_scene_variants(
+		_to_string_array(files)
+	)
+
+
+func _on_scene_variants_selected_one(
+	path: String,
+	dialog: EditorFileDialog
+) -> void:
+	if is_instance_valid(dialog):
+		dialog.queue_free()
+
+	_apply_scene_variants(
+		[path]
+	)
+
+
+func _on_scene_variants_selected_multi(
+	_path: String,
+	files: PackedStringArray,
+	dialog: EditorFileDialog
+) -> void:
+	if is_instance_valid(dialog):
+		dialog.queue_free()
+
+	_apply_scene_variants(
+		_to_string_array(files)
+	)
+
+
+func _to_string_array(
+	values: PackedStringArray
+) -> Array:
+	var out: Array = []
+
+	for value in values:
+		out.append(String(value))
+
+	return out
+
+
+## 落地一组变体路径：剔掉主场景自己（主场景由 picker 决定）、去重、写进当前 profile、通知插件。
+## 只选主场景 / 什么都不选 = 池里只剩主场景 → 这个笔刷不随机。
+func _apply_scene_variants(
+	paths: Array
+) -> void:
+	var primary_path := ""
+
+	if selected_scene != null:
+		primary_path = selected_scene.resource_path
+
+	var extras: Array[String] = []
+
+	for value in paths:
+		var path := String(value).strip_edges()
+
+		if path.is_empty() or path == primary_path or extras.has(path):
+			continue
+
+		extras.append(path)
+
+	selected_scene_variants = extras
+
+	# 池变了就把不在池里的权重条目丢掉（保持配置干净；池内缺失项按默认 1 处理）
+	_prune_scene_weights()
+
+	if not is_loading_configuration:
+		_store_current_scene_settings()
+
+	_update_scene_interface()
+	_emit_scene_variants_changed()
+	_emit_scene_weights_changed()
+
+	if extras.is_empty():
+		_set_status(
+			"Variants Cleared — Single Scene Brush"
+		)
+	else:
+		_set_status(
+			"Variants: %d (+ active scene) — Random Placement"
+			% extras.size()
+		)
+
+	_save_configuration()
+
+
+## 只保留"当前池里还有的场景"的权重条目。
+func _prune_scene_weights() -> void:
+	var pool := _get_active_pool_paths()
+	var kept: Dictionary = {}
+
+	for path in selected_scene_weights:
+		if pool.has(String(path)):
+			kept[String(path)] = int(selected_scene_weights[path])
+
+	selected_scene_weights = kept
+
+
+func _emit_scene_variants_changed() -> void:
+	scene_variants_changed.emit(
+		selected_scene_variants.duplicate()
+	)
+
+
+func _emit_scene_weights_changed() -> void:
+	scene_weights_changed.emit(
+		selected_scene_weights.duplicate()
+	)
+
+
+## 当前激活笔刷的有效池（主场景 + 额外变体，路径形态）。
+func _get_active_pool_paths() -> Array[String]:
+	var primary := ""
+
+	if selected_scene != null:
+		primary = selected_scene.resource_path
+
+	return SCENE_POOL_SCRIPT.pool_paths(
+		primary,
+		selected_scene_variants
+	)
+
+
+## 行里的「权重」：给池内每个场景设相对权重（缺省 1 = 均匀随机）。
+## 完全是使用者的数据 —— 不预设任何按名字/内容的规则。
+func _on_scene_weights_pressed(
+	picker: EditorResourcePicker
+) -> void:
+	if not is_instance_valid(picker):
+		return
+
+	var packed_scene := picker.edited_resource as PackedScene
+
+	if packed_scene == null:
+		_set_status(
+			"Choose A Scene In This Slot"
+		)
+
+		return
+
+	if picker != active_picker:
+		_set_active_picker(picker)
+
+	var pool := _get_active_pool_paths()
+
+	if pool.size() < 2:
+		_set_status(
+			"Add Variants First — Weights Need Two Or More Scenes"
+		)
+
+		return
+
+	var dialog := AcceptDialog.new()
+	dialog.title = _tr("weights_dialog_title")
+	dialog.ok_button_text = _tr("weights_dialog_apply")
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2i(420, 220)
+	scroll.horizontal_scroll_mode = (
+		ScrollContainer.SCROLL_MODE_DISABLED
+	)
+
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(box)
+
+	var spins: Dictionary = {}
+
+	for path in pool:
+		var row := HBoxContainer.new()
+
+		var label := Label.new()
+		label.text = String(path).get_file()
+		label.tooltip_text = String(path)
+		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var spin := SpinBox.new()
+		spin.min_value = VARIANT_WEIGHT_MIN
+		spin.max_value = VARIANT_WEIGHT_MAX
+		spin.step = 1
+		spin.value = SCENE_POOL_SCRIPT.weight_at(
+			selected_scene_weights,
+			String(path)
+		)
+
+		row.add_child(label)
+		row.add_child(spin)
+		box.add_child(row)
+
+		spins[String(path)] = spin
+
+	dialog.add_child(scroll)
+	dialog.confirmed.connect(
+		_on_scene_weights_confirmed.bind(
+			spins,
+			dialog
+		)
+	)
+	dialog.canceled.connect(dialog.queue_free)
+	dialog.close_requested.connect(dialog.queue_free)
+
+	var base_control := EditorInterface.get_base_control()
+
+	if base_control == null:
+		dialog.free()
+		_set_status("Editor UI Not Available")
+
+		return
+
+	base_control.add_child(dialog)
+	dialog.popup_centered(Vector2i(460, 320))
+
+
+func _on_scene_weights_confirmed(
+	spins: Dictionary,
+	dialog: AcceptDialog
+) -> void:
+	var weights: Dictionary = {}
+
+	for path in spins:
+		var spin := spins[path] as SpinBox
+
+		if not is_instance_valid(spin):
+			continue
+
+		var value := int(spin.value)
+
+		# 1 = 默认值，不必存（保持配置里只有"改过的项"）
+		if value > 1:
+			weights[String(path)] = value
+
+	selected_scene_weights = weights
+
+	if not is_loading_configuration:
+		_store_current_scene_settings()
+
+	_update_scene_interface()
+	_emit_scene_weights_changed()
+
+	_set_status(
+		"Variant Weights Updated — %d Entrie(s)"
+		% weights.size()
+	)
+
+	_save_configuration()
+
+	if is_instance_valid(dialog):
+		dialog.queue_free()
 
 
 func _on_select_scene_pressed(
@@ -2107,6 +2561,83 @@ func _save_configuration() -> void:
 		)
 
 
+## 从旧变体工具（addons/variant_tools，已删）的项目设置里把变体表搬进场景 profile。
+## 只在 profile 里还没有 random_variants 时才搬（不会覆盖用户新选的池）；
+## 旧配置里"来源场景自己"会被剔掉（主场景由每行的 picker 决定）。
+## 迁移源：ProjectSettings 的 "variant_tools/sets" = { 来源场景: {"on": bool, "variants": [...]} }
+func _import_legacy_variant_sets() -> int:
+	if not ProjectSettings.has_setting(LEGACY_VARIANT_SETS_SETTING):
+		return 0
+
+	var legacy: Variant = ProjectSettings.get_setting(
+		LEGACY_VARIANT_SETS_SETTING
+	)
+
+	if typeof(legacy) != TYPE_DICTIONARY:
+		return 0
+
+	var imported := 0
+
+	for stored_source in (legacy as Dictionary):
+		var source_path := str(stored_source)
+		var entry: Variant = (legacy as Dictionary)[stored_source]
+
+		if source_path.is_empty() or typeof(entry) != TYPE_DICTIONARY:
+			continue
+
+		var variants: Variant = (entry as Dictionary).get(
+			"variants",
+			[]
+		)
+
+		if typeof(variants) != TYPE_ARRAY:
+			continue
+
+		var extras: Array = []
+
+		for value in (variants as Array):
+			var path := String(value)
+
+			if path.is_empty() or path == source_path:
+				continue
+
+			if not extras.has(path):
+				extras.append(path)
+
+		if extras.size() < 1:
+			continue
+
+		var profile: Variant = scene_brush_settings.get(
+			source_path,
+			null
+		)
+
+		if typeof(profile) == TYPE_DICTIONARY and (
+			profile as Dictionary
+		).has(CONFIG_RANDOM_VARIANTS):
+			continue
+
+		var next_profile: Dictionary = {}
+
+		if typeof(profile) == TYPE_DICTIONARY:
+			next_profile = (profile as Dictionary).duplicate(true)
+		else:
+			next_profile = _create_default_scene_settings()
+
+		next_profile[CONFIG_RANDOM_VARIANTS] = extras
+		scene_brush_settings[source_path] = next_profile
+		imported += 1
+
+	if imported > 0:
+		print(
+			"World Brush: Imported legacy variant sets -> ",
+			imported,
+			" scene profile(s)"
+		)
+
+	return imported
+
+
 func _load_saved_configuration() -> void:
 	is_loading_configuration = true
 
@@ -2117,12 +2648,21 @@ func _load_saved_configuration() -> void:
 	)
 
 	if load_error != OK:
+		# ★ 第一次运行（还没有 user://world_brush_palette.cfg）也要迁移旧变体表 ——
+		#   那正是最需要迁移的一次（早期版本会把迁移放在读取成功之后，等于永远不生效）
+		var imported := _import_legacy_variant_sets()
+
 		_add_scene_row(
 			null,
 			false
 		)
 
 		is_loading_configuration = false
+
+		# 迁移结果立刻落盘：否则要等用户下一次改设置才会保存
+		if imported > 0:
+			_save_configuration()
+
 		return
 
 	_load_interface_settings(
@@ -2136,6 +2676,9 @@ func _load_saved_configuration() -> void:
 	_load_scene_brush_settings(
 		config
 	)
+
+	# 首次升级：把旧变体工具的变体表搬进各自的场景 profile（只搬没搬过的）
+	var imported := _import_legacy_variant_sets()
 
 	var stored_paths: Variant = config.get_value(
 		PALETTE_SECTION,
@@ -2220,6 +2763,10 @@ func _load_saved_configuration() -> void:
 	)
 
 	is_loading_configuration = false
+
+	# 迁移结果立刻落盘（只扫到旧表时才写一次）
+	if imported > 0:
+		_save_configuration()
 
 
 func _load_interface_settings(
@@ -2509,6 +3056,123 @@ func _get_active_scene_settings_key() -> String:
 	return selected_scene.resource_path
 
 
+## 某一行（某个来源场景）的权重表：激活行读当前值，其它行读它自己的 profile。
+func _get_weights_for_picker(
+	picker: EditorResourcePicker
+) -> Dictionary:
+	var out: Dictionary = {}
+
+	if not is_instance_valid(picker):
+		return out
+
+	var packed_scene := (
+		picker.edited_resource
+		as PackedScene
+	)
+
+	if packed_scene == null or packed_scene.resource_path.is_empty():
+		return out
+
+	if picker == active_picker:
+		return selected_scene_weights.duplicate()
+
+	var stored_profile: Variant = scene_brush_settings.get(
+		packed_scene.resource_path,
+		{}
+	)
+
+	if typeof(stored_profile) != TYPE_DICTIONARY:
+		return out
+
+	var stored_weights: Variant = (stored_profile as Dictionary).get(
+		CONFIG_RANDOM_VARIANT_WEIGHTS,
+		{}
+	)
+
+	if typeof(stored_weights) != TYPE_DICTIONARY:
+		return out
+
+	for path in (stored_weights as Dictionary):
+		out[String(path)] = SCENE_POOL_SCRIPT.weight_at(
+			stored_weights as Dictionary,
+			String(path)
+		)
+
+	return out
+
+
+## 从 profile 里读权重：只保留池内、且 >1 的项（1 = 默认，不必存）。
+func _sanitize_scene_weights(
+	raw_weights: Variant,
+	pool: Array[String]
+) -> Dictionary:
+	var out: Dictionary = {}
+
+	if typeof(raw_weights) != TYPE_DICTIONARY:
+		return out
+
+	for path in (raw_weights as Dictionary):
+		var key := String(path)
+
+		if not pool.has(key):
+			continue
+
+		# 显式标类型：SCENE_POOL_SCRIPT 是 Script，静态调用返回 Variant
+		var value: int = SCENE_POOL_SCRIPT.weight_at(
+			raw_weights as Dictionary,
+			key
+		)
+
+		if value > 1:
+			out[key] = value
+
+	return out
+
+
+## 某一行（某个来源场景）的额外变体路径。
+## 激活行直接读当前值；其它行读它自己的 profile（切过去时会应用）。
+func _get_variants_for_picker(
+	picker: EditorResourcePicker
+) -> Array[String]:
+	var out: Array[String] = []
+
+	if not is_instance_valid(picker):
+		return out
+
+	var packed_scene := (
+		picker.edited_resource
+		as PackedScene
+	)
+
+	if packed_scene == null or packed_scene.resource_path.is_empty():
+		return out
+
+	if picker == active_picker:
+		return selected_scene_variants
+
+	var stored_profile: Variant = scene_brush_settings.get(
+		packed_scene.resource_path,
+		{}
+	)
+
+	if typeof(stored_profile) != TYPE_DICTIONARY:
+		return out
+
+	for value in (stored_profile as Dictionary).get(
+		CONFIG_RANDOM_VARIANTS,
+		[]
+	):
+		var path := String(value)
+
+		if path.is_empty() or path == packed_scene.resource_path:
+			continue
+
+		if not out.has(path):
+			out.append(path)
+
+	return out
+
+
 func _capture_current_brush_settings() -> Dictionary:
 	return {
 		CONFIG_BRUSH_RADIUS:
@@ -2570,6 +3234,14 @@ func _capture_current_brush_settings() -> Dictionary:
 
 		CONFIG_AUTO_LOD_CULL_DISTANCE:
 			auto_lod_cull_distance,
+
+		# 额外变体池（除主场景外）—— 与笔刷参数一起按"来源场景"持久化
+		CONFIG_RANDOM_VARIANTS:
+			selected_scene_variants.duplicate(),
+
+		# 池内权重（只存改过的项；缺省 = 1 = 均匀随机）
+		CONFIG_RANDOM_VARIANT_WEIGHTS:
+			selected_scene_weights.duplicate(),
 	}
 
 
@@ -2596,6 +3268,8 @@ func _create_default_scene_settings() -> Dictionary:
 		CONFIG_AUTO_LOD_ENABLED: false,
 		CONFIG_AUTO_LOD_BIAS: 1.0,
 		CONFIG_AUTO_LOD_CULL_DISTANCE: 0.0,
+		CONFIG_RANDOM_VARIANTS: [],
+		CONFIG_RANDOM_VARIANT_WEIGHTS: {},
 	}
 
 
@@ -2779,6 +3453,37 @@ func _apply_brush_settings_profile(
 		0.01
 	)
 
+	# 额外变体池：剔掉主场景自己、去重；随后立刻通知插件重建落点池
+	var primary_path := ""
+
+	if selected_scene != null:
+		primary_path = selected_scene.resource_path
+
+	var variants: Array[String] = []
+
+	for value in profile.get(
+		CONFIG_RANDOM_VARIANTS,
+		[]
+	):
+		var path := String(value)
+
+		if path.is_empty() or path == primary_path:
+			continue
+
+		if not variants.has(path):
+			variants.append(path)
+
+	selected_scene_variants = variants
+
+	# 权重：只保留池内、>1 的项（1 = 默认 = 均匀随机）
+	selected_scene_weights = _sanitize_scene_weights(
+		profile.get(CONFIG_RANDOM_VARIANT_WEIGHTS, {}),
+		SCENE_POOL_SCRIPT.pool_paths(
+			primary_path,
+			selected_scene_variants
+		)
+	)
+
 	lod_enabled = bool(
 		profile.get(
 			CONFIG_LOD_ENABLED,
@@ -2854,6 +3559,10 @@ func _apply_brush_settings_profile(
 	_update_controls()
 
 	is_applying_scene_settings = false
+
+	# ★ 池/权重变了就通知插件（它据此重建落点池）：切场景 / 载入 profile / 改池都会走到这里
+	_emit_scene_variants_changed()
+	_emit_scene_weights_changed()
 
 
 func _emit_all_brush_settings_changed() -> void:
@@ -3096,6 +3805,65 @@ func _update_scene_interface() -> void:
 			remove_button.tooltip_text = _tr(
 				"remove_scene_tooltip"
 			)
+
+		var variants_button := (
+			entry.get(
+				"variants_button"
+			)
+			as Button
+		)
+
+		if is_instance_valid(variants_button):
+			variants_button.disabled = not has_scene
+			variants_button.tooltip_text = _tr(
+				"variants_tooltip"
+			)
+
+			var variant_count := (
+				_get_variants_for_picker(
+					picker
+				).size()
+			)
+
+			if variant_count > 0:
+				variants_button.text = (
+					_tr("variants_short_count")
+					% (variant_count + 1)
+				)
+			else:
+				variants_button.text = _tr(
+					"variants_short"
+				)
+
+		var weights_button := (
+			entry.get(
+				"weights_button"
+			)
+			as Button
+		)
+
+		if is_instance_valid(weights_button):
+			var row_weights := _get_weights_for_picker(picker)
+
+			# 池里少于 2 个场景就谈不上"比重"
+			weights_button.disabled = (
+				not has_scene
+				or _get_variants_for_picker(picker).is_empty()
+			)
+
+			weights_button.tooltip_text = _tr(
+				"weights_tooltip"
+			)
+
+			if row_weights.size() > 0:
+				weights_button.text = (
+					_tr("weights_short_count")
+					% row_weights.size()
+				)
+			else:
+				weights_button.text = _tr(
+					"weights_short"
+				)
 
 	if is_instance_valid(
 		previous_scene_button
