@@ -1062,7 +1062,8 @@ func _write_ours(dir2: Vector2, strength: float, gust: float, turb: float, speed
 ##   另外 debug_log 打开且确实在移动时，每秒最多 print 一条诊断。
 ## 注意：4 个项目设置查询被特意提到循环**外面**（原来每个材质每帧查 4 次）；
 ##       以后加新参数请保持「循环外取、循环内写」的写法。
-func _write_sgt(dir2: Vector2, strength: float, gust: float, turb: float, ppos: Vector3, pmov: Vector3) -> void:
+func _write_sgt(dir2: Vector2, strength: float, gust: float, turb: float,
+		_ppos: Vector3, _pmov: Vector3) -> void:
 	if _mats_sgt.is_empty():
 		return
 	var dir3 := Vector3(dir2.x, 0.0, dir2.y).normalized()

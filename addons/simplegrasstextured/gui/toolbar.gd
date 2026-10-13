@@ -26,6 +26,9 @@ extends Control
 
 ## ★ 本项目改动：内置草叶面数（1~6）切换信号
 signal planes_changed(planes: int)
+## ★ 本项目改动：V 字张开开关 / 张开量
+signal v_fold_changed(enabled: bool)
+signal v_spread_changed(spread: float)
 
 enum MENU_SHAPE_ID {
 	TOOL_SHAPE_SPHERE,
@@ -63,6 +66,10 @@ var _grass_selected = null
 @onready var label_stats :Label = $LabelStats
 ## ★ 本项目改动：面数选择控件
 @onready var option_planes :OptionButton = %OptionPlanes
+## ★ 本项目改动：V 字张开控件（**代码创建**，不改 toolbar.tscn —— 手写 unique_id 容易让 % 查找失效）
+var check_v_fold :CheckBox = null
+var edit_v_spread :EditorSpinSlider = null
+var _v_cont :HBoxContainer = null
 
 @onready var _label_radius :Label = $HSliderRadius/Label
 @onready var _label_density :Label = $HSliderDensity/Label
@@ -92,6 +99,8 @@ func _ready() -> void:
 		option_planes.select(option_planes.get_item_index(2))
 		if not option_planes.item_selected.is_connected(_on_option_planes_item_selected):
 			option_planes.item_selected.connect(_on_option_planes_item_selected)
+	# ★ 本项目改动：V 字张开控件（开关 + 张开量），紧跟在"面数"后面
+	_build_v_controls()
 
 
 func _unhandled_input(event :InputEvent) -> void:
@@ -157,6 +166,17 @@ func set_current_grass(grass) -> void:
 			idx = option_planes.get_item_index(int(round(float(planes))))
 		if idx >= 0:
 			option_planes.select(idx)
+	# ★ 本项目改动：同步 V 字开关 / 张开量（类型安全：读不到或类型不对就保持当前值）
+	#   set_pressed_no_signal / set_value_no_signal：同步时**不能**触发信号，
+	#   否则会把工具栏的初始值反向写回刚选中的草节点。
+	if check_v_fold != null:
+		var fold: Variant = _grass_selected.get("v_fold")
+		if fold is bool:
+			check_v_fold.set_pressed_no_signal(fold)
+	if edit_v_spread != null:
+		var spread: Variant = _grass_selected.get("v_spread")
+		if spread is float or spread is int:
+			edit_v_spread.set_value_no_signal(float(spread))
 	for tool_name in _grass_selected.sgt_tool_shape:
 		match tool_name:
 			"airbrush":
@@ -170,6 +190,40 @@ func set_current_grass(grass) -> void:
 func set_density_modulate(color: Color) -> void:
 	%IconDensity.self_modulate = color
 	slider_density.modulate = color
+
+
+## ★ 本项目改动：V 字张开控件。
+##   全部**代码创建**，不手写 toolbar.tscn：那需要编 unique_id，写错会让 `%名字` 查找失效。
+##   位置紧跟"面数"（PlaneCont）之后。
+func _build_v_controls() -> void:
+	if _v_cont != null:
+		return
+	_v_cont = HBoxContainer.new()
+	_v_cont.name = "VCont"
+	_v_cont.tooltip_text = "V 字张开：每面两片从底部向两侧张开，让草从正上方看也有体积（不再是纸片）"
+	check_v_fold = CheckBox.new()
+	check_v_fold.name = "CheckVFold"
+	check_v_fold.tooltip_text = "开启 V 字张开（关掉 = 原来的单片竖直卡）"
+	check_v_fold.button_pressed = true
+	_v_cont.add_child(check_v_fold)
+	edit_v_spread = _create_slider("", 0.0, 1.5, 0.05, 0.45)
+	edit_v_spread.tooltip_text = "顶部水平张开量（米）：0 = 平卡；0.4~0.6 较自然"
+	_v_cont.add_child(edit_v_spread)
+	add_child(_v_cont)
+	# 插到"面数"后面（PlaneCont 是直接子节点）
+	var plane_cont := get_node_or_null("PlaneCont")
+	if plane_cont != null:
+		move_child(_v_cont, plane_cont.get_index() + 1)
+	check_v_fold.toggled.connect(_on_check_v_fold_toggled)
+	edit_v_spread.value_changed.connect(_on_edit_v_spread_value_changed)
+
+
+func _on_check_v_fold_toggled(enabled :bool) -> void:
+	v_fold_changed.emit(enabled)
+
+
+func _on_edit_v_spread_value_changed(value :float) -> void:
+	v_spread_changed.emit(value)
 
 
 func _create_slider(label :String, min_value :float, max_value :float, step :float, value :float = 0.0) -> EditorSpinSlider:

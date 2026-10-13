@@ -79,6 +79,9 @@ var _edit_rotation := 0.0
 var _edit_rotation_rand := 1.0
 ## ★ 本项目改动：内置草叶面数（1~6），与草节点的 mesh_planes 同步
 var _edit_planes := 2
+## ★ 本项目改动：V 字张开（开关 / 顶部水平张开量），与草节点的 v_fold / v_spread 同步
+var _edit_v_fold := true
+var _edit_v_spread := 0.45
 var _edit_tool: TOOL = TOOL.AIRBRUSH : set = _on_set_tool
 var _gui_toolbar = null
 var _gui_toolbar_up = null
@@ -262,6 +265,9 @@ func _enter_tree() -> void:
 	_gui_toolbar.edit_distance.value_changed.connect(_on_edit_distance_value_changed)
 	# ★ 本项目改动：内置草叶面数（1~6）
 	_gui_toolbar.planes_changed.connect(_on_planes_changed)
+	# ★ 本项目改动：V 字张开开关 / 张开量
+	_gui_toolbar.v_fold_changed.connect(_on_v_fold_changed)
+	_gui_toolbar.v_spread_changed.connect(_on_v_spread_changed)
 	_edit_tool = TOOL.AIRBRUSH
 
 
@@ -1203,6 +1209,21 @@ func _on_planes_changed(value : int) -> void:
 		_grass_selected.mesh_planes = _edit_planes
 		if _gui_grass_list != null:
 			_gui_grass_list.refresh_later()
+
+
+## ★ 本项目改动：V 字张开开关。
+##   写入节点即触发 grass.gd 的 setter -> 重建网格并套到现有 MultiMesh 上。
+func _on_v_fold_changed(enabled : bool) -> void:
+	_edit_v_fold = enabled
+	if _grass_selected != null:
+		_grass_selected.v_fold = enabled
+
+
+## ★ 本项目改动：V 字张开量（米）。
+func _on_v_spread_changed(spread : float) -> void:
+	_edit_v_spread = clampf(spread, 0.0, 2.0)
+	if _grass_selected != null:
+		_grass_selected.v_spread = _edit_v_spread
 
 
 func _on_set_tool(value : TOOL) -> void:

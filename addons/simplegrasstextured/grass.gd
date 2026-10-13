@@ -1,4 +1,4 @@
-# grass.gd
+﻿# grass.gd
 # This file is part of: SimpleGrassTextured
 # Copyright (c) 2023 IcterusGames
 #
@@ -35,6 +35,27 @@ extends MultiMeshInstance3D
 ##   面数越多，同一株草在各观察方向上的覆盖越均匀，但顶点/填充开销也越大。
 ##   ⚠ 提示串与标签都写在这里，Inspector 里才会显示中文（与工具栏下拉一致）。
 @export_enum("1 面", "2 面", "3 面", "4 面", "5 面", "6 面") var mesh_planes := 2 : set = _on_set_mesh_planes
+
+## ★★ 本项目改动：内置草叶的 **V 字张开**（解决"从顶部看还是纸片"）
+##
+## 【为什么平卡从上面看是纸片】
+##   原来的每面是**竖直平面**（平面里同时含 UP）。从正上方看时视线就是 -UP，
+##   而 -UP **躺在这个平面内** -> 正好侧对视线 -> 投影面积 = 0，只剩一条线。
+##
+## 【做法：每面变成两片、从底部向两侧张开成 V】
+##   两片都从同一个底边（nrm 偏移 0）出发，顶部沿 ±法线 各偏开 spread 米，
+##   于是每片的平面变成 span(right, UP ± spread·nrm) —— **不再包含 UP**，
+##   从上方投影就有面积了。两片从侧面看正好是一个 V。
+##
+## 【等价性】spread = 0（或关掉开关）时退化为原来的单片竖直卡，逐值一致。
+## 【代价】每面 2 片 -> 顶点/三角形翻倍（1~6 面对应 8~48 顶点）。
+##   ⚠ 名字**不带 `sgt_` 前缀**是故意的：插件在 _get_property_list() 里把所有 `sgt_`
+##     变量设成 PROPERTY_USAGE_NO_EDITOR，带前缀就会从 Inspector 里消失、没法调。
+##     与 `mesh_planes` 保持一致（它也是无前缀 + @export）。
+@export var v_fold := true : set = _on_set_v_fold
+## 顶部水平张开量（米）：0 = 原平卡；越大从上方看越"厚"，侧面越张开。
+##   0.4~0.6 比较自然（草高 1 米时约张开 22°~31°）。
+@export_range(0.0, 1.5, 0.05) var v_spread := 0.45 : set = _on_set_v_spread
 
 @export_category("Material settings")
 ## Color albedo for mesh material
@@ -224,11 +245,15 @@ func _ready():
 	if multimesh == null:
 		multimesh = _new_multimesh()
 		multimesh.transform_format = MultiMesh.TRANSFORM_3D
-	if multimesh.mesh == null:
-		if mesh != null:
+	if mesh != null:
+		# 用户自定义网格：尊重它（只在没网格时补上）
+		if multimesh.mesh == null:
 			multimesh.mesh = mesh
-		else:
-			multimesh.mesh = _default_mesh
+	elif _v_active() or multimesh.mesh == null:
+		# ★ 开 V 字时必须**强制同步**内置网格：
+		#   场景 / 外部 maps/*_grass.res 里存的是**旧网格（平卡）**，
+		#   只判 `multimesh.mesh == null` 的话永远不会覆盖 -> V 字不生效。
+		multimesh.mesh = _default_mesh
 	_update_material_shader()
 	
 	if Engine.is_editor_hint():
@@ -309,6 +334,8 @@ func _build_plane_mesh(planes: int) -> ArrayMesh:
 	var tangents := PackedFloat32Array()
 	var uv := PackedVector2Array()
 	var indices := PackedInt32Array()
+	var v_on := _v_active()
+	var spread := clampf(v_spread, 0.0, 2.0)
 	for k in range(planes):
 		# 面片 k：绕 Y 轴旋转 θk = 2π·k/planes（面片是"直线"，所以 2 面时就是十字）
 		# ⚠ Godot 的 Vector3.cross() 是**左手系**：UP.cross((1,0,0)) == (0,0,-1)，
@@ -318,19 +345,18 @@ func _build_plane_mesh(planes: int) -> ArrayMesh:
 		var ang := TAU * float(k) / float(planes)
 		var right := Vector3(cos(ang), 0.0, -sin(ang))    # 面片被旋转后的"右"
 		var nrm := right.cross(Vector3.UP)                # 面片正面法线
-		var base := verts.size()
-		# 4 个顶点，UV 与默认网格保持一致（0,0)/(1,1)/(0,1)/(1,0)
-		verts.append(-right * 0.5 + Vector3.UP)   # 0 左上
-		verts.append( right * 0.5)                # 1 右下
-		verts.append(-right * 0.5)                # 2 左下
-		verts.append( right * 0.5 + Vector3.UP)   # 3 右上
-		normals.append(nrm); normals.append(nrm); normals.append(nrm); normals.append(nrm)
-		for _i in range(4):
-			tangents.append(right.x); tangents.append(right.y); tangents.append(right.z); tangents.append(1.0)
-		uv.append(Vector2(0, 0)); uv.append(Vector2(1, 1)); uv.append(Vector2(0, 1)); uv.append(Vector2(1, 0))
-		# 与默认网格相同的两个三角形绕序
-		indices.append(base + 0); indices.append(base + 1); indices.append(base + 2)
-		indices.append(base + 3); indices.append(base + 1); indices.append(base + 0)
+		if not v_on:
+			# ── 原行为：单片竖直卡（spread=0 时与下面 V 路径逐值一致）
+			_add_card(verts, normals, tangents, uv, indices,
+					right, nrm, Vector3.ZERO)
+		else:
+			# ── V 字：两片从同一底边向 ±法线 张开
+			#   片 A 顶部偏向 +nrm，片 B 偏向 -nrm；两片在底部重合 -> 侧看是个 V
+			#   法线取**朝外**那一侧（远离另一片），否则张开后两片一侧会变暗
+			_add_card(verts, normals, tangents, uv, indices,
+					right, nrm, nrm * spread)
+			_add_card(verts, normals, tangents, uv, indices,
+					right, nrm, -nrm * spread)
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
@@ -341,6 +367,48 @@ func _build_plane_mesh(planes: int) -> ArrayMesh:
 	var m := ArrayMesh.new()
 	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return m
+
+
+## ★ 往数组里追加"一片卡"。
+##   top_shift：顶部相对底部的水平偏移（米）。0 = 竖直片（原行为）；
+##              ±nrm*spread = 向该侧张开的一片。
+##   顶点顺序 / UV / 绕序都沿用插件自带网格的约定（默认网格逐值一致）。
+##
+##   高度恒为 1.0：顶点的 y 只取 0 与 1（top_shift 是**水平**偏移，不含 y 分量）。
+##   这点很重要 —— 高度闸门 / 脚底圈都依赖 get_aabb().size.y == 1.0。
+func _add_card(verts : PackedVector3Array, normals : PackedVector3Array,
+		tangents : PackedFloat32Array, uv : PackedVector2Array,
+		indices : PackedInt32Array, right : Vector3, nrm : Vector3,
+		top_shift : Vector3) -> void:
+	var base := verts.size()
+	# 从底到顶的方向：竖直 + 顶部水平偏移
+	var up_dir := Vector3.UP + top_shift
+	# 该片法线：垂直于 (right, up_dir)，朝"外侧"
+	#   ⚠ 不能直接用 right.cross(up_dir) 的正负：张开后两片朝向相反，
+	#     必须显式取外侧，否则有一片会背光变暗。
+	#   top_shift 沿 nrm 的符号就是"往哪边张"，据此选法线。
+	var lean := signf(nrm.dot(top_shift))
+	var n := (nrm if lean >= 0.0 else -nrm) - Vector3.UP * top_shift.length()
+	n = n.normalized()
+	if n.length_squared() < 0.5:
+		n = nrm                       # 兜底（理论到不了）
+	verts.append(-right * 0.5 + up_dir)   # 0 左上
+	verts.append( right * 0.5)            # 1 右下
+	verts.append(-right * 0.5)            # 2 左下
+	verts.append( right * 0.5 + up_dir)   # 3 右上
+	for _i in range(4):
+		normals.append(n)
+	for _i in range(4):
+		tangents.append(right.x); tangents.append(right.y); tangents.append(right.z); tangents.append(1.0)
+	uv.append(Vector2(0, 0)); uv.append(Vector2(1, 1)); uv.append(Vector2(0, 1)); uv.append(Vector2(1, 0))
+	# 与默认网格相同的两个三角形绕序
+	indices.append(base + 0); indices.append(base + 1); indices.append(base + 2)
+	indices.append(base + 3); indices.append(base + 1); indices.append(base + 0)
+
+
+## V 字是否生效（开关打开且张开量 > 0）
+func _v_active() -> bool:
+	return v_fold and absf(v_spread) > 0.001
 
 
 ## ★ 应用面数：重建内置网格，并让已存在的 MultiMesh 立刻用上新网格
@@ -361,7 +429,9 @@ func apply_mesh_planes() -> void:
 
 
 func _rebuild_default_mesh() -> void:
-	if mesh_planes == 2:
+	# ⚠ 只有"2 面 + 不张开"才能直接用插件自带网格 —— 那是**平卡**。
+	#   开了 V 字还去 load 它，等于白改（这份 .tres 里没有张开后的顶点）。
+	if mesh_planes == 2 and not _v_active():
 		# 2 面：直接用插件自带的网格，保证与升级前逐值一致（也不产生任何副本）
 		_default_mesh = load(BUILTIN_MESH_PATH)
 		if _default_mesh == null:
@@ -370,12 +440,22 @@ func _rebuild_default_mesh() -> void:
 		_default_mesh = _get_shared_plane_mesh(mesh_planes)
 
 
+## ★ 共享网格的**缓存路径**：必须把 V 字参数编进去。
+##   否则开了 V 字仍会命中旧的平卡 plane_N.tres -> 改了等于没改。
+##   不张开时保持老文件名，与已有文件兼容。
+func _mesh_cache_path(planes: int) -> String:
+	if not _v_active():
+		return "%s/plane_%d.tres" % [GENERATED_MESH_DIR, planes]
+	return "%s/plane_%d_v%03d.tres" % [
+			GENERATED_MESH_DIR, planes, int(round(clampf(v_spread, 0.0, 2.0) * 1000.0))]
+
+
 ## ★ 取"按面数生成"的共享网格资源：优先从磁盘 .tres 载入，没有再生成并保存。
 ##   这样做是为了让所有草节点引用**同一个资源文件**，外部 MultiMesh（maps/*_grass.res）
 ##   存的是资源引用而不是内联副本 —— 否则每换一次面数，那些 .res 都会被整体改写。
 func _get_shared_plane_mesh(planes: int) -> Mesh:
 	planes = clampi(planes, 1, 6)
-	var path: String = "%s/plane_%d.tres" % [GENERATED_MESH_DIR, planes]
+	var path: String = _mesh_cache_path(planes)
 	# 磁盘上已有就直接用（所有节点共享同一资源）
 	if ResourceLoader.exists(path):
 		var cached = ResourceLoader.load(path)
@@ -407,6 +487,25 @@ func _on_set_mesh_planes(value: int) -> void:
 	apply_mesh_planes()
 	if Engine.is_editor_hint() and is_inside_tree():
 		update_configuration_warnings()
+		notify_property_list_changed()
+
+
+## ★ V 字参数一变就重建网格（否则要重开场景才生效）
+##   ⚠ setter 里**必须自己赋值**：GDScript 的 `set = f` 只调用 f，不会替你写回字段。
+##     两个变量也不能共用同一个 setter —— setter 只拿得到值，分不清是谁被改了。
+func _on_set_v_fold(value) -> void:
+	v_fold = bool(value)
+	_after_v_changed()
+
+
+func _on_set_v_spread(value) -> void:
+	v_spread = clampf(float(value), 0.0, 2.0)
+	_after_v_changed()
+
+
+func _after_v_changed() -> void:
+	apply_mesh_planes()
+	if Engine.is_editor_hint() and is_inside_tree():
 		notify_property_list_changed()
 
 
