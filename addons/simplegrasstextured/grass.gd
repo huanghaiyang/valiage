@@ -122,6 +122,17 @@ var sgt_scale := 1.0
 var sgt_rotation := 0.0
 var sgt_rotation_rand := 1.0
 var sgt_dist_min := 0.25
+## ★★ 本项目新增：跨节点去重开关。
+##   多个 SGT 节点覆盖同一片区域时，各自独立放置 -> 草会叠加（密度/drawcall 翻倍、z-fighting）。
+##   打开后，放置时会把"与**场景树中排在本节点之前**的其他 SGT 节点重复"的实例剔掉。
+##   树序优先：前面的节点说了算，后面的让路 —— 结果稳定、可预测。
+var sgt_cross_node_dedup := true
+## ★ 跨节点去重**日志开关**：只有真的剔掉了草才打印，且累计节流（见 XN_LOG_INTERVAL_MS）。
+##   拖拽涂抹时嫌刷屏就把它设 false。
+var sgt_cross_node_dedup_log := true
+## 日志节流间隔（毫秒）：拖拽时 add_grass_batch 每帧都调，不节流会刷屏
+const XN_LOG_INTERVAL_MS := 500
+
 var sgt_follow_normal := false
 var sgt_slope := Vector2(0, 45)
 var sgt_tool_shape := {}
@@ -137,6 +148,19 @@ const BUILTIN_MESH_PATH := "res://addons/simplegrasstextured/default_mesh.tres"
 ##   所有引用它的 .res 都被改写、体积按"网格副本"膨胀。
 const GENERATED_MESH_DIR := "res://addons/simplegrasstextured/generated"
 var _buffer_add : Array[Transform3D] = []
+## ★ 跨节点去重：本节点实例的**世界坐标** + xz 网格索引（惰性构建，只作为候选筛）
+var _xn_world := PackedVector3Array()
+var _xn_grid : Dictionary = {}
+var _xn_cell := 0.0
+var _xn_built_count := -1
+var _xn_dirty := true
+## ★ 缓存的"排在本节点之前的 SGT 节点"列表（树序优先用）
+var _xn_earlier : Array = []
+## ★ 跨节点去重日志的累计量（节流用）
+var _xn_log_removed := 0
+var _xn_log_batches := 0
+var _xn_log_blockers : Dictionary = {}
+var _xn_log_last_ms := 0
 var _material := load("res://addons/simplegrasstextured/materials/grass.tres").duplicate() as ShaderMaterial
 var _force_update_multimesh := false
 var _properties : Array[Dictionary] = []
@@ -416,6 +440,9 @@ func add_grass(pos : Vector3, normal : Vector3, scaled : Vector3, rotated : floa
 		for trans_prev in _buffer_add:
 			if trans.origin.distance_to(trans_prev.origin) <= sgt_dist_min:
 				return
+		# ★ 跨节点去重（同一套判据）
+		if sgt_cross_node_dedup and _is_dup_in_earlier(global_transform * trans.origin, sgt_dist_min):
+			return
 	_buffer_add.append(trans)
 
 
@@ -423,13 +450,222 @@ func add_grass_batch(transforms : Array):
 	var distmin = temp_dist_min
 	if temp_dist_min == 0:
 		distmin = sgt_dist_min
+	# ★ ① 批次内部先去重（原先没有这一步：同一批里随机撒出的点可能互相重叠）
+	#   ⚠ 原实现是"for x in array 的同时 array.erase(x)" —— GDScript 的 for-in 按下标遍历，
+	#     删掉当前元素会让后面元素前移、下标继续 +1，于是**跳过下一个元素**（实测漏检）。
+	#     这里统一改成"重建数组"，绝不在迭代中改动被迭代的数组。
+	if distmin > 0 and transforms.size() > 1:
+		transforms = _dedup_self(transforms, distmin)
+	# ★ ② 与本节点未提交缓冲去重（同样是重建数组，不边遍历边删）
 	if _buffer_add.size() > 0 and distmin > 0:
-		for trans_prev in _buffer_add:
-			for trans in transforms:
-				if trans.origin.distance_to(trans_prev.origin) <= distmin:
-					transforms.erase(trans)
-					break
+		transforms = _dedup_against_buffer(transforms, distmin)
+	# ★ ③ 跨节点去重：把与"场景树中排在本节点之前"的 SGT 节点重复的实例剔掉
+	if sgt_cross_node_dedup and distmin > 0 and transforms.size() > 0:
+		transforms = _dedup_across_nodes(transforms, distmin)
 	_buffer_add.append_array(transforms)
+
+
+## 批次内部去重：保留先出现的（重建数组，不在迭代中改动被迭代对象）
+func _dedup_self(transforms : Array, distmin : float) -> Array:
+	var kept : Array = []
+	for trans in transforms:
+		var dup := false
+		for prev in kept:
+			if trans.origin.distance_to(prev.origin) <= distmin:
+				dup = true
+				break
+		if not dup:
+			kept.append(trans)
+	return kept
+
+
+## 与本节点 `_buffer_add` 去重
+func _dedup_against_buffer(transforms : Array, distmin : float) -> Array:
+	var kept : Array = []
+	for trans in transforms:
+		var dup := false
+		for prev in _buffer_add:
+			if trans.origin.distance_to(prev.origin) <= distmin:
+				dup = true
+				break
+		if not dup:
+			kept.append(trans)
+	return kept
+
+
+# ---------------------------------------------------------------- 跨节点去重
+# 目标：多个 SGT 节点覆盖同一区域时，不要让草在同一个位置放两份。
+# 规则：**场景树顺序优先** —— 排在前面的节点说了算，后面的节点让路。
+#        于是"先建的草地"保留，后建的节点自动避开它，结果稳定可预测。
+# 坐标：本节点的实例是**局部**坐标，其他节点也是各自的局部坐标，
+#        所以一律先换算到**世界坐标**再比较。
+
+## 把与"树序在本节点之前"的其他 SGT 节点重复的实例剔除
+func _dedup_across_nodes(transforms : Array, distmin : float) -> Array:
+	var others := _get_earlier_grass_nodes()
+	if others.is_empty():
+		return transforms
+	var xf := global_transform
+	var kept : Array = []
+	var removed := 0
+	var blockers : Dictionary = {}          # 哪个节点挡下了多少株
+	for trans in transforms:
+		var w : Vector3 = xf * trans.origin
+		var blocker := _dup_blocker_in_earlier(w, distmin)
+		if blocker == null:
+			kept.append(trans)
+		else:
+			removed += 1
+			var bn : String = str((blocker as Node).name)
+			blockers[bn] = int(blockers.get(bn, 0)) + 1
+	# ★ 只有**真的剔掉了**才记日志（没错就完全不打印，免得拖拽时刷屏）
+	if removed > 0:
+		_xn_log_accumulate(removed, blockers)
+	return kept
+
+
+## 世界坐标 w 附近是否已有"树序更早"的 SGT 节点放置了草
+func _is_dup_in_earlier(w : Vector3, distmin : float) -> bool:
+	return _dup_blocker_in_earlier(w, distmin) != null
+
+
+## 找出"挡下"这株草的更早节点（没有则返回 null）。日志要报告是谁挡的，所以返回节点本身。
+func _dup_blocker_in_earlier(w : Vector3, distmin : float) -> Variant:
+	for other in _get_earlier_grass_nodes():
+		if not is_instance_valid(other):
+			continue
+		if other.has_method("has_instance_near_world") and other.has_instance_near_world(w, distmin):
+			return other
+	return null
+
+
+## ★ 跨节点去重日志：累计到 XN_LOG_INTERVAL_MS 才刷一条。
+##   拖拽时 add_grass_batch 每帧都会被调，不节流的话一秒能刷 20 行。
+func _xn_log_accumulate(removed : int, blockers : Dictionary) -> void:
+	if not sgt_cross_node_dedup_log:
+		return
+	_xn_log_removed += removed
+	_xn_log_batches += 1
+	for k in blockers:
+		_xn_log_blockers[k] = int(_xn_log_blockers.get(k, 0)) + int(blockers[k])
+	var now := Time.get_ticks_msec()
+	if _xn_log_last_ms == 0:
+		_xn_log_last_ms = now
+		return                      # 第一次只记账，满一个间隔再刷
+	if now - _xn_log_last_ms < XN_LOG_INTERVAL_MS:
+		return
+	_xn_log_last_ms = now
+	var parts : Array = []
+	for k in _xn_log_blockers:
+		parts.append("%s×%d" % [k, int(_xn_log_blockers[k])])
+	print("[SGT 跨节点去重] %s：%d 批共剔掉 %d 株（与树序更早的节点重复）｜ 挡下它们的是：%s" % [
+			name, _xn_log_batches, _xn_log_removed, ", ".join(parts)])
+	_xn_log_removed = 0
+	_xn_log_batches = 0
+	_xn_log_blockers.clear()
+
+
+## 收集"场景树深度优先顺序中排在本节点之前"的 SGT 节点（缓存）
+func _get_earlier_grass_nodes() -> Array:
+	# 缓存失效条件：不在树里 / 缓存空 / 缓存里有节点已被释放
+	if not is_inside_tree() or get_tree() == null:
+		_xn_earlier = []
+		return _xn_earlier
+	var need_rebuild := _xn_earlier.is_empty()
+	if not need_rebuild:
+		for nd in _xn_earlier:
+			if not is_instance_valid(nd):
+				need_rebuild = true
+				break
+	if not need_rebuild:
+		return _xn_earlier
+	_xn_earlier = []
+	var root := get_tree().current_scene
+	if root == null:
+		root = get_tree().root
+	# 深度优先，遇到自己就停 -> 只留下"排在自己前面"的
+	# ⚠ 逆序压栈：pop_back 弹出顺序才与场景树顺序一致
+	var stack : Array = [root]
+	while not stack.is_empty():
+		var nd : Node = stack.pop_back()
+		if nd == self:
+			break
+		if nd is MultiMeshInstance3D and nd != self and nd.has_meta(&"SimpleGrassTextured"):
+			_xn_earlier.append(nd)
+		var ch := nd.get_children()
+		for i in range(ch.size() - 1, -1, -1):
+			stack.append(ch[i])
+	return _xn_earlier
+
+
+## ★ 供其他 SGT 节点查询：世界坐标 w 的 dist 半径内，本节点是否已有实例。
+##   xz 网格只做**候选筛选**，最终用真实 3D 距离确认（所以陡崖上同 xz 不同高度不会被误判）。
+func has_instance_near_world(w : Vector3, dist : float) -> bool:
+	_ensure_xn_cache()
+	if _xn_cell <= 0.0 or _xn_grid.is_empty():
+		return false
+	var r : float = maxf(dist, _xn_cell)
+	var x0 := floori((w.x - r) / _xn_cell)
+	var x1 := floori((w.x + r) / _xn_cell)
+	var z0 := floori((w.z - r) / _xn_cell)
+	var z1 := floori((w.z + r) / _xn_cell)
+	for cx in range(x0, x1 + 1):
+		for cz in range(z0, z1 + 1):
+			var key := Vector3i(cx, 0, cz)
+			if not _xn_grid.has(key):
+				continue
+			var bucket : PackedInt32Array = _xn_grid[key]
+			for idx in bucket:
+				if idx < _xn_world.size() and _xn_world[idx].distance_to(w) <= dist:
+					return true
+	return false
+
+
+## 标记本节点的实例缓存需要重建（实例被增删后调用）
+func invalidate_xn_cache() -> void:
+	_xn_dirty = true
+
+
+## 惰性构建：实例世界坐标 + xz 网格
+func _ensure_xn_cache() -> void:
+	var n := 0
+	if multimesh != null:
+		n = multimesh.instance_count
+	if not _xn_dirty and _xn_built_count == n:
+		return
+	_xn_reset_grid(n)
+	var xf := global_transform
+	for i in range(n):
+		# ⚠ headless（dummy 渲染后端）下 MultiMesh 不存实例变换，读回全是原点，
+		#   所以自检走 _xn_add_point 直接注入世界坐标来测这套网格。
+		_xn_add_point(xf * multimesh.get_instance_transform(i).origin, i)
+	_xn_built_count = n
+	_xn_dirty = false
+
+
+## 清空并准备网格（与数据来源解耦，便于自检注入）
+func _xn_reset_grid(n: int) -> void:
+	_xn_world.resize(n)
+	_xn_grid.clear()
+	# 网格边长取 dist_min（查询时向四周扩 1 格，正好覆盖 dist_min 半径）
+	_xn_cell = maxf(sgt_dist_min, 0.05)
+
+
+## 把一个实例的世界坐标放进网格
+func _xn_add_point(w : Vector3, i : int) -> void:
+	_xn_world[i] = w
+	var key := Vector3i(floori(w.x / _xn_cell), 0, floori(w.z / _xn_cell))
+	if _xn_grid.has(key):
+		# ⚠ PackedInt32Array 是**值类型**：从 Dictionary 取出来的是副本，
+		#   必须 append 之后**写回**字典，否则同一格子里第 2 个以后的实例全丢
+		#   （实测表现：跨节点去重只生效一部分，格子越密漏得越多）。
+		var bucket : PackedInt32Array = _xn_grid[key]
+		bucket.append(i)
+		_xn_grid[key] = bucket
+	else:
+		var nb := PackedInt32Array()
+		nb.append(i)
+		_xn_grid[key] = nb
 
 
 func erase(pos: Vector3, radius: float) -> void:
@@ -601,6 +837,8 @@ func _replace_multimesh_with_transforms(transforms : Array) -> void:
 	multi_new.instance_count = transforms.size()
 	for i in range(transforms.size()):
 		multi_new.set_instance_transform(i, transforms[i])
+	# ★ 实例被整体替换 -> 跨节点查询缓存失效
+	invalidate_xn_cache()
 	if Engine.is_editor_hint() and multimesh != null and multimesh.resource_path.length():
 		var path := multimesh.resource_path
 		multimesh = multi_new
@@ -754,16 +992,29 @@ func _update_multimesh() -> void:
 		var dist_min := temp_dist_min
 		if dist_min == 0:
 			dist_min = sgt_dist_min
-		for i in range(multimesh.instance_count):
-			var trans := multimesh.get_instance_transform(i)
-			if trans.origin.x < pos_min.x or trans.origin.x > pos_max.x: continue
-			if trans.origin.y < pos_min.y or trans.origin.y > pos_max.y: continue
-			if trans.origin.z < pos_min.z or trans.origin.z > pos_max.z: continue
-			for trans_add in _buffer_add:
-				if trans_add.origin.distance_to(trans.origin) > dist_min:
-					continue
-				_buffer_add.erase(trans_add)
-				break
+		# ⚠ 原实现是"外层遍历 multimesh、内层 `for trans_add in _buffer_add` 且边遍历边 erase"。
+		#   GDScript 的 for-in 按下标遍历：删掉当前元素后后面元素整体前移、下标继续 +1，
+		#   于是**跳过下一个元素** -> 该被拒的重复草残留（实测：本批 2 株都该被拒，实际留下 1 株）。
+		#   改成"逐株判断、重建保留列表"，绝不在迭代中改动被迭代的数组。
+		var keep : Array[Transform3D] = []
+		for trans_add in _buffer_add:
+			var dup := false
+			# 先用批次包围盒把明显不相干的已有实例一次性排掉（原实现用来省时间的加速）
+			var ax := trans_add.origin
+			if ax.x >= pos_min.x and ax.x <= pos_max.x \
+					and ax.y >= pos_min.y and ax.y <= pos_max.y \
+					and ax.z >= pos_min.z and ax.z <= pos_max.z:
+				for i in range(multimesh.instance_count):
+					var trans := multimesh.get_instance_transform(i)
+					if trans.origin.x < pos_min.x or trans.origin.x > pos_max.x: continue
+					if trans.origin.y < pos_min.y or trans.origin.y > pos_max.y: continue
+					if trans.origin.z < pos_min.z or trans.origin.z > pos_max.z: continue
+					if trans_add.origin.distance_to(trans.origin) <= dist_min:
+						dup = true
+						break
+			if not dup:
+				keep.append(trans_add)
+		_buffer_add = keep
 		if _buffer_add.size() == 0:
 			return
 	multi_new.instance_count = count_prev + _buffer_add.size()
@@ -779,6 +1030,8 @@ func _update_multimesh() -> void:
 		multimesh = multi_new
 	_buffer_add.clear()
 	temp_dist_min = 0
+	# ★ 实例数变了 -> 跨节点查询缓存失效
+	invalidate_xn_cache()
 	if Engine.is_editor_hint():
 		baked_height_map = null
 		custom_aabb.position = Vector3.ZERO
