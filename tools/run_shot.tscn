@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://crunshot01"]
+
+[ext_resource type="Script" path="res://tools/run_shot.gd" id="1_runshot"]
+
+[node name="RunShot" type="Node"]
+script = ExtResource("1_runshot")

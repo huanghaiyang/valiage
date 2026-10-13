@@ -274,7 +274,12 @@ static func _xform_aabb(a: AABB, xf: Transform3D) -> AABB:
 ##   * 函数名是历史遗留的 find_hand，实际返回的是**候选列表里第一个命中的手**；档案把左手排在前面
 ##     （Torch 系列左手持物），所以实际常拿到左手 —— player.gd 注释里的"右手挂点"是旧文案，别被误导。
 ##   * 返回的节点优先级：作者手放的挂点节点 > 骨骼名新建的挂点。前者位置/朝向是美术调过的，更好。
-static func find_hand(node: Node, names: Array) -> Node3D:
+static func find_hand(node: Node, names: Array, side: String = "") -> Node3D:
+	# side（可空）："" = 历史行为（左手优先）；"left"/"right" = **只认该侧的手骨** ✓
+	#   用于"左右手切换持杖"：同一个 HandSocket 重新指向另一侧手骨，法杖/调试球都是它的子节点，
+	#   于是自动跟着新的一侧走 ✓（见 player.gd::set_staff_hand()）。
+	var want_right := side == "right"
+	var want_side := side != ""
 	# 先把候选名规范化一次，避免在后面几百根骨骼的循环里反复 _norm()（骨骼数量级不小）。
 	var want: Array[String] = []
 	for n in names:
@@ -285,7 +290,9 @@ static func find_hand(node: Node, names: Array) -> Node3D:
 	var stack: Array[Node] = [node]
 	while not stack.is_empty():
 		var cur: Node = stack.pop_back()
-		if cur is Node3D and want.has(_norm(String(cur.name))):
+		# 指定了 side 时，候选节点名必须属于该侧（hand.r / RightHand / handslot_r → 右）
+		if cur is Node3D and want.has(_norm(String(cur.name))) \
+				and (not want_side or bone_side(_norm(String(cur.name))) == side):
 			return cur as Node3D
 		for c in cur.get_children():
 			stack.append(c)
@@ -296,12 +303,16 @@ static func find_hand(node: Node, names: Array) -> Node3D:
 		return null
 	for i in skel.get_bone_count():
 		# 这里要求**整名相等**（不是 contains）：否则 hand 骨旁边可能误命中 hand_ik_target 之类。
-		if want.has(_norm(skel.get_bone_name(i))):
+		var bn := _norm(skel.get_bone_name(i))
+		if want.has(bn) and (not want_side or bone_side(bn) == side):
 			return _make_socket(skel, skel.get_bone_name(i))
 	# 3) 退一步：先找左手 hand 骨骼，再找右手（Torch 系列是左手持物，所以优先左）
 	# ★ 写成两趟（pass 0 左、pass 1 右）而不是"一趟顺序扫描"：一趟会变成"骨骼表里排在前面的手赢"，
 	#   结果依赖模型作者导出顺序；两趟才能保证"只要存在左手 hand 骨就一定优先左手"。
+	# ★ 指定了 side 时**交换两趟顺序** → 该侧先命中 ✓（这就是"骨骼镜像/换手"的落点）。
 	for pass_i in 2:
+		# want_right=true 时 pass 0 找右手 ✓
+		var want_left_this_pass := (pass_i == 0) != want_right
 		for i in skel.get_bone_count():
 			var nm := _norm(skel.get_bone_name(i))
 			if not nm.contains("hand"):
@@ -310,12 +321,36 @@ static func find_hand(node: Node, names: Array) -> Node3D:
 			# 两种命名风格都能覆盖（hand.l → handl 以 l 结尾；mixamorig_lefthand 含 left）。
 			var is_left := nm.contains("left") or nm.ends_with("l")
 			var is_right := nm.contains("right") or nm.ends_with("r")
-			if pass_i == 0 and is_left:
+			if want_left_this_pass and is_left:
 				return _make_socket(skel, skel.get_bone_name(i))
-			if pass_i == 1 and is_right:
+			if not want_left_this_pass and is_right:
 				return _make_socket(skel, skel.get_bone_name(i))
 	# 三条路都没找到：返回 null，由调用方决定降级方式（player.gd 只打警告，不抛异常）。
 	return null
+
+
+## 骨骼名的左右侧判定（输入应为 _norm() 之后的小写紧凑名）：
+##   含 left / 以 l 结尾 → "left"；含 right / 以 r 结尾 → "right"；否则 ""（不知道）
+## 用途：find_hand(side=…) 的侧别过滤；换手/镜像时判断当前挂点在哪一侧。
+static func bone_side(nm: String) -> String:
+	if nm.contains("left") or nm.ends_with("l"):
+		return "left"
+	if nm.contains("right") or nm.ends_with("r"):
+		return "right"
+	return ""
+
+
+## ★ 骨骼镜像：把手骨本地的向量/角度**镜像到另一侧**。
+## 约定：ARP/Mixamo 这类"左右手骨互为镜像"的骨架，其手骨局部 X 轴方向相反
+##   → 位置偏移镜像 = (-x, y, z)；欧拉角镜像 = (x, -y, -z)（yaw/pitch 反号，roll 保持）。
+## 实测校验：主角左右手"拳心"在各自手骨本地坐标下满足该关系（见 tools/check_mirror.gd）。
+## 注意：这是**常见约定**，不是所有骨架都成立；换骨架时用 check_mirror.gd 验证一次。
+static func mirror_local(v: Vector3) -> Vector3:
+	return Vector3(-v.x, v.y, v.z)
+
+
+static func mirror_rot_deg(v: Vector3) -> Vector3:
+	return Vector3(v.x, -v.y, -v.z)
 
 
 ## 掌心偏移：手骨 → 第一根手指骨的 45% 处（在**手骨本地坐标**里）。

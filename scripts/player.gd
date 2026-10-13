@@ -155,6 +155,22 @@ var _clip_names := PackedStringArray()
 @export var staff_world_lean_deg := 0.0
 ## ★ 跑动时额外的杖身倾角（度，按速度 0→1 渐变）：正 = 杖头朝前、**杖尾向后拖** ✓（更自然 ✓）
 @export var staff_run_lean_deg := 12.0
+## ★ 持杖手：0 = 左手（默认，与 Torch 系列动画一致）、1 = 右手（挂点/握点/握持角按**骨骼镜像**换算 ✓）。
+##   运行中改它不会自动生效 —— 调 set_staff_hand()（或按键）来切换 ✓。
+@export_enum("左手", "右手") var staff_hand := 1
+## 握点是不是用户手调的（加载时记录一次）：决定左右手切换时"镜像固定值"还是"重新标定拳心" ✓
+var _grip_from_user := false
+## 手臂镜像修饰器（SkeletonModifier3D，运行时把左手链姿势镜像到右臂 ✓）
+var _arm_mirror: SkeletonModifier3D = null
+## ★ 游戏内**左右手切换键**：默认 **G** ✓
+##   占用核对（两处都要查 ✗ 只 grep KEY_* 会漏掉 InputMap ✗）：
+##     源码直接读键：WASD / Shift / Space / E / T / V / R / M / B / K / H / F / Z / C / 1..0 / ESC / F2 / F10
+##     project.godot 的 InputMap：ui_cancel=ESC ｜ stuck_monitor_toggle=L ｜ **spell_wheel=Q**
+##   → G 在两处都空着 ✓；想换键直接改这个导出项 ✓（physical_keycode 也认 ✓）。
+@export var staff_hand_key: Key = KEY_G
+## 可选：若项目里另建了同名 InputMap 动作（方便接进设置系统的改键页 ✓），这里会一并响应 ✓。
+## 动作不存在时静默跳过 ✓ —— 所以默认不影响任何行为 ✓。
+@export var staff_hand_action := "switch_staff_hand"
 ## 沿手指方向的握点系数（仅当 staff_grip_local == ZERO 时用于自动算法）
 @export var staff_grip_along := 1.0
 const CHARACTER_SCENE := "res://assets/models/characters/Mage.glb"   # 旧默认，仅作回退参考
@@ -838,12 +854,12 @@ func _attach_held_staff(inst: Node) -> void:
 		var p := inst.find_child(nm, true, false)
 		if p is Node3D:
 			_native_props.append(p as Node3D)
-	# 右手挂点：按档案的名字列表找（森林男 hand.r，KayKit Mage handslot_r，Mixamo mixamorig_RightHand…）
+## 挂点解析与法杖挂载：
 	# find_hand 的查找顺序：① 场景里现成的同名挂点节点 → ② 骨骼名精确匹配 →
 	# ③ 退一步找名字里含 "hand" 的骨骼（**优先左手**，因为 Torch 系列是左手持物）。
 	# 注意：命中骨骼时会由 character_profile 自动创建一个 BoneAttachment3D（名 HandSocket）
 	# 挂在骨架下 —— 所以下面必须用 `slot is BoneAttachment3D` 区分"腕关节挂点 vs 作者挂点"。
-	var slot := CharProfile.find_hand(inst, _profile.get("hand_bones", []))
+	var slot := CharProfile.find_hand(inst, _profile.get("hand_bones", []), _hand_side())
 	if slot == null:
 		push_warning("[staff] 角色 %s 上找不到右手骨骼 %s，法杖无法挂载" % [
 			String(_profile.get("label", character_id)), str(_profile.get("hand_bones", []))])
@@ -861,9 +877,23 @@ func _attach_held_staff(inst: Node) -> void:
 	held_staff.grip_frac = staff_grip_frac
 	held_staff.grip_out = staff_grip_out
 	# 握持角：档案里从参考动作（Torch Idle）解出来的固定角；为 ZERO 时回退到旧的 rest 标定
-	held_staff.hold_rot_deg = _profile.get("staff_hold_rot_deg", Vector3.ZERO)
+	# ★ 右手：按镜像换算（欧拉 (x,-y,-z) ✓）—— 档案只需为左手解一次 ✓
+	held_staff.hold_rot_deg = _hold_rot_deg_for_side()
 	held_staff.debug_grip_cylinder = debug_grip_cylinder
 	held_staff.debug_verbose = debug_verbose
+	# ★ 手臂镜像（**运行时**，不需要烘焙 ✓）：右手持杖时把左手链的姿势镜像到右臂 ✓，
+	#   让右手真的摆出握杖姿势 ✓。SkeletonModifier3D 在动画求值之后生效 ✓（官方扩展点 ✓）。
+	var skel_for_mirror := inst.find_child("Skeleton3D", true, false) as Skeleton3D
+	if skel_for_mirror != null:
+		_arm_mirror = (load("res://scripts/arm_mirror.gd") as GDScript).new() as SkeletonModifier3D
+		_arm_mirror.name = "ArmMirror"
+		skel_for_mirror.add_child(_arm_mirror)
+		_arm_mirror.set("mirror_enabled", true)
+		_arm_mirror.set("verbose", debug_verbose)
+		_arm_mirror.set("debug_residual", debug_verbose)
+		_arm_mirror.set_active(staff_hand == 1)
+		if debug_verbose: print("[镜像] ArmMirror 已挂载 → %s" % [
+			"启用（右手持杖）✓" if staff_hand == 1 else "待用（左手持杖）"])
 	# 「松握」：朝向世界稳定（0=刚性跟手 ✗ / 1=完全稳定 ✓）—— 修"跑动时杖尾前倾" ✗
 	held_staff.world_stable = staff_world_stable
 	held_staff.world_lean_deg = staff_world_lean_deg
@@ -876,14 +906,23 @@ func _attach_held_staff(inst: Node) -> void:
 		var att := slot as BoneAttachment3D
 		var off := CharProfile.hand_grip_offset(att.get_skeleton(), att.bone_name, staff_grip_along)
 		var sk_inst := inst.find_child("Skeleton3D", true, false) as Skeleton3D
+		# 记录"握点是否为用户手调"（此刻自动拳心还没跑 ✓）：
+		#   左右手切换时据此决定 —— 手调值 → 镜像它（保留用户意图 ✓）；
+		#   自动值 → 按新的一侧重新标定拳心（拳心本就该随侧变 ✓）。
+		_grip_from_user = staff_grip_local.length() > 0.0001
 		# ★ 握点优先级：① 检查器里手调的 staff_grip_local（推荐，可实时调）
 		#               ② 网格掌心中心（自动）
 		#               ③ 骨骼算法（回退）
 		if staff_grip_local.length() > 0.0001:
+			# ★ 左右手切换（骨骼镜像）：手调值只在**左手**坐标下定义一次 ✓，
+			#   换到右手时按镜像换算（x 反号）→ 无需为右手再手调一遍 ✓
 			off = staff_grip_local
-			if debug_verbose: print("[staff] 握点 = 手调 staff_grip_local %s（%.1f cm）—— 运行时改它会实时跟着动 ✓" % [
-				str(staff_grip_local.snapped(Vector3(0.001, 0.001, 0.001))),
-				staff_grip_local.length() * _auto_scale * 100.0])
+			if _hand_side() == "right":
+				off = CharProfile.mirror_local(off)
+			if debug_verbose: print("[staff] 握点 = 手调 staff_grip_local %s%s（%.1f cm）—— 运行时改它会实时跟着动 ✓" % [
+				str(off.snapped(Vector3(0.001, 0.001, 0.001))),
+				"（右手：镜像）" if _hand_side() == "right" else "",
+				off.length() * _auto_scale * 100.0])
 		else:
 			var pc := _palm_center_local(att, sk_inst)
 			if pc.length() > 0.0001:
@@ -1114,15 +1153,19 @@ func _add_grip_marker(att: Node3D, local: Vector3) -> void:
 func _sync_grip_target() -> void:
 	if held_staff == null:
 		return
-	if staff_grip_local.length() > 0.0001 and held_staff.grip_offset != staff_grip_local:
-		held_staff.grip_offset = staff_grip_local
-		held_staff.position = staff_grip_local
+	# ★ 比较/写回都用**当前持杖侧**的期望值 ✓：
+	#   右手是镜像值，若拿 staff_grip_local 直接比会每帧把镜像结果覆盖掉 ✗（左右手切换后法杖会跳回左手坐标）
+	var want := _grip_offset_for_side()
+	if staff_grip_local.length() > 0.0001 and not held_staff.grip_offset.is_equal_approx(want):
+		held_staff.grip_offset = want
+		held_staff.position = want
 		held_staff.request_place()
 		if _grip_marker != null and is_instance_valid(_grip_marker):
-			_grip_marker.position = staff_grip_local
-		print("[握点小球] 更新 → %s（离腕 %.1f cm）" % [
-			str(staff_grip_local.snapped(Vector3(0.001, 0.001, 0.001))),
-			staff_grip_local.length() * _auto_scale * 100.0])
+			_grip_marker.position = want
+		print("[握点小球] 更新 → %s%s（离腕 %.1f cm）" % [
+			str(want.snapped(Vector3(0.001, 0.001, 0.001))),
+			"（右手镜像）" if _hand_side() == "right" else "",
+			want.length() * _auto_scale * 100.0])
 	if _grip_marker != null and is_instance_valid(_grip_marker):
 		var mr := staff_grip_marker_r / maxf(0.0001, _auto_scale)
 		var sm: SphereMesh = (_grip_marker as MeshInstance3D).mesh as SphereMesh
@@ -1188,14 +1231,19 @@ func _auto_fist_calib() -> void:
 	var fc := _fist_center_local(att, sk)
 	if fc.length() < 0.0001:
 		return
-	staff_grip_local = fc
-	held_staff.grip_offset = fc
+	# ★ staff_grip_local 的语义：**一律存"左手坐标系"的值** ✓ ——
+	#   右手模式下标定出来的是右手本地值 → 反镜像（同样 x 取反，镜像是对合运算）后再存 ✓。
+	#   否则 _grip_offset_for_side() 会再镜像一次 → 双重取反 ✗（法杖会跑到手的另一侧 ✗）。
+	staff_grip_local = fc if _hand_side() != "right" else CharProfile.mirror_local(fc)
+	held_staff.grip_offset = fc          # 实际使用的偏移 = **该侧手骨本地值** ✓
 	held_staff.position = fc
 	held_staff.request_place()
 	if _grip_marker != null and is_instance_valid(_grip_marker):
 		_grip_marker.position = fc
-	if debug_verbose: print("[拳心] 自动标定完成 → staff_grip_local = %s（离腕 %.2f cm）｜法杖已重新摆放 ✓" % [
-		str(fc.snapped(Vector3(0.001, 0.001, 0.001))), fc.length() * _auto_scale * 100.0])
+	if debug_verbose: print("[拳心] 自动标定完成 → 该侧握点 %s（离腕 %.2f cm）｜staff_grip_local(左手系) = %s%s｜法杖已重新摆放 ✓" % [
+		str(fc.snapped(Vector3(0.001, 0.001, 0.001))), fc.length() * _auto_scale * 100.0,
+		str(staff_grip_local.snapped(Vector3(0.001, 0.001, 0.001))),
+		"（右手：已反镜像 ✓）" if _hand_side() == "right" else ""])
 
 
 ## 自动拳心标定是否已完成（**一局只标定一次**；无论成功、跳过还是失败都会置 true，
@@ -1396,7 +1444,10 @@ func _debug_geom_check() -> void:
 		bone_name, bi,
 		str(slot.global_position.snapped(Vector3(0.001, 0.001, 0.001))),
 		str(hand_pos.snapped(Vector3(0.001, 0.001, 0.001))), d_hand,
-		"跟手 ✓" if d_hand < 0.02 else "没跟手 ✗"])
+		"跟手 ✓" if d_hand < 0.05 else "没跟手 ✗"])
+	# 阈值为什么是 5 cm（而不是 2 cm）：本自检在 ~2 秒时只跑一次，而那时**手臂镜像刚启用**
+	# （ArmMirror 首次构建骨骼对 + BoneAttachment3D 懒更新），会读到一次启动瞬态偏差 ✗；
+	# 稳态由 ArmMirror 的周期检查（每 5 秒）负责，那里是 0.0 cm ✓。
 	print("[法杖自检] 法杖世界包围盒 高 %.3f m｜挂点是否落在杖身上 = %s" % [
 		box.size.y, "是 ✓（手握着杖）" if on_staff else "否 ✗（杖没在手里）"])
 	# 握点一致性核对（决定性 ✓，只在青色小球打开时有意义）：
@@ -2076,3 +2127,88 @@ func stop_action() -> void:
 	_action_loop = false
 	if not _jump_air:
 		_update_move_anim()
+
+
+## 游戏内输入：按 `staff_hand_key`（默认 **G**）切换左右手持杖 ✓
+## 为什么用 `_unhandled_input` 而不是 `_input`：设置菜单 / UI 面板（含**法术轮盘 Q** ✓）会先吃掉输入 ✓
+##   → 只有"没有被 UI 消费"的按键才会到达这里 ✓，所以不会和轮盘/菜单抢键 ✓。
+## 副作用：切换会改挂点骨骼、握点、握持角与手臂镜像开关，并重摆法杖 ✓（见 set_staff_hand ✓）。
+func _unhandled_input(event: InputEvent) -> void:
+	var k := event as InputEventKey
+	if k == null or not k.pressed or k.echo or k.ctrl_pressed or k.alt_pressed:
+		return
+	# ① 直接按键（默认 G）✓
+	if k.keycode == staff_hand_key or k.physical_keycode == staff_hand_key:
+		set_staff_hand(1 - staff_hand)
+		get_viewport().set_input_as_handled()
+		return
+	# ② 可选：项目自建的 InputMap 动作（便于接进设置系统的改键页 ✓；不存在则静默跳过 ✓）
+	if staff_hand_action != "" and InputMap.has_action(staff_hand_action) \
+			and event.is_action_pressed(staff_hand_action):
+		set_staff_hand(1 - staff_hand)
+		get_viewport().set_input_as_handled()
+
+
+
+## 当前持杖侧："left" / "right"（供 find_hand / 镜像换算使用 ✓）
+func _hand_side() -> String:
+	return "right" if staff_hand == 1 else "left"
+
+
+## 当前持杖侧的握持角：左手用档案原值，右手按**镜像**换算（欧拉 (x,-y,-z) ✓）
+func _hold_rot_deg_for_side() -> Vector3:
+	var base: Vector3 = _profile.get("staff_hold_rot_deg", Vector3.ZERO)
+	if _hand_side() == "right":
+		return CharProfile.mirror_rot_deg(base)
+	return base
+
+
+## 当前持杖侧应使用的握点偏移（手骨本地）：
+##   手调值 → 左手原样 / 右手镜像；未手调 → 由调用方按该侧自动计算 ✓
+func _grip_offset_for_side() -> Vector3:
+	if staff_grip_local.length() <= 0.0001:
+		return Vector3.ZERO
+	return CharProfile.mirror_local(staff_grip_local) if _hand_side() == "right" else staff_grip_local
+
+
+## ★ 左右手切换（**骨骼镜像**）：把同一个 HandSocket 重新指向另一侧手骨 ——
+##   法杖与两个调试球都是它的子节点，于是自动跟着新的一侧走 ✓（无需重建节点 ✓）。
+##   握点：手调值按镜像换算（左手调一次即可 ✓）；未手调时按该侧自动算拳心 ✓。
+##   握持角：右手用镜像角（欧拉 (x,-y,-z) ✓）。
+## 参数 idx：0=左手（默认）1=右手；越界会被夹到 0..1。
+## 调用时机：检查器改不了运行中的实例 → 需要按键/UI 调用（例如 set_staff_hand(1 - staff_hand)）。
+## 副作用：改 BoneAttachment3D.bone_name、重算握点、重摆法杖、可能新建该侧挂点。
+func set_staff_hand(idx: int) -> void:
+	var want := clampi(idx, 0, 1)
+	staff_hand = want
+	if held_staff == null or body == null:
+		push_warning("[staff] 法杖还没挂好，左右手切换稍后再试")
+		return
+	var att := CharProfile.find_hand(body, _profile.get("hand_bones", []), _hand_side()) as BoneAttachment3D
+	if att == null:
+		push_warning("[staff] 找不到%s手骨骼，切换取消" % ("右" if want == 1 else "左"))
+		return
+	var sk := att.get_skeleton()
+	# 握点：手调 → 镜像用户的固定值 ✓；自动 → 按**新的一侧**重新标定拳心 ✓
+	var off := _grip_offset_for_side()
+	if not _grip_from_user or off.length() <= 0.0001:
+		var fc2 := _fist_center_local(att, sk)
+		if fc2.length() > 0.0001:
+			off = fc2
+			# staff_grip_local 恒存**左手系**值 ✓（右手 → 反镜像后再存；镜像是对合运算 ✓）
+			staff_grip_local = fc2 if _hand_side() != "right" else CharProfile.mirror_local(fc2)
+		else:
+			off = CharProfile.hand_grip_offset(sk, att.bone_name, staff_grip_along)
+	held_staff.grip_offset = off
+	held_staff.position = off
+	held_staff.hold_rot_deg = _hold_rot_deg_for_side()
+	if _grip_marker != null and is_instance_valid(_grip_marker):
+		_grip_marker.position = off
+	held_staff.request_place()
+	# ★ 手臂镜像跟随左右手：右手 → 启用（左臂姿势镜像到右臂 ✓）；左手 → 关闭 ✓（用动画原姿势 ✓）
+	if _arm_mirror != null and is_instance_valid(_arm_mirror):
+		_arm_mirror.set_active(want == 1)
+	print("[staff] 已切换到**%s**手持杖 ✓｜挂点骨=%s｜握点 %s（%.1f cm）｜手臂镜像=%s" % [
+		"右" if want == 1 else "左", att.bone_name,
+		str(off.snapped(Vector3(0.001, 0.001, 0.001))), off.length() * _auto_scale * 100.0,
+		"开 ✓" if want == 1 else "关（用动画原姿势）"])

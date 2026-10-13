@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://chandswitch01"]
+
+[ext_resource type="Script" path="res://tools/check_hand_switch.gd" id="1_switch"]
+
+[node name="HandSwitchCheck" type="Node"]
+script = ExtResource("1_switch")
