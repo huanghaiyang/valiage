@@ -292,7 +292,12 @@ void fragment() {
 			//      纹理实际滚动速度 ≈ 1.4×0.35×100/0.055 ≈ **890 米/秒** —— 这就是"受风影响太严重"。
 			//   ③ 旧版把无界的 TIME 直接乘进 UV，时间一长浮点精度崩掉 ⇒ 闪烁。
 			//   现在：位移 = 风速(m/s) × 时间(s) = 米，物理上正确，改风速就能按米/秒预期地变。
-			vec3 detail_uv = (sample_pos + vec3(wind_velocity.x, 0.0, wind_velocity.y) * TIME)
+			// ★★ 位移方向必须是 **−wind**（采样上风向），与密度场的平流一致：
+			//   求解器 ns_advect_density.gdshader 用 `back = cell − velocity·dt` 采样上风向
+			//   ⇒ 密度场沿 +velocity 移动。噪声若写成 `+wind·TIME`（采样下风向），
+			//   图案就会朝 **−velocity** 爬 ⇒ 表现为"浓度云往东飘、絮状纹理往西爬"（实测报错）。
+			//   半拉格朗日平流的通用约定：要 advect 的量都取 `p − v·t`。
+			vec3 detail_uv = (sample_pos - vec3(wind_velocity.x, 0.0, wind_velocity.y) * TIME)
 				* detail_scale + vec3(0.0, TIME * detail_speed, 0.0);
 			float detail = texture(detail_tex, detail_uv).r;
 			float detail2 = texture(detail_tex, detail_uv * 2.37 + vec3(0.37, 0.11, 0.53)).r;
@@ -314,9 +319,14 @@ void fragment() {
 				float h1 = clamp((y1 - box_min.y) / max(box_height, 0.001), 0.0, 1.0);
 				float dh = h0 - h1;
 				if (abs(dh) > 1.0e-5) {
+					// ⚠️ 符号必须是这样：avg = (1/(h1−h0))·∫_{h0}^{h1}(1−h)^p dh
+					//    = [(1−h1)^(p+1) − (1−h0)^(p+1)] / ((p+1)·(h0−h1))
+					//    ★ 上一版分子两项写反 ⇒ 对**向下**的光线（俯视 h0>h1）算出**负值**
+					//      ⇒ step_density 负 ⇒ alpha 负 ⇒ **雾整体消失**（prefilter>0.5 完全不可见）。
+					//    解析自检（写进注释防再犯）：p=1 时 (1−h) 在 [0.2,0.4] 的平均必须正好是 0.7。
 					float p1 = height_power + 1.0;
-					float profile_avg = (pow(1.0 - h0, p1) - pow(1.0 - h1, p1)) / (p1 * dh);
-					profile = mix(profile, profile_avg, march_prefilter);
+					float profile_avg = (pow(1.0 - h1, p1) - pow(1.0 - h0, p1)) / (p1 * dh);
+					profile = mix(profile, clamp(profile_avg, 0.0, 1.0), march_prefilter);
 				}
 			}
 

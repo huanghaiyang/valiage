@@ -403,6 +403,19 @@ func test_fog_field_editor_path_is_safe() -> void:
 	field.free()
 
 
+## 预滤波（D）里"步内闭式平均"的**符号**必须正确 —— 写反会让整个雾不可见。
+## 用 p=1 的解析特例钉死：p=1 时 (1−h) 是直线，它在 [h0,h1] 上的平均 = 区间中点处的值。
+## 同式抄自 fog_mist_volume.gdshader（那边改了务必同步改这里）。
+func test_prefilter_profile_average_sign() -> void:
+	var h0 := 0.2
+	var h1 := 0.4
+	var p1 := 2.0
+	var dh := h0 - h1
+	var avg := (pow(1.0 - h1, p1) - pow(1.0 - h0, p1)) / (p1 * dh)
+	assert_true(avg > 0.0, "步内平均必须为正（实测 %.4f）—— 负号写反会让雾直接不可见" % avg)
+	assert_true(absf(avg - 0.7) < 0.0001, "p=1 时区间平均应等于中点值 0.7（实测 %.4f）" % avg)
+
+
 ## 插件源码不得再直接摸求解器（那正是编辑器里报错的写法）。
 ## ★ 只查**代码行**：注释里当然可以提到 `target.solver`（本次就是被自己的注释误报了一次），
 ##   所以以 `#` 开头的行直接跳过。
