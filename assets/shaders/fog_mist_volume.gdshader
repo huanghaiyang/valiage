@@ -181,7 +181,9 @@ void fragment() {
 		float phase_ref = hg_phase(0.0, hg_anisotropy);
 		phase = phase / max(phase_ref, 1.0e-4);
 
-		vec2 flow_offset = detail_flow * TIME * detail_speed * 100.0;
+		// ★ 世界空间风速（米/秒）：由 GDScript 按"目标风速(域单位/秒) × 域尺寸 × 0.35"换算而来。
+		//   这里**不能**再乘任何魔数 —— 旧版在下面乘了 100，是"风一吹整片雾疯跑"的根因。
+		vec2 wind_velocity = detail_flow;
 		vec3 sun_step = -normalize(sun_direction) * (box_height / float(max(light_steps, 1)) + 1.0);
 
 		float steps = float(max(march_steps, 1));
@@ -229,8 +231,15 @@ void fragment() {
 
 			// ★ 三维细节：世界坐标 + 风向漂移 + 时间滚动 ⇒ 同一处水平浓度在不同高度
 			//   形状不同，雾才会"翻涌"而不是一张片。两层不同频率叠加避免过于规则。
-			vec3 detail_uv = sample_pos * detail_scale
-				+ vec3(flow_offset.x, TIME * detail_speed, flow_offset.y);
+			// ★ 修正（旧算法有三个错）：
+			//   ① 单位的量纲错误：`detail_flow * TIME` 是"米/秒 × 秒 = 米"，却被**直接加到 UV** 上；
+			//      正确做法是在**世界空间**累加位移，最后整体乘 detail_scale 进入噪声 UV。
+			//   ② 旧版乘了 `* 100.0`：detail_flow ≈1.4 m/s、detail_scale 0.055 时，
+			//      纹理实际滚动速度 ≈ 1.4×0.35×100/0.055 ≈ **890 米/秒** —— 这就是"受风影响太严重"。
+			//   ③ 旧版把无界的 TIME 直接乘进 UV，时间一长浮点精度崩掉 ⇒ 闪烁。
+			//   现在：位移 = 风速(m/s) × 时间(s) = 米，物理上正确，改风速就能按米/秒预期地变。
+			vec3 detail_uv = (sample_pos + vec3(wind_velocity.x, 0.0, wind_velocity.y) * TIME)
+				* detail_scale + vec3(0.0, TIME * detail_speed, 0.0);
 			float detail = texture(detail_tex, detail_uv).r;
 			float detail2 = texture(detail_tex, detail_uv * 2.37 + vec3(0.37, 0.11, 0.53)).r;
 			float detail_mix = mix(0.5, detail * 0.68 + detail2 * 0.32, clamp(detail_strength, 0.0, 1.0));
