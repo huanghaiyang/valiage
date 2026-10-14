@@ -58,6 +58,19 @@ uniform float jitter_frame_offset = 0.0;
 /** 三维细节噪声（由 FogField 用 FastNoiseLite 生成的小 3D 纹理）。
  *  未设置时 Godot 会绑一张默认白图 ⇒ detail = 1，退化成"只有二维层次"。 */
 uniform sampler3D detail_tex : filter_linear, repeat_enable;
+/** ★ 墨迹式图案（inkblot）强度：0 = 关闭（**逐字等于旧行为**）。
+ *  生成方式 = 空间里**随机撒墨滴**，每颗墨滴各自对折（罗夏墨迹的成因），
+ *  落点/大小/朝向由 hash 决定 ⇒ 随机分布、不重复；平滑衰减 ⇒ 无阈值硬边；
+ *  落点随时间游走 + 随风漂移 ⇒ 动态。 */
+uniform float ink_amount : hint_range(0.0, 1.0) = 0.0;
+/** 墨滴间距（米）：越小墨滴越密 */
+uniform float ink_spacing : hint_range(1.0, 40.0) = 7.0;
+/** 墨滴覆盖率：半径 = 间距 × 本值（0.2~0.5 比较像墨迹） */
+uniform float ink_grow : hint_range(0.05, 0.8) = 0.35;
+/** 分布演化速度：0 = 完全静止；越大墨滴游走得越快（"动态随机分布"） */
+uniform float ink_rate : hint_range(0.0, 2.0) = 0.25;
+/** 折纸镜像：1 = 每颗墨滴以**自己的轴**镜像（罗夏式），0 = 不对称 */
+uniform float ink_fold : hint_range(0.0, 1.0) = 1.0;
 
 uniform vec3 mist_color_lit : source_color = vec3(0.86, 0.89, 0.94);
 uniform vec3 mist_color_shadow : source_color = vec3(0.62, 0.68, 0.78);
@@ -145,6 +158,60 @@ float hg_phase(float cos_theta, float g) {
 void vertex() {
 	v_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
+
+// ============================================================================
+// 墨迹图（inkblot）生成器
+// ----------------------------------------------------------------------------
+// 复刻墨迹的**成因**，而不是它的形状：
+//   ① 落点随机：把空间切成 spacing 米的格子，每格用 hash 随机放一颗墨滴
+//      （查 3×3 邻域，避免墨滴跨格边界时被切断）；
+//   ② 对折：每颗墨滴以**自己的随机朝向轴**做镜像 abs() —— 这是"罗夏"的成因，
+//      而且是**连续映射**（只改变单调性，不产生接缝）；按自己的轴折叠还避免了
+//      上一版那种"整个世界一个对称面"的别扭感；
+//   ③ 渗开：半径平滑衰减（smoothstep，无阈值）⇒ 不会切出硬边折痕；
+//   ④ 动态：落点随时间缓慢游走（速率 = ink_rate），并且整体随风漂移
+//      （漂移方向与密度场平流一致：采样上风向 p − v·t）。
+// 全部由 hash + 算术组成，不采样任何纹理 ⇒ 天然没有平铺重复与 wrap 接缝。
+// ============================================================================
+vec3 fog_ink_hash32(vec2 p) {
+	vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+	p3 += dot(p3, p3.yzx + 33.33);
+	return fract((p3.xxy + p3.yzz) * p3.zyx);
+}
+
+/** 采样点 p（世界 XZ，已包含风漂移）处的墨迹浓度 0..1 */
+float fog_ink_field(vec2 p, float spacing, float grow, float fold, float clock) {
+	float acc = 0.0;
+	vec2 base = floor(p / spacing);
+	for (int gx = -1; gx <= 1; gx++) {
+		for (int gy = -1; gy <= 1; gy++) {
+			vec2 cid = base + vec2(float(gx), float(gy));
+			vec3 rnd = fog_ink_hash32(cid);
+			// 落点：格内随机 + 随时间缓慢游走（clock = TIME × ink_rate，rate=0 时静止）
+			vec2 wander = vec2(cos(clock * (0.30 + rnd.x) + rnd.y * 6.2831853),
+					sin(clock * (0.25 + rnd.y) + rnd.z * 6.2831853)) * 0.35;
+			vec2 center = (cid + 0.5 + (rnd.xy - 0.5) * 0.7 + wander) * spacing;
+			vec2 d = p - center;
+			// 这颗墨滴自己的折纸轴（随机朝向）
+			float ang = rnd.z * 6.2831853;
+			float cs = cos(ang);
+			float sn = sin(ang);
+			vec2 dr = vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);
+			if (fold > 0.5) {
+				dr.x = abs(dr.x);                    // 折纸：局部镜像
+			}
+			float radius = spacing * grow * (0.55 + 0.9 * rnd.y);
+			// ★ 恢复为**椭圆**（用户明确要求）：只随半径衰减 ⇒ 形状必然是椭圆。
+			//   各向异性仍由 hash 决定（0.72~1.22）：形状还是椭圆，只是扁的程度不同，
+			//   避免"每颗长得一模一样"。若要完全一致的扁度，把下面这行改成 vec2(1.0, 1.4)。
+			//   （历史上试过"角向裂瓣 / 放射尖刺 / 卫星墨点"三种非椭圆做法，观感都不好，已全部移除。）
+			float r = length(dr * vec2(1.0, 0.72 + 0.5 * rnd.x));
+			acc = max(acc, 1.0 - smoothstep(radius * 0.35, radius, r));
+		}
+	}
+	return acc;
+}
+
 
 void fragment() {
 	vec3 box_min = vec3(
@@ -302,6 +369,24 @@ void fragment() {
 			float detail = texture(detail_tex, detail_uv).r;
 			float detail2 = texture(detail_tex, detail_uv * 2.37 + vec3(0.37, 0.11, 0.53)).r;
 			float detail_mix = mix(0.5, detail * 0.68 + detail2 * 0.32, clamp(detail_strength, 0.0, 1.0));
+
+			// ★ 墨迹式图案（inkblot）：照抄墨迹图的**生成方式**，不是照抄它的形状。
+			//   · 折纸镜像：`p = abs(p)` 是**连续映射**（在 p=0 处左右导数不同但值连续），
+			//     所以它只产生"对称"，**不产生接缝**；对称轴处不会出现折痕。
+			//   · 渗开（domain warp）：先用低频层算出偏移量，再用它去扭曲高频层的采样坐标
+			//     ⇒ 等值线从"规则网"变成有机块，同时把平铺纹理的周期性彻底打散（不重复）。
+			//   · 逐层旋转：第二层用不同尺度 + 偏移，避免两层接缝对齐成一条线。
+			//   · 全过程无阈值、纯乘性 ⇒ 不会切出硬边。
+			//   ink_amount = 0 时整块被跳过 ⇒ **逐字等于旧行为**。
+			if (ink_amount > 0.0) {
+				// ★ 动态随机分布墨迹：落点随机 + 随时间游走 + 随风漂移。
+				//   漂移用 `p − v·t`（采样上风向）—— 与密度场平流（ns_advect_density）同一约定，
+				//   保证"雾往哪飘、墨迹就往哪飘"，不会再出现方向相反。
+				vec2 ink_p = sample_pos.xz - wind_velocity * TIME;
+				float ink_value = fog_ink_field(ink_p, ink_spacing, ink_grow, ink_fold,
+						TIME * ink_rate);
+				detail_mix = mix(detail_mix, ink_value, ink_amount);
+			}
 			// 细节不能把浓度整体抬高/压低，所以用它做**乘性调制**（围绕 1 波动）
 			float detail_gain = mix(1.0, 0.35 + 1.3 * detail_mix, clamp(detail_strength, 0.0, 1.0));
 

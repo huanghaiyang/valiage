@@ -113,6 +113,17 @@ const PARTICLE_DRAW_SHADER_LEGACY := "res://assets/shaders/fog_mist_particle_dra
 ## ★ C 视角相关羽化：域边缘淡出按 1/cos(视线与竖直夹角) 加宽，治掠射角下雾域边界的硬边。
 ##   **0 = 关闭（旧行为）**；俯视时几乎不改变观感。零噪声。
 @export_range(0.0, 1.0, 0.01) var view_feather: float = 0.0
+## ★ 墨迹式图案（inkblot）强度：0 = 关闭（旧行为）。>0 时雾内部由**随机撒落的墨滴**构成，
+##   每颗墨滴各自对折（罗夏墨迹的成因）⇒ 不重复、无阈值硬边、无平铺接缝。
+@export_range(0.0, 1.0, 0.01) var ink_amount: float = 0.0
+## 墨滴间距（米）：越小越密
+@export_range(1.0, 40.0, 0.5) var ink_spacing: float = 7.0
+## 墨滴覆盖率（半径 = 间距 × 本值）
+@export_range(0.05, 0.8, 0.01) var ink_grow: float = 0.35
+## 分布演化速度：0 = 完全静止；越大墨滴游走得越快（"动态随机分布"）
+@export_range(0.0, 2.0, 0.01) var ink_rate: float = 0.25
+## 折纸镜像：1 = 每颗墨滴以**自己的轴**镜像（罗夏式），0 = 不对称
+@export_range(0.0, 1.0, 0.01) var ink_fold: float = 1.0
 ## 粒子层是否启用。★ 默认 **false**：粒子是可选附加，不是雾本身；
 ##   想要"看得见的一团团雾"再打开它，或把 particle_count 调起来。
 @export var particles_enabled: bool = false
@@ -931,6 +942,12 @@ func _apply_volume_params() -> void:
 	_volume_material.set_shader_parameter("edge_soft_m", edge_soft_m)
 	_volume_material.set_shader_parameter("march_prefilter", march_prefilter)
 	_volume_material.set_shader_parameter("view_feather", view_feather)
+	# ★ 墨迹式图案（随机撒墨滴 + 每滴各自对折 + 随时间游走）；ink_amount = 0 时着色器整块跳过
+	_volume_material.set_shader_parameter("ink_amount", ink_amount)
+	_volume_material.set_shader_parameter("ink_spacing", ink_spacing)
+	_volume_material.set_shader_parameter("ink_grow", ink_grow)
+	_volume_material.set_shader_parameter("ink_rate", ink_rate)
+	_volume_material.set_shader_parameter("ink_fold", ink_fold)
 
 
 # =========================================================
