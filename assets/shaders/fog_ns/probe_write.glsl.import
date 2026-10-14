@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bg7x1prvbr30v"
+path="res://.godot/imported/probe_write.glsl-6ed8380ebb0a87502f92ea1ae8c068b9.res"
+
+[deps]
+
+source_file="res://assets/shaders/fog_ns/probe_write.glsl"
+dest_files=["res://.godot/imported/probe_write.glsl-6ed8380ebb0a87502f92ea1ae8c068b9.res"]
+
+[params]
+

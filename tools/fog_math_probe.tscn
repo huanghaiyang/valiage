@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://rrh3u4g2u6fx"]
+
+[ext_resource type="Script" uid="uid://cpy10e5w4ujhe" path="res://tools/fog_math_probe.gd" id="1_mathprobe"]
+
+[node name="FogMathProbe" type="Node" unique_id=1158925159]
+script = ExtResource("1_mathprobe")
