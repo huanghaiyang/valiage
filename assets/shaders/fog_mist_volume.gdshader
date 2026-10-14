@@ -37,6 +37,17 @@ render_mode unshaded, blend_mix, depth_draw_never, cull_disabled, fog_disabled, 
  *  这里要 filter_linear：96 格的场铺到 80 米见方，最近邻会看到明显格子。 */
 uniform sampler2D density_tex : filter_linear, repeat_disable;
 uniform sampler2D depth_tex : hint_depth_texture;
+/** ★ B 深度软融合（soft particles）：雾在距物体表面 edge_soft_m 米内按比例淡出。
+ *  0 = 关闭（**逐字等于旧行为**）。治"雾切在草/墓碑上的那圈硬边"，**零噪声**。 */
+uniform float edge_soft_m : hint_range(0.0, 2.0) = 0.0;
+/** ★ D 按步长预滤波（cone tracing 廉价版）：用"采样足迹 ≈ 单步步长"做 2×2 旋转平均去采浓度，
+ *  把欠采样造成的丝状折痕滤掉。0 = 关闭（**逐字等于旧行为**），1 = 完全按足迹滤波。
+ *  与抖动不同：这是**确定性**滤波，不引入噪点。 */
+uniform float march_prefilter : hint_range(0.0, 1.0) = 0.0;
+/** ★ C 视角相关羽化：域边缘淡出宽度按 1/cos(视线与竖直夹角) 放大。
+ *  0 = 关闭（**逐字等于旧行为**）。掠射角下雾域边界显得很硬，这一项让它自然变长变软；
+ *  俯视（正对）时几乎不变。确定量，零噪声。 */
+uniform float view_feather : hint_range(0.0, 1.0) = 0.0;
 /** 抖动掩膜（低差异/蓝噪声式，由 FogBlueNoise 生成）。配合 jitter_strength 打散步进条纹。 */
 uniform sampler2D jitter_tex : filter_nearest, repeat_enable;
 /** 抖动强度：**0 = 完全旧行为**（每步取中点）；1 = 完全按掩膜抖动。
@@ -194,6 +205,15 @@ void fragment() {
 		vec3 sun_step = -normalize(sun_direction) * (box_height / float(max(light_steps, 1)) + 1.0);
 
 		float steps = float(max(march_steps, 1));
+		// ⚠️ 已回退"连续终点 march_end"：它**恒生效、没有开关**，且依赖 scene_view_depth 正确。
+		//    实测两个后果：① 编辑器里深度纹理尚未就绪 ⇒ scene_view_depth≈0 ⇒ 终点被夹到 enter
+		//    ⇒ 步进长度 0 ⇒ **一点雾都不渲染**（表现就是"画笔刷不上"）；② 本项目是等轴/正交相机，
+		//    而验证用的 showcase 是透视相机 ⇒ 正交下 entry_view_depth 含逐像素近平面位移，
+		//    该假设不成立 ⇒ 部分像素终点 < 起点 ⇒ 雾大面积消失。
+		//    ⇒ 结论：这条改动必须**先有开关 + 用正交相机验证**才能重新引入。
+		//    现恢复"终点 = 盒出口"（与提交版一致）；B 的软边仍按"沿光线米数"算（有开关）。
+		//    仍需 dz_dt：B 要把视图空间 z 差换算成真实米数。
+		float dz_dt = -(VIEW_MATRIX * vec4(ray_dir, 0.0)).z;
 		float accumulated = 0.0;
 		float scattered = 0.0;
 		vec3 local_scatter = vec3(0.0);
@@ -227,6 +247,17 @@ void fragment() {
 				partial = clamp((scene_view_depth - prev_view_depth) / denom, 0.0, 1.0);
 				clipped = true;
 			}
+			// ★ B 深度软融合（第二版）：软边宽度按**沿光线的米数**算，而不是视图空间 z 之差。
+			//   旧版 z 差与真实米数差一个余弦 ⇒ 屏幕中心软边厚、掠射角薄，且 clamp 有一阶折角。
+			//   现在 gap_m = z差 / (dz/dt)（精确的沿光线距离），并用 smoothstep 抹掉折角。
+			//   edge_soft_m = 0 时恒为 1 ⇒ **逐字等于旧行为**。
+			float soft_edge_weight = 1.0;
+			if (edge_soft_m > 0.0) {
+				float gap_m = max(scene_view_depth - sample_view_depth, 0.0) / max(abs(dz_dt), 1.0e-4);
+				soft_edge_weight = smoothstep(0.0, edge_soft_m, gap_m);
+			}
+			// 单步步长（米）：D 预滤波按它算步内平均
+			float step_len_m = (exit_t - enter) / steps;
 
 			vec2 uv = (sample_pos.xz - domain_center.xz) / domain_size + vec2(0.5);
 			float height_factor = clamp((sample_pos.y - box_min.y) / max(box_height, 0.001), 0.0, 1.0);
@@ -235,8 +266,16 @@ void fragment() {
 			vec2 uv_sheared = uv + normalize(shear_direction + vec2(0.0001, 0.0001))
 				* (vertical_shear * (height_factor - 0.5));
 
-			vec2 edge_vector = smoothstep(vec2(0.0), vec2(max(edge_fade, 0.001)), uv)
-				* smoothstep(vec2(0.0), vec2(max(edge_fade, 0.001)), vec2(1.0) - uv);
+			// ★ C 视角相关羽化：掠射角下把域边缘淡出加宽（确定量，零噪声）
+			//   ray_dir 是本像素的（已归一化）视线方向，所以不需要额外相机 uniform，正交/透视都对。
+			//   view_feather = 0 时 fade_width 就等于 edge_fade ⇒ **逐字等于旧行为**。
+			float fade_width = max(edge_fade, 0.001);
+			if (view_feather > 0.0) {
+				float stretch = clamp(1.0 / max(abs(ray_dir.y), 0.15), 1.0, 4.0);
+				fade_width *= mix(1.0, stretch, view_feather);
+			}
+			vec2 edge_vector = smoothstep(vec2(0.0), vec2(fade_width), uv)
+				* smoothstep(vec2(0.0), vec2(fade_width), vec2(1.0) - uv);
 			float edge = edge_vector.x * edge_vector.y;
 
 			// 程序化絮状扰动：两层正交正弦叠加，成本极低但足以打散"一块饼"的观感
@@ -261,11 +300,32 @@ void fragment() {
 			// 细节不能把浓度整体抬高/压低，所以用它做**乘性调制**（围绕 1 波动）
 			float detail_gain = mix(1.0, 0.35 + 1.3 * detail_mix, clamp(detail_strength, 0.0, 1.0));
 
+			// ★ D 沿光线预滤波（**第二版**）：旧版按"XZ 足迹"滤波 —— 打错了轴。雾带只有 1 米厚，
+			//   竖直方向只被采 steps 次，**垂直欠采样才是折痕主因**，横向滤波对它毫无作用。
+			//   高度剖面 (1−h)^p 沿 t 单调，其**步内平均有闭式解**：
+			//     avg = [(1−h0)^(p+1) − (1−h1)^(p+1)] / ((p+1)·(h0−h1))
+			//   而 h(t) = (y0 + ry·t − box_min.y)/box_height 是 t 的仿射函数 ⇒ 端点直接可得。
+			//   **零额外纹理采样**（只多几次乘加/幂运算）；march_prefilter = 0 时逐字等于旧行为。
+			if (march_prefilter > 0.0) {
+				float half_step = step_len_m * 0.5;
+				float y0 = ray_origin.y + ray_dir.y * (t - half_step);
+				float y1 = ray_origin.y + ray_dir.y * (t + half_step);
+				float h0 = clamp((y0 - box_min.y) / max(box_height, 0.001), 0.0, 1.0);
+				float h1 = clamp((y1 - box_min.y) / max(box_height, 0.001), 0.0, 1.0);
+				float dh = h0 - h1;
+				if (abs(dh) > 1.0e-5) {
+					float p1 = height_power + 1.0;
+					float profile_avg = (pow(1.0 - h0, p1) - pow(1.0 - h1, p1)) / (p1 * dh);
+					profile = mix(profile, profile_avg, march_prefilter);
+				}
+			}
+
 			float density = texture(density_tex, clamp(uv_sheared, vec2(0.0), vec2(1.0))).r;
 			// ★ 空洞掩码：把三维噪声当"挖洞器"。参考画面里烟是有洞、有丝状边缘的
 			//   —— 均匀密度无论怎么调都像一块塑料。阈值以下是真空（能看穿到黑背景）。
 			float cavity = smoothstep(cavity_threshold, cavity_threshold + cavity_softness, detail_mix);
-			float step_density = density * profile * edge * modulation * detail_gain * cavity * partial;
+			float step_density = density * profile * edge * modulation * detail_gain * cavity * partial
+					* soft_edge_weight;
 
 			// ★ 局部光源散射：红光从光源向四周渗进烟里（1/(1+(d/r)²) 衰减）
 			vec3 local_rgb = vec3(0.0);

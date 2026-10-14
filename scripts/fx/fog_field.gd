@@ -104,6 +104,15 @@ const PARTICLE_DRAW_SHADER_LEGACY := "res://assets/shaders/fog_mist_particle_dra
 ##   在 Godot 里因 SubViewport 拿不到主视口深度而无法自建）。
 ##   掩膜由 FogBlueNoise 生成；生成失败时本项自动保持 0，**绝不会改变原有观感**。
 @export_range(0.0, 1.0, 0.01) var march_jitter_strength: float = 0.0
+## ★ B 深度软融合（soft particles）：雾在距物体表面这么多米内逐渐淡出，治"雾切在物体上的硬边"。
+##   **0 = 关闭（旧行为）**。零噪声；建议 0.15~0.5 米。
+@export_range(0.0, 2.0, 0.01) var edge_soft_m: float = 0.0
+## ★ D 按步长预滤波：用"足迹 ≈ 单步步长"的旋转 2×2 平均去采浓度，滤掉高于采样率的成分
+##   （折痕的根因）。**0 = 关闭（旧行为）**，1 = 完全按足迹滤波。确定性、零噪声。
+@export_range(0.0, 1.0, 0.01) var march_prefilter: float = 0.0
+## ★ C 视角相关羽化：域边缘淡出按 1/cos(视线与竖直夹角) 加宽，治掠射角下雾域边界的硬边。
+##   **0 = 关闭（旧行为）**；俯视时几乎不改变观感。零噪声。
+@export_range(0.0, 1.0, 0.01) var view_feather: float = 0.0
 ## 粒子层是否启用。★ 默认 **false**：粒子是可选附加，不是雾本身；
 ##   想要"看得见的一团团雾"再打开它，或把 particle_count 调起来。
 @export var particles_enabled: bool = false
@@ -915,6 +924,13 @@ func _apply_volume_params() -> void:
 					FogBlueNoise.frame_offset(_jitter_frame))
 	else:
 		_volume_material.set_shader_parameter("jitter_strength", 0.0)
+	# ★ B / D / C 三项边缘融合（0 = 旧行为，互不影响）：
+	#   B 深度软融合：雾在距物体表面 edge_soft_m 米内淡出（治交界硬边）
+	#   D 按步长预滤波：滤掉高于采样率的成分（治内部折痕，确定性、无噪声）
+	#   C 视角相关羽化：掠射角下加宽域边缘淡出（治域边界硬边）
+	_volume_material.set_shader_parameter("edge_soft_m", edge_soft_m)
+	_volume_material.set_shader_parameter("march_prefilter", march_prefilter)
+	_volume_material.set_shader_parameter("view_feather", view_feather)
 
 
 # =========================================================
