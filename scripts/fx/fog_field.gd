@@ -98,6 +98,12 @@ const PARTICLE_DRAW_SHADER_LEGACY := "res://assets/shaders/fog_mist_particle_dra
 ## ★ 默认 **true**：雾气由**体积雾（光线步进的盒子）**渲染 —— 这是本项目的目标效果。
 ##   粒子只是附加层（默认关），它当年被设为默认是我擅作主张，已纠正。
 @export var volumetric_box: bool = true
+## ★ 光线步进的**抖动强度**（0 = 旧行为；>0 = 开启"蓝噪声抖动"）。
+##   原理：步进是黎曼和，误差沿步长边界周期性排列 ⇒ 条纹/折痕。按像素 + 逐帧偏移采样相位，
+##   把相干误差变成帧间不相关的细噪声（业界做法的前半；后半"逐帧重投影"需要历史缓冲，
+##   在 Godot 里因 SubViewport 拿不到主视口深度而无法自建）。
+##   掩膜由 FogBlueNoise 生成；生成失败时本项自动保持 0，**绝不会改变原有观感**。
+@export_range(0.0, 1.0, 0.01) var march_jitter_strength: float = 0.0
 ## 粒子层是否启用。★ 默认 **false**：粒子是可选附加，不是雾本身；
 ##   想要"看得见的一团团雾"再打开它，或把 particle_count 调起来。
 @export var particles_enabled: bool = false
@@ -219,6 +225,9 @@ var brush_texture: Texture2D
 var _volume: MeshInstance3D
 var _volume_material: ShaderMaterial
 var _particles: GPUParticles3D
+## 蓝噪声抖动掩膜（懒生成，只做一次）与逐帧序号
+var _jitter_texture: ImageTexture
+var _jitter_frame: int = 0
 var _particles_material: ShaderMaterial
 var _weather: Node
 var _editor_preview := false
@@ -892,6 +901,20 @@ func _apply_volume_params() -> void:
 				"sun_color", sun.light_color * clampf(sun.light_energy, 0.0, 8.0))
 	if _particles_material != null:
 		_particles_material.set_shader_parameter("strength", particle_strength * maxf(fog_opacity, 0.0))
+	# ★ 蓝噪声抖动：掩膜只生成一次；生成失败（null）时强制强度 0 = 完全旧行为。
+	if march_jitter_strength > 0.0:
+		if _jitter_texture == null:
+			_jitter_texture = FogBlueNoise.build()
+		if _jitter_texture == null:
+			_volume_material.set_shader_parameter("jitter_strength", 0.0)
+		else:
+			_jitter_frame += 1
+			_volume_material.set_shader_parameter("jitter_tex", _jitter_texture)
+			_volume_material.set_shader_parameter("jitter_strength", march_jitter_strength)
+			_volume_material.set_shader_parameter("jitter_frame_offset",
+					FogBlueNoise.frame_offset(_jitter_frame))
+	else:
+		_volume_material.set_shader_parameter("jitter_strength", 0.0)
 
 
 # =========================================================

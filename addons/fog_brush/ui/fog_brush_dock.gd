@@ -147,6 +147,8 @@ func _build_ui() -> void:
 	volume_title.text = "── 体积雾（雾气本体）──"
 	add_child(volume_title)
 	_add_float_param("步进步数", "march_steps", 1.0, 16.0, 1.0, 6.0, "")
+	# ★ 抖动强度默认 0 = 完全旧行为；>0 才启用"蓝噪声抖动"（掩膜由 FogBlueNoise 生成）
+	_add_float_param("抖动强度", "march_jitter_strength", 0.0, 1.0, 0.01, 0.0, "")
 	_add_float_param("光照步数", "light_steps", 0.0, 12.0, 1.0, 3.0, "")
 	_add_float_param("散射强度", "scatter_strength", 0.0, 8.0, 0.05, 2.2, "")
 	_add_float_param("细节强度", "detail_strength", 0.0, 1.0, 0.01, 0.65, "")
@@ -363,6 +365,7 @@ const PARAM_HINTS := {
 	"particle_erosion": "边缘侵蚀：用共享的世界噪声咬掉粒子边界，让相邻粒子融成一片。0 = 一堆软圆盘（团块感），0.7~0.9 = 连续流动的烟。",
 	"local_scatter_strength": "体积雾里局部光源的散射强度（仅体积雾路径生效）。",
 	"particle_light_response": "粒子受光系数（仅粒子路径）。与「光源散射」分开：后者是体积沿光路累积的量（数量级大），粒子是逐粒子取值，用同一个数会整片爆白。",
+	"march_jitter_strength": "光线步进的**抖动强度**：0 = 关闭（完全等于旧行为）。步进本质是黎曼和，误差沿步长边界周期性排列，看起来就是折痕/条纹；本项按像素（低差异掩膜）加逐帧黄金比偏移来采样相位，把这种相干误差变成帧间不相关的细噪声。建议 0.4~0.8；1.0 最散但噪点略多。",
 	"volumetric_box": "是否创建体积雾（雾气本体）：光线步进的盒子，雾的连续层由它渲染。关掉就只剩粒子层。",
 	"march_steps": "光线步进步数。越大雾的层次越细腻，代价是每像素采样次数线性增加。",
 	"light_steps": "体积光照步数（光轴/丁达尔）。0 = 不算光照，暗场景可省。",

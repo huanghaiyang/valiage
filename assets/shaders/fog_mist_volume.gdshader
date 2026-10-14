@@ -37,6 +37,13 @@ render_mode unshaded, blend_mix, depth_draw_never, cull_disabled, fog_disabled, 
  *  这里要 filter_linear：96 格的场铺到 80 米见方，最近邻会看到明显格子。 */
 uniform sampler2D density_tex : filter_linear, repeat_disable;
 uniform sampler2D depth_tex : hint_depth_texture;
+/** 抖动掩膜（低差异/蓝噪声式，由 FogBlueNoise 生成）。配合 jitter_strength 打散步进条纹。 */
+uniform sampler2D jitter_tex : filter_nearest, repeat_enable;
+/** 抖动强度：**0 = 完全旧行为**（每步取中点）；1 = 完全按掩膜抖动。
+ *  由 GDScript 每帧同步；掩膜未成功生成时保持 0，所以这是"默认不改变观感"的开关。 */
+uniform float jitter_strength : hint_range(0.0, 1.0) = 0.0;
+/** 逐帧相位偏移（黄金比序列）：让抖动误差在帧间去相关（无时间累积时也能减少"固定图案"感）。 */
+uniform float jitter_frame_offset = 0.0;
 /** 三维细节噪声（由 FogField 用 FastNoiseLite 生成的小 3D 纹理）。
  *  未设置时 Godot 会绑一张默认白图 ⇒ detail = 1，退化成"只有二维层次"。 */
 uniform sampler3D detail_tex : filter_linear, repeat_enable;
@@ -196,7 +203,15 @@ void fragment() {
 			if (i >= march_steps) {
 				break;
 			}
-			float t = mix(enter, exit_t, (float(i) + 0.5) / steps);
+			// ★ 抖动相位：旧行为是"每步取中点"（0.5）。jitter_strength > 0 时改用掩膜值
+			//   （低差异/蓝噪声式），并叠加逐帧黄金比偏移 —— 把步进残留的相干条纹
+			//   降级为帧间不相关的细噪声。jitter_strength = 0 时**完全等于旧行为**。
+			float sample_phase = 0.5;
+			if (jitter_strength > 0.0) {
+				float mask = texture(jitter_tex, SCREEN_UV * 8.0).r;
+				sample_phase = mix(0.5, fract(mask + jitter_frame_offset), jitter_strength);
+			}
+			float t = mix(enter, exit_t, (float(i) + sample_phase) / steps);
 			vec3 sample_pos = ray_origin + ray_dir * t;
 			float sample_view_depth = -(VIEW_MATRIX * vec4(sample_pos, 1.0)).z;
 
