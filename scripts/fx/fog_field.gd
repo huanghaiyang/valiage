@@ -124,6 +124,10 @@ const PARTICLE_DRAW_SHADER_LEGACY := "res://assets/shaders/fog_mist_particle_dra
 @export_range(0.0, 2.0, 0.01) var ink_rate: float = 0.25
 ## 折纸镜像：1 = 每颗墨滴以**自己的轴**镜像（罗夏式），0 = 不对称
 @export_range(0.0, 1.0, 0.01) var ink_fold: float = 1.0
+## ★ 金字塔式边缘（治"分层感"）：0 = 关闭（旧行为）。
+##   >0 时**顶层透明度最高、水平边缘羽化最宽**，逐级向下变实、变窄 ⇒ 轮廓成楔形，
+##   不再是"一层平板"（分层感的根源就是板状轮廓）。
+@export_range(0.0, 1.0, 0.01) var pyramid_edge: float = 0.0
 ## 粒子层是否启用。★ 默认 **false**：粒子是可选附加，不是雾本身；
 ##   想要"看得见的一团团雾"再打开它，或把 particle_count 调起来。
 @export var particles_enabled: bool = false
@@ -948,6 +952,8 @@ func _apply_volume_params() -> void:
 	_volume_material.set_shader_parameter("ink_grow", ink_grow)
 	_volume_material.set_shader_parameter("ink_rate", ink_rate)
 	_volume_material.set_shader_parameter("ink_fold", ink_fold)
+	# ★ 金字塔式边缘（顶层最透、边缘最宽；逐级向下变实变窄）—— 治水平分层感
+	_volume_material.set_shader_parameter("pyramid_edge", pyramid_edge)
 
 
 # =========================================================

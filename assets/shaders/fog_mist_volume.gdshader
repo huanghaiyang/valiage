@@ -71,6 +71,11 @@ uniform float ink_grow : hint_range(0.05, 0.8) = 0.35;
 uniform float ink_rate : hint_range(0.0, 2.0) = 0.25;
 /** 折纸镜像：1 = 每颗墨滴以**自己的轴**镜像（罗夏式），0 = 不对称 */
 uniform float ink_fold : hint_range(0.0, 1.0) = 1.0;
+/** ★ 金字塔式边缘（治"分层感"）：0 = 关闭（**逐字等于旧行为**）。
+ *  原来水平边缘淡出宽度是**与高度无关的常数** ⇒ 雾在哪个高度都在同一处结束，
+ *  侧看就是"一层平板"，于是有明显的水平分层。
+ *  >0 时改成：**顶层透明度最高、边缘羽化最宽**，逐级向下变实、变窄 ⇒ 轮廓是楔形/金字塔。 */
+uniform float pyramid_edge : hint_range(0.0, 1.0) = 0.0;
 
 uniform vec3 mist_color_lit : source_color = vec3(0.86, 0.89, 0.94);
 uniform vec3 mist_color_shadow : source_color = vec3(0.62, 0.68, 0.78);
@@ -329,6 +334,10 @@ void fragment() {
 			vec2 uv = (sample_pos.xz - domain_center.xz) / domain_size + vec2(0.5);
 			float height_factor = clamp((sample_pos.y - box_min.y) / max(box_height, 0.001), 0.0, 1.0);
 			float profile = pow(1.0 - height_factor, height_power);
+			// ★ 金字塔：顶层额外透明（越靠顶越透），逐级向下恢复 —— pyramid_edge = 0 时逐字等于旧行为
+			if (pyramid_edge > 0.0) {
+				profile *= 1.0 - 0.85 * pyramid_edge * smoothstep(0.30, 1.0, height_factor);
+			}
 			// ★ 垂直剪切：越高的地方横向图案越偏 ⇒ 侧看有"层"，不再是一张片
 			vec2 uv_sheared = uv + normalize(shear_direction + vec2(0.0001, 0.0001))
 				* (vertical_shear * (height_factor - 0.5));
@@ -340,6 +349,11 @@ void fragment() {
 			if (view_feather > 0.0) {
 				float stretch = clamp(1.0 / max(abs(ray_dir.y), 0.15), 1.0, 4.0);
 				fade_width *= mix(1.0, stretch, view_feather);
+			}
+			// ★ 金字塔式边缘：顶层羽化最宽（最多 ×4），逐级向下收窄到 1×。
+			//   与上面的 profile 一起，把"平板"变成"上宽下窄的楔形" ⇒ 明显减少水平分层感。
+			if (pyramid_edge > 0.0) {
+				fade_width *= mix(1.0, 1.0 + 3.0 * pyramid_edge, height_factor);
 			}
 			vec2 edge_vector = smoothstep(vec2(0.0), vec2(fade_width), uv)
 				* smoothstep(vec2(0.0), vec2(fade_width), vec2(1.0) - uv);
