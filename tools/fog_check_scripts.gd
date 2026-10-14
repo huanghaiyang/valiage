@@ -55,6 +55,7 @@ const FRAGMENT_SHADERS := [
 	"res://assets/shaders/fog_ns/ns_advect_density.gdshader",
 	"res://assets/shaders/fog_ns/ns_composite.gdshader",
 	"res://assets/shaders/fog_mist_volume.gdshader",
+	"res://assets/shaders/fog_screen_volume.gdshader",
 	"res://assets/shaders/fog_mist_particle_process.gdshader",
 	"res://assets/shaders/fog_mist_particle_draw.gdshader",
 ]

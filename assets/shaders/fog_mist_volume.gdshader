@@ -164,6 +164,16 @@ void fragment() {
 		float scene_view_depth = -view_pos.z;
 		float entry_view_depth = -(VIEW_MATRIX * vec4(ray_origin + ray_dir * enter, 1.0)).z;
 
+		// ★ 屏幕空间投影求"雾的可见终点"：把该像素的场景深度点投影到**本像素的视线**上，
+		//   得到连续（非量化）的终点距离 t_surface。
+		//   原来是在逐步循环里"采样点跑到几何后面就 break" —— 终点只能落在离散步长上，
+		//   而档位中档的 march_steps 只有 4，于是雾与物体表面交界处出现一层层的硬切（分层感）。
+		//   改成连续终点后，表面深度怎么移动，雾的终点就怎么连续移动，台阶消失。
+		vec3 surface_world = (INV_VIEW_MATRIX * vec4(view_pos.xyz, 1.0)).xyz;
+		float t_surface = dot(surface_world - ray_origin, ray_dir);
+		float t_end = clamp(min(exit_t, t_surface), enter, exit_t);
+		float span = max(t_end - enter, 0.0);
+
 		// 相函数只需算一次：视线方向与"指向太阳"的夹角
 		float cos_theta = dot(ray_dir, -normalize(sun_direction));
 		float phase = hg_phase(cos_theta, hg_anisotropy);
@@ -178,17 +188,27 @@ void fragment() {
 		float accumulated = 0.0;
 		float scattered = 0.0;
 		vec3 local_scatter = vec3(0.0);
+		// 上一步采样点的视图空间 z：用来把"被表面切掉的比例"算成连续值
+		float prev_view_depth = entry_view_depth;
 		for (int i = 0; i < 32; i++) {
 			if (i >= march_steps) {
 				break;
 			}
 			float t = mix(enter, exit_t, (float(i) + 0.5) / steps);
 			vec3 sample_pos = ray_origin + ray_dir * t;
-
-			// 逐步深度测试：采样点已经跑到场景几何后面就停止累积（保证遮挡正确）
 			float sample_view_depth = -(VIEW_MATRIX * vec4(sample_pos, 1.0)).z;
+
+			// ★ 方案 A：只用**视图空间 z** 判断遮挡，**不再**用 INV_PROJECTION_MATRIX 反投影
+			//   （反投影那版在等轴/正交相机下会把终点算成极远 ⇒ 整盒累积 ⇒ 整屏白雾，实测）。
+			//   关键改进：不直接 break，而是先算出"本步被物体表面切掉的比例" partial ——
+			//   表面在本步之内穿过时，本步只按走过的比例计入。贡献因此随表面位置**连续**变化，
+			//   离散步长造成的台阶（分层感）消失；且每步权重恒 ≤ 1，任何画质档都不会变亮。
+			float partial = 1.0;
+			bool clipped = false;
 			if (sample_view_depth > scene_view_depth) {
-				break;
+				float denom = max(sample_view_depth - prev_view_depth, 1.0e-5);
+				partial = clamp((scene_view_depth - prev_view_depth) / denom, 0.0, 1.0);
+				clipped = true;
 			}
 
 			vec2 uv = (sample_pos.xz - domain_center.xz) / domain_size + vec2(0.5);
@@ -221,7 +241,7 @@ void fragment() {
 			// ★ 空洞掩码：把三维噪声当"挖洞器"。参考画面里烟是有洞、有丝状边缘的
 			//   —— 均匀密度无论怎么调都像一块塑料。阈值以下是真空（能看穿到黑背景）。
 			float cavity = smoothstep(cavity_threshold, cavity_threshold + cavity_softness, detail_mix);
-			float step_density = density * profile * edge * modulation * detail_gain * cavity;
+			float step_density = density * profile * edge * modulation * detail_gain * cavity * partial;
 
 			// ★ 局部光源散射：红光从光源向四周渗进烟里（1/(1+(d/r)²) 衰减）
 			vec3 local_rgb = vec3(0.0);
@@ -273,6 +293,11 @@ void fragment() {
 			accumulated += step_density;
 			scattered += step_density * transmittance;
 			local_scatter += step_density * local_rgb;
+			// 本步跨过表面 ⇒ 本步已按比例计入（见 partial），可以收工了
+			prev_view_depth = sample_view_depth;
+			if (clipped) {
+				break;
+			}
 		}
 		accumulated /= steps;
 		scattered /= steps;
