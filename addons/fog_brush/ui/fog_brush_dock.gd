@@ -124,8 +124,14 @@ func _build_ui() -> void:
 	#   与速度耗散（把它调大，速度场才会安静下来）
 	_add_float_param("涡量约束", "vorticity_strength", 0.0, 20.0, 0.1, 2.5, "")
 	_add_float_param("速度耗散", "velocity_dissipation", 0.0, 3.0, 0.05, 0.35, "")
+	# ★ 浓度侧的两个"记忆"旋钮：它们的默认值会把角色/法术的扰动快速抹平 ——
+	#   这是"扰动没效果"最容易被漏掉的一环，所以必须放在面板上（原先只能在检查器里改）。
+	_add_float_param("浓度耗散", "density_dissipation", 0.0, 2.0, 0.01, 0.10, "")
+	_add_float_param("底图吸附", "base_relax", 0.0, 4.0, 0.01, 0.6, "")
 	_add_float_param("不透明度", "fog_opacity", 0.0, 4.0, 0.05, 1.1, "")
 	_add_float_param("浓度增益", "density_gain", 0.0, 8.0, 0.05, 2.4, "")
+	# ★ 底图地板：0 = 底图只当吸引子（角色才推得动可见的雾），1 = 旧行为
+	_add_float_param("底图地板", "composite_base_floor", 0.0, 1.0, 0.01, 1.0, "")
 	_add_float_param("竖向衰减", "height_power", 0.2, 6.0, 0.05, 1.6, "")
 	_add_float_param("粒子数量", "particle_count", 0.0, 8000.0, 10.0, 900.0, "")
 	_add_float_param("粒子尺寸", "particle_size", 0.1, 60.0, 0.1, 13.0, "m")
@@ -174,6 +180,48 @@ func _build_ui() -> void:
 		fog_toggle_changed.emit("volumetric_box", pressed))
 	add_child(volume_check)
 	_fog_controls["volumetric_box"] = volume_check
+
+	# ==================== 角色涡流（人跑过、雾绕着转）====================
+	# ★ 这几项作用于**流体注入**，不是渲染：影响"起雾后怎么被搅动"。
+	#   静止不动的角色不会注入（速度 < 0.05 m/s 直接跳过），所以关掉画质/站在原地的场景不受影响。
+	add_child(_make_separator())
+	var vortex_title := Label.new()
+	vortex_title.text = "── 角色涡流（走动时绕身卷起）──"
+	add_child(vortex_title)
+	var stir_check := CheckBox.new()
+	stir_check.text = "启用角色涡流（扫 player 组；移动才生效）"
+	stir_check.tooltip_text = "打开后：character_group 里**正在移动**的节点周围会被注入绕身环流，雾绕着它卷并拖在身后。\n静止不动不注入（观感与旧版一致）。挂了 FogInteractor 组件的角色以组件参数为准，不会重复注入。"
+	stir_check.toggled.connect(func(pressed: bool) -> void:
+		if not _syncing:                     # 回填时不发信号（否则每次刷新都把场景标脏）
+			fog_toggle_changed.emit("character_stir_enabled", pressed))
+	add_child(stir_check)
+	_fog_controls["character_stir_enabled"] = stir_check
+	# ★ 单位是 m/s（不是"域单位/秒"）：域尺寸改了，同一个数在屏幕上表现一致
+	_add_float_param("绕身切向风速", "character_swirl_mps", -40.0, 40.0, 0.1, 20.0, "m/s")
+	_add_float_param("涡流半径", "character_swirl_radius_m", 0.5, 20.0, 0.1, 4.0, "m")
+	_add_float_param("角色挖雾", "character_carve", -2.0, 2.0, 0.01, -0.4, "")
+	_add_float_param("涡流参考速度", "character_swirl_ref_speed", 0.5, 12.0, 0.1, 3.0, "m/s")
+	_add_text_param("角色组名", "character_group", "player")
+	# ---- 涡流**可视化**层（独立着色器：螺旋条带的明暗变化）----
+	# ★ 为什么要有它：浓雾里浓度早就饱和成白幕，搅浓度屏幕上什么都看不出来。
+	#   这一层直接画螺旋条纹（暗带压暗白雾、亮带提亮地面），不依赖浓度场。
+	var swirl_check := CheckBox.new()
+	swirl_check.text = "涡流可视化（螺旋明暗条带）"
+	swirl_check.tooltip_text = "在角色周身套一层螺旋条带：暗带把白雾压成灰蓝条纹、亮带在深色地面提亮 ⇒ 无论背景浓淡都能看见『绕着他卷的那股风』。角色静止时不显示。"
+	swirl_check.toggled.connect(func(pressed: bool) -> void:
+		if not _syncing:
+			fog_toggle_changed.emit("vortex_visual_enabled", pressed))
+	add_child(swirl_check)
+	_fog_controls["vortex_visual_enabled"] = swirl_check
+	_add_float_param("涡流可视强度", "vortex_visual_alpha", 0.0, 1.0, 0.01, 0.55, "")
+	_add_float_param("涡流条带圈数", "vortex_visual_turns", 0.0, 8.0, 0.1, 1.6, "")
+	_add_float_param("涡流旋转速度", "vortex_visual_spin_speed", 0.0, 6.0, 0.05, 1.4, "")
+	_add_float_param("涡流层高度", "vortex_visual_height_m", 0.05, 40.0, 0.05, 2.6, "m")
+	_add_float_param("涡流层半径", "vortex_visual_radius_m", 0.0, 40.0, 0.1, 1.5, "m")
+	_add_float_param("涡流锐度", "vortex_visual_sharpness", 0.5, 8.0, 0.1, 1.7, "")
+	_add_float_param("涡流抖动", "vortex_visual_wobble", 0.0, 1.0, 0.01, 0.28, "")
+	_add_color_param("涡流暗带色", "vortex_visual_dark", Color(0.30, 0.36, 0.47))
+	_add_color_param("涡流亮带色", "vortex_visual_light", Color(0.98, 0.99, 1.0))
 
 	add_child(_make_separator())
 
@@ -328,6 +376,8 @@ func sync_fog_params(field: Object) -> void:
 			(control as CheckBox).button_pressed = bool(current)
 		elif control is ColorPickerButton:
 			(control as ColorPickerButton).color = current
+		elif control is LineEdit:
+			(control as LineEdit).text = str(current)
 	_syncing = false
 	# ★ 把"只在体积盒路径生效"的参数置灰并说明原因 —— 否则用户调了完全没反应，
 	#   看起来就像"面板设置无效"（本项目最常见的困惑来源）。
@@ -363,8 +413,11 @@ const PARAM_HINTS := {
 	"particle_flow_speed_cap": "粒子跟随速度的物理上限（米/秒），0 = 不限。速度场里除风还有喷源/交互体/涡量约束，乘域尺寸后可能到几米每秒，这是那道保险。",
 	"vorticity_strength": "涡量约束强度。它是反耗散项：把被数值耗散抹掉的小尺度涡补回来。调 0 才能让速度场真正安静（「风关了还在抖」的头号原因）。",
 	"velocity_dissipation": "速度场耗散（1/秒）。越大速度场死得越快越安静；越小记忆越长、越容易持续翻滚。",
+	"density_dissipation": "浓度耗散（1/秒）：雾自然消散的速度。调小 = 雾留得更久、角色/法术留下的扰动轨迹更持久；0 = 几乎不散（整片雾会长期不消失）。",
+	"base_relax": "把浓度往**画笔底图**拽的速率（1/秒）。★ 轨迹/涡流看不见的头号原因：默认 0.6 会在 1~2 秒内把角色挖开的洞、卷出的螺旋'愈合'回笔迹形状；想让扰动留痕就调到 0.1~0.2。0 = 不吸附（刷出来的雾会被彻底吹散，只剩流体）。",
 	"fog_opacity": "整体不透明度。体积雾与粒子两条路径都吃它（粒子端是乘在单颗浓度上）。",
 	"density_gain": "浓度增益：画笔底图对浓度的吸引强度（求解器的 base_gain）。越大，画过的地方雾越浓。",
+	"composite_base_floor": "底图**地板**强度。1 = 旧行为：合成时 浓度 = max(模拟值, 底图×增益)，笔迹立刻可见；0 = 底图只当吸引子（靠 base_relax 把形状拽住），不再当地板。\n★ 什么时候调 0：底图被刷满（浓度 1）时 max 会把可见浓度**锁死在 1** —— 角色/法术的挖雾、涡流、风全都看不出来（表现为『雾气扰动没效果』）。调 0 后扰动才落得到画面上；代价是笔迹不再即时可见，而是 1~2 秒内长出来。",
 	"height_power": "竖直衰减：越大雾越贴地（仅体积雾路径生效）。",
 	"particle_count": "粒子数量，0 = 完全不发射。注意：运行时会被画质档位表 apply_quality 覆盖，改档位表才改得动游戏里的值。",
 	"particle_size": "单颗粒子尺寸（米）。要更浓应优先加数量，而不是加大尺寸并提高单颗不透明度。",
@@ -395,6 +448,22 @@ const PARAM_HINTS := {
 	"cavity_threshold": "挖洞阈值：噪声低于它的地方完全没有雾，于是薄处能透出背景。",
 	"mist_color_lit": "雾被照亮处的颜色（亮部）。",
 	"mist_color_shadow": "雾背光处的颜色（暗部）。与亮部一起决定雾的立体感，两者差距越大越有体积。",
+	"character_stir_enabled": "角色涡流总开关：打开后，角色组里**正在移动**的节点周围会被注入绕身环流（雾绕着它卷、拖在身后）。静止不注入。",
+	"character_swirl_mps": "绕身**切向风速**（m/s）：正负 = 旋向（逆/顺时针），0 = 只把雾推开、不转（完全等于加涡流之前的行为）。\n★ 它是『注入的目标风速』，不是最终风速：实测（70 米域、默认求解器参数）20 m/s 时角色周围环流约 2.5~4.5 m/s。想要明显就 30~45。",
+	"character_swirl_radius_m": "涡流半径（米）：3~4 = 贴着人绕；5~8 = 整个人带起一团。半径越小环流越集中但越容易被耗散掉。",
+	"character_carve": "角色周围的挖雾速率（每秒）：负值在角色周围挖出比别处稀的洞（0 = 只搅动不挖）。\n★ 想在小地图/俯视里看见螺旋，把雾挖开比单纯调高切向速度更有效（−0.8~−1.5）。",
+	"character_swirl_ref_speed": "涡流强度的参考速度（m/s）：实际切向速度 = 绕身切向风速 × clamp(角色速度/本值, 0.25, 1.6)。\n走路约 3 m/s ⇒ 本值保持 3 就是 1 倍；调小 = 慢走也有强涡，调大 = 要跑起来才起涡。",
+	"character_group": "到哪个组里找角色（要等于代码里 add_to_group('...') 的那个名字）。本项目角色在 player.gd 里注册成 'player'，一般不用改。",
+	"vortex_visual_enabled": "涡流**可视化**层总开关。★ 它跟上面那组『浓度扰动』是两件事：浓雾里浓度早已饱和成白幕，搅浓度屏幕上什么都看不出来；这一层**不看浓度**，直接画螺旋明暗条带（暗带压暗白雾、亮带提亮地面），所以无论背景浓淡都看得见。",
+	"vortex_visual_alpha": "涡流条带的最大不透明度：最浓时能把底下的白雾压多暗。0.3~0.6 自然；>0.8 会像贴上去的塑料条纹。",
+	"vortex_visual_turns": "螺旋圈数：1~2 像一股卷起来的风；>4 会碎成密集斑点。",
+	"vortex_visual_spin_speed": "旋转速度（圈/秒）：0 = 静止的条纹，1~2 = 明显在转。",
+	"vortex_visual_height_m": "涡流层有多高（米）：★ 取**任意值**都行，和半径没有任何关系（不按比例推导）。0.5 = 贴地一圈，2.6 = 裹住身体，5 = 卷得比人高。",
+	"vortex_visual_radius_m": "涡流层围多大一圈（米）：这层只在角色周身一点点空间，0.8~2 米就够，别设大。★ 别低于 0.5 米 —— 0.4 米直径的壳会整个缩进角色身体里，画面上只是身上一块暗斑，不会绕身。0 = 自动取 character_swirl_radius_m 的 1/4（夹在 0.8~2 米）。与高度完全独立。",
+	"vortex_visual_sharpness": "条纹锐度：越大越像细丝，越小越像一片雾。",
+	"vortex_visual_wobble": "条纹抖动：打散规则螺旋的『塑料弹簧』感，0.2~0.4 比较自然。",
+	"vortex_visual_dark": "暗带颜色：它负责在**浓白雾**上显形（把白雾压成灰蓝条纹）。",
+	"vortex_visual_light": "亮带颜色：它负责在**深色草地/地面**上显形（像被光扫过的银边）。",
 }
 
 
@@ -461,6 +530,22 @@ func _add_color_param(label_text: String, param_name: String, initial: Color) ->
 			fog_param_changed.emit(param_name, value))
 	add_child(_labeled(label_text, picker))
 	_fog_controls[param_name] = picker
+
+
+## 造一行"标签 + 单行文本"的参数（目前只有组名这种字符串属性用）。
+## ★ 只在**提交时**发信号（text_submitted / focus_exited），不是每次敲键：
+##   否则删旧字、打新字的中间态会被当成"用户改了值"写进场景。
+func _add_text_param(label_text: String, param_name: String, initial: String) -> void:
+	var edit := LineEdit.new()
+	edit.text = initial
+	edit.tooltip_text = _hint_for(param_name, initial)
+	var commit := func(_text: String = "") -> void:
+		if not _syncing:
+			fog_param_changed.emit(param_name, edit.text)
+	edit.text_submitted.connect(commit)
+	edit.focus_exited.connect(func() -> void: commit.call())
+	add_child(_labeled(label_text, edit))
+	_fog_controls[param_name] = edit
 
 
 func _make_separator() -> HSeparator:

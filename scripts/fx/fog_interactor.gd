@@ -17,7 +17,10 @@ extends Node3D
 ##     1. 在玩家/角色根节点下加一个 `FogInteractor`（或把节点类型直接改成它）；
 ##     2. 调 `radius_m` 到比角色略大（雾被"推开"的范围）；
 ##     3. 想挖出空洞就把 `carve` 保持负值；想让角色"带起一阵风"就调大
-##        `velocity_scale`；纯装饰（只搅动、不挖洞）把 carve 设 0。
+##        `velocity_scale`；纯装饰（只搅动、不挖洞）把 carve 设 0；
+##     4. 想要**涡流环绕**（雾绕着转、拖出螺旋尾迹）把 `vortex_spin_mps` 调到 6~15（正负换向）。
+##        ★ 本项目角色（组 "player"）没挂本组件时，`FogField` 会按 character_* 参数
+##          自动注入同样的绕身涡流 —— 挂了本组件就以本组件为准（不会被注入两份）。
 ##
 ## 【关键依赖】
 ##   · FogField.interactor_group 默认 "fog_interactor"（两边必须一致）
@@ -38,13 +41,18 @@ extends Node3D
 @export_range(-2.0, 2.0, 0.01) var carve: float = -0.9
 ## 速度放大：1.0 = 目标风速等于物体速度；大于 1 会推出更夸张的尾流
 @export_range(0.0, 5.0, 0.05) var velocity_scale: float = 1.0
+## ★ **绕身涡流**（切向风速，m/s）：0 = 关闭（**逐字等于旧行为**，只推开/拖拽）；
+##   正负 = 两个旋转方向。雾会被卷成螺旋绕在物体周围，并拖在身后的轨迹上。
+##   角色/道具想"带起旋涡"就调它（6~15 比较自然）；纯推开（雪犁/挖掘）保持 0。
+@export_range(-40.0, 40.0, 0.1) var vortex_spin_mps: float = 0.0
 ## 编辑器里是否画半径线框
 @export var show_radius_gizmo: bool = true
 
-## FogField 会读这两个属性名（保持与 fog_field.gd 的 duck-typing 约定一致）
+## FogField 会读这四个属性名（保持与 fog_field.gd 的 duck-typing 约定一致）
 var fog_interactor_radius: float = 8.0
 var fog_interactor_carve: float = -0.9
 var fog_interactor_velocity_scale: float = 1.0
+var fog_interactor_spin_mps: float = 0.0
 
 var _gizmo: MeshInstance3D
 
@@ -67,6 +75,7 @@ func _sync_properties() -> void:
 	fog_interactor_radius = radius_m
 	fog_interactor_carve = carve
 	fog_interactor_velocity_scale = velocity_scale
+	fog_interactor_spin_mps = vortex_spin_mps
 
 
 func _refresh_gizmo() -> void:

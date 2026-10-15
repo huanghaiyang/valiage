@@ -59,6 +59,8 @@ extends Node3D
 const SOLVER_SCRIPT := preload("res://scripts/fx/fog_ns_solver.gd")
 const BRUSH_FIELD_SCRIPT := preload("res://scripts/fx/fog_brush_field.gd")
 const VOLUME_SHADER := "res://assets/shaders/fog_mist_volume.gdshader"
+## 角色周身涡流的**可视化**着色器（独立一层：螺旋条纹的明暗变化，不依赖浓度场）
+const VORTEX_SWIRL_SHADER := "res://assets/shaders/fog_vortex_swirl.gdshader"
 const PARTICLE_PROCESS_SHADER := "res://assets/shaders/fog_mist_particle_process.gdshader"
 const PARTICLE_DRAW_SHADER := "res://assets/shaders/fog_smoke_particle_draw.gdshader"
 ## 旧的"径向圆盘"粒子绘制（留作回退；默认用新的烟雾绘制）
@@ -86,6 +88,14 @@ const PARTICLE_DRAW_SHADER_LEGACY := "res://assets/shaders/fog_mist_particle_dra
 # ==================== 外观 ====================
 @export_range(0.0, 4.0, 0.01) var fog_opacity: float = 1.1
 @export_range(0.0, 8.0, 0.01) var density_gain: float = 2.4
+## ★ **底图地板**强度（0..1）：1 = 旧行为（合成时 `浓度 = max(模拟, 底图×增益)`）。
+## 0 = 底图只当"吸引子"（靠 base_relax 把形状拽住），不再当不可跌破的地板。
+## 【什么时候要调它】角色/法术的挖雾与涡流**完全看不出效果**时：
+##   底图被刷满（浓度 1）⇒ `max` 把可见浓度锁死在 1，模拟怎么搅渲染都读到 1
+##   （实测：底图 1.0 + 角色 carve −1.4，角色脚下浓度仍是 1.000）。
+##   调 0 之后挖雾/涡流才会真正落到可见浓度上；代价是"笔迹"不再即时可见，
+##   而是按 `base_relax`（默认 0.6/秒）在 1~2 秒内长出来。
+@export_range(0.0, 1.0, 0.01) var composite_base_floor: float = 1.0
 @export_range(0.2, 6.0, 0.01) var height_power: float = 1.6
 @export_range(0.0, 0.5, 0.01) var edge_fade: float = 0.14
 @export_range(0.0, 1.0, 0.01) var wisp_amount: float = 0.35
@@ -224,6 +234,59 @@ const PARTICLE_DRAW_SHADER_LEGACY := "res://assets/shaders/fog_mist_particle_dra
 ## 重新扫描交互体列表的间隔（秒）：不必每帧找节点
 @export_range(0.05, 5.0, 0.05) var interactor_scan_interval: float = 0.5
 
+# ==================== 角色涡流（人物在雾里走动时绕身卷起） ====================
+## ★ 把 `character_group`（默认就是本项目的角色组 "player"）里**正在移动**的节点当作
+##   "绕身涡流"源：在它周围注入一个**切向**速度场 ⇒ 雾绕着它转、并被卷成螺旋拖在身后。
+##   静止时不注入（沿用交互体那条规则），所以站着不动时观感与旧版一致。
+##   想更精细地控制就挂 `FogInteractor` 组件（显式组件的参数优先，且不会被本项重复注入）。
+## ★ 受 `interactors_enabled` 总开关控制（两条注入路径共用"物体搅动雾气"这一件事）。
+@export var character_stir_enabled: bool = true
+## 扫哪个组找角色（player.gd 在 _ready 里 add_to_group("player")）
+@export var character_group: String = "player"
+## 绕身**切向风速**（m/s）：>0 逆时针、<0 顺时针、0 = 只推开不转（旧观感）
+## ★ 用 m/s 而不是"域单位/秒"：域尺寸一改，同一个数在屏幕上表现一致（与 wind_speed_mps 同一约定）。
+## ★ 标定：默认 20 m/s + 默认半径 4 米，在 tools/fog_vortex_showcase 的数值自检里
+##   实测角色周围环流 ≈ 2.5~4.6 m/s（旋向与参数同号），与走路速度同量级 —— 看得见但不失控。
+@export_range(-40.0, 40.0, 0.1) var character_swirl_mps: float = 20.0
+## 涡流半径（米）：比角色大一圈比较自然（雾被卷动的范围）。3~4 是"贴着人绕"，
+## 5~8 是"整个人带起一团"。
+@export_range(0.5, 20.0, 0.1) var character_swirl_radius_m: float = 4.0
+## 角色周围的"挖雾"速率（每秒）：负值挖出比周围稀的洞，0 = 只搅不挖
+@export_range(-2.0, 2.0, 0.01) var character_carve: float = -0.4
+## 涡流强度的**参考速度**（m/s）：角色速度 / 本值 用来缩放切向速度
+## （走路≈3 m/s ⇒ 1.0 倍；跑起来更强，但夹在 0.25~1.6 倍之间，避免速度尖峰炸场）
+@export_range(0.5, 12.0, 0.1) var character_swirl_ref_speed: float = 3.0
+
+# ============ 角色涡流「可视化」（独立着色器层，做明暗变化） ============
+## ★ 为什么单独一层：浓雾里浓度早就饱和成**白幕**了 —— 白幕上没有细节，
+##   所以把浓度搅来搅去屏幕上什么都看不出来（这就是"改了参数也没效果"的真相）。
+##   这一层**完全不看浓度场**：在角色周身套一个螺旋条带的圆筒，用**明暗差**把涡卷画出来 ——
+##     暗带把白雾压成灰蓝条纹；亮带在深色草地/地面上提亮。
+##   于是无论背景是浓白雾还是深色地面，都能看见"绕着他卷的那股风"。
+##   角色静止时强度自动归零（整层全透明 = 等于没开）。
+@export var vortex_visual_enabled: bool = true
+## 涡流层**半径**（米）：只围着角色周身一点点空间，别设大（0.8~2.0 米足够）。
+## 0 = 自动取 character_swirl_radius_m × 0.25 夹到 0.8~2.0（永远贴住角色）。
+@export_range(0.0, 40.0, 0.1) var vortex_visual_radius_m: float = 1.5
+## 涡流层**高度**（米）：**任意值**，和半径没有任何关系（不做计算、不按比例推导）。
+## 半径、高度是两把独立的尺子：任意组合都成立 —— 着色器内部按各自尺寸完整归一化，
+## 所以"半径 1 米 + 高度 1.2 米"和"半径 3 米 + 高度 5 米"看到的是同一个图案，只是大小不同。
+@export_range(0.05, 40.0, 0.05) var vortex_visual_height_m: float = 2.6
+## 最大不透明度：涡流最浓能压多暗（0.3~0.6 自然；>0.8 会像贴上去的塑料条纹）
+@export_range(0.0, 1.0, 0.01) var vortex_visual_alpha: float = 0.62
+## 螺旋圈数：越大条纹越密（2~4 像一股风，>6 像细丝）
+@export_range(0.0, 8.0, 0.1) var vortex_visual_turns: float = 1.6
+## 旋转速度（圈/秒）
+@export_range(0.0, 6.0, 0.05) var vortex_visual_spin_speed: float = 1.4
+## 暗带颜色（把底下的浓白雾压暗，白幕上就靠它显形）
+@export var vortex_visual_dark := Color(0.30, 0.36, 0.47)
+## 亮带颜色（在深色草/地面上提亮，形成"被光扫过"的银边）
+@export var vortex_visual_light := Color(0.98, 0.99, 1.0)
+## 条纹锐度（越大越像细丝）
+@export_range(0.5, 8.0, 0.1) var vortex_visual_sharpness: float = 1.7
+## 条纹抖动：打散"规则螺旋"的塑料感
+@export_range(0.0, 1.0, 0.01) var vortex_visual_wobble: float = 0.28
+
 # ==================== 画笔底图 ====================
 ## 画笔数据（由 addons/fog_brush 插件在编辑器里刷）。可在编辑器里新建/指定 .tres/.png。
 @export var brush_field: FogBrushField
@@ -261,6 +324,11 @@ var _detail_texture: ImageTexture3D
 var _particle_noise: ImageTexture
 var _sun: DirectionalLight3D
 var _interactors: Array[Node3D] = []
+## 角色涡流可视化：跟随角色的螺旋条带圆筒（独立着色器，不看浓度场）
+var _vortex_visual: MeshInstance3D
+var _vortex_material: ShaderMaterial
+## character_group 里的节点（角色涡流的注入对象，与 _interactors 同一趟扫描）
+var _characters: Array[Node3D] = []
 var _interactor_previous := {}
 var _interactor_timer := 0.0
 ## 风目标（域单位/秒），用来让三维细节跟着风漂移
@@ -290,6 +358,8 @@ func _ready() -> void:
 	if volumetric_box:
 		_create_volume()
 	_create_particles()
+	# ★ 涡流可视化层：独立于浓度场（浓雾饱和时浓度扰动看不见，这一层直接画明暗条纹）
+	_create_vortex_visual()
 	# ★ 装配完成后立刻应用一次"雾层高度带"：属性 setter 在 _ready 之前跑过，
 	#   那时粒子/体积盒还不存在，所以必须在这里补一次（否则离地高度不生效）。
 	_apply_height_band()
@@ -368,6 +438,80 @@ func _create_volume() -> void:
 	add_child(_volume)
 	_base_opacity = fog_opacity
 	_bind_density_texture()
+
+
+func _create_vortex_visual() -> void:
+	_vortex_visual = MeshInstance3D.new()
+	_vortex_visual.name = "VortexSwirl"
+	# ★ 用"半径 1、高 1"的开口圆筒 + scale 缩放：改半径/高度不用重建网格
+	var cylinder := CylinderMesh.new()
+	cylinder.top_radius = 1.0
+	cylinder.bottom_radius = 1.0
+	cylinder.height = 1.0
+	cylinder.radial_segments = 64
+	cylinder.rings = 0
+	cylinder.cap_top = false
+	cylinder.cap_bottom = false
+	_vortex_visual.mesh = cylinder
+	_vortex_material = ShaderMaterial.new()
+	_vortex_material.shader = load(VORTEX_SWIRL_SHADER)
+	# ★ 必须画在体积雾**之后**：体积雾是 depth_test_disabled 的透明层，
+	#   优先级相同的话顺序不保证，涡流会被雾盖掉（表现就是"加了 shader 也看不见"）。
+	_vortex_material.render_priority = 1
+	_apply_vortex_visual_params()
+	_vortex_visual.material_override = _vortex_material
+	_vortex_visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# 圆筒在角色周围、随时可能被视锥剔除判定得保守一点
+	_vortex_visual.extra_cull_margin = 64.0
+	_vortex_visual.visible = false          # 角色没动之前不显示
+	add_child(_vortex_visual)
+
+
+## 样式类 uniform 的同步（形状/强度在 _update_vortex_visual 里每帧按角色更新）。
+func _apply_vortex_visual_params() -> void:
+	if _vortex_material == null:
+		return
+	_vortex_material.set_shader_parameter("alpha_max", vortex_visual_alpha)
+	_vortex_material.set_shader_parameter("turns", vortex_visual_turns)
+	_vortex_material.set_shader_parameter("spin_speed", vortex_visual_spin_speed)
+	_vortex_material.set_shader_parameter("dark_color", vortex_visual_dark)
+	_vortex_material.set_shader_parameter("light_color", vortex_visual_light)
+	_vortex_material.set_shader_parameter("streak_sharpness", vortex_visual_sharpness)
+	_vortex_material.set_shader_parameter("wobble", vortex_visual_wobble)
+	if _vortex_visual != null and not vortex_visual_enabled:
+		_vortex_visual.visible = false
+
+
+## 每帧把涡流层摆到角色身上（形状 + 强度 + 旋向）。
+## 强度按角色速度缩放 ⇒ 走得快卷得猛；速度 < 0.05 直接隐藏（站着不动什么都不显示）。
+func _update_vortex_visual(node: Node3D, speed_mps: float) -> void:
+	if _vortex_visual == null or _vortex_material == null:
+		return
+	if not vortex_visual_enabled or speed_mps < 0.05:
+		_vortex_visual.visible = false
+		return
+	# ★ 半径、高度是**两把独立的尺子**，不做任何互相推导：
+	#   半径只决定"围多大一圈"，高度只决定"这层有多高"，任意组合都成立。
+	#   着色器内部把 r 除以 radius、y 除以 height 全部归一化，
+	#   所以半径 1 米×高 1.2 米 与 半径 3 米×高 5 米 是同一个图案，只是大小不同。
+	var radius := vortex_visual_radius_m
+	if radius <= 0.0:
+		# 0 = 自动：取流体涡流半径的 1/4 并夹在 0.8~2.0 米 —— 永远只是"围着角色一点点"
+		radius = clampf(character_swirl_radius_m * 0.25, 0.8, 2.0)
+	radius = maxf(radius, 0.05)
+	var height := maxf(vortex_visual_height_m, 0.05)
+	_vortex_visual.visible = true
+	# 竖直居中在角色身上（底边贴地）：高度多高，就裹到多高，跟半径无关
+	_vortex_visual.global_position = node.global_position + Vector3(0.0, height * 0.5, 0.0)
+	_vortex_visual.scale = Vector3(radius, height, radius)
+	_vortex_material.set_shader_parameter("radius", radius)
+	_vortex_material.set_shader_parameter("height", height)
+	# 旋向跟 character_swirl_mps 的符号一致（0 时用 +1，靠强度为 0 不显示）
+	_vortex_material.set_shader_parameter("spin_sign",
+			1.0 if character_swirl_mps >= 0.0 else -1.0)
+	var reference := maxf(character_swirl_ref_speed, 0.1)
+	_vortex_material.set_shader_parameter("strength",
+			clampf(speed_mps / reference, 0.15, 1.6))
 
 
 func _create_particles() -> void:
@@ -491,6 +635,8 @@ func _process(delta: float) -> void:
 	_apply_weather()
 	if interactors_enabled:
 		_update_interactors(delta)
+	else:
+		_hide_vortex_visual()       # 关掉交互时别把涡流层留在原地
 	solver.step(delta)
 	_apply_volume_params()
 
@@ -700,14 +846,42 @@ func _count_nonzero_beams(ends: PackedVector4Array) -> int:
 	return used
 
 
-## 重新扫描交互体（组 fog_interactor）。
+## 重新扫描交互体（组 fog_interactor）+ 角色（组 character_group）。
 func _scan_interactors() -> void:
 	_interactors.clear()
+	_characters.clear()
 	if get_tree() == null:
 		return
 	for node in get_tree().get_nodes_in_group(interactor_group):
 		if node is Node3D:
 			_interactors.append(node as Node3D)
+	if not character_stir_enabled or character_group.is_empty():
+		return
+	for node in get_tree().get_nodes_in_group(character_group):
+		if node is Node3D:
+			_characters.append(node as Node3D)
+
+
+## 取节点本帧的速度：CharacterBody3D 用它的 velocity（更准，不受帧率抖动影响），
+## 其余节点（动画骨骼、被 tween 推的道具）用**位置差分** —— 对任何 Node3D 都成立。
+func _node_velocity(node: Node3D, delta: float) -> Vector3:
+	var position := node.global_position
+	var previous: Vector3 = _interactor_previous.get(node, position)
+	_interactor_previous[node] = position
+	if node is CharacterBody3D:
+		return (node as CharacterBody3D).velocity
+	return (position - previous) / delta
+
+
+## 这个角色是不是已经挂了 FogInteractor（自己或祖先/子节点）？是的话不再自动注入，
+## 否则同一个位置会被注入两份（浓度与速度都翻倍，看起来就像"参数突然变猛"）。
+func _handled_by_interactor(node: Node3D) -> bool:
+	for other in _interactors:
+		if not is_instance_valid(other):
+			continue
+		if other == node or other.is_ancestor_of(node) or node.is_ancestor_of(other):
+			return true
+	return false
 
 
 ## ★ 交互的核心：把"会动的东西"变成速度源 + 挖雾源投进流体场。
@@ -722,18 +896,13 @@ func _update_interactors(delta: float) -> void:
 	if _interactor_timer <= 0.0:
 		_interactor_timer = interactor_scan_interval
 		_scan_interactors()
-	if _interactors.is_empty():
+	if _interactors.is_empty() and _characters.is_empty():
 		return
 
 	for node in _interactors:
 		if not is_instance_valid(node):
 			continue
-		var position := node.global_position
-		var previous: Vector3 = _interactor_previous.get(node, position)
-		_interactor_previous[node] = position
-		var velocity := (position - previous) / delta
-		if node is CharacterBody3D:
-			velocity = (node as CharacterBody3D).velocity
+		var velocity := _node_velocity(node, delta)
 		if velocity.length() < 0.05:
 			continue                   # 静止的物体不该持续搅动，避免白白吃掉源配额
 		# 允许物体自带覆盖参数（FogInteractor 就提供这几个属性）
@@ -743,10 +912,17 @@ func _update_interactors(delta: float) -> void:
 			radius = float(node.get("fog_interactor_radius"))
 		if node.get("fog_interactor_carve") != null:
 			carve = float(node.get("fog_interactor_carve"))
+		# ★ 显式组件可以要"绕身涡流"：0 = 不转（**逐字等于旧行为**），正负 = 两个旋转方向。
+		#   组件给的是 m/s，这里换算成求解器的"域单位/秒"。
+		var spin := 0.0
+		if node.get("fog_interactor_spin_mps") != null:
+			spin = float(node.get("fog_interactor_spin_mps")) \
+					/ maxf(minf(domain_size.x, domain_size.y), 0.001)
 		# ★ 用**沿轴两段球**近似胶囊：交互体多半是竖直的角色/柱体，单球会在高度上失真。
 		#   每段都同时做三件事（这就是"物体排开介质"的最小实现）：
 		#     ① 挖洞（carve 负浓度）② 径向排开（radial，等价 OutwardVelocityMult）
 		#     ③ 沿运动方向拖拽（target_velocity = 物体速度）
+		#   外加可选的 ④ 绕心切向（spin，见 shader 的 splat_swirl）：这是"涡流环绕"。
 		var half_step := maxf(box_height * 0.18, 0.8)
 		var radial := (velocity * float(interactor_velocity_scale)).length() * 0.9 + 0.6
 		var radial_domain := radial / maxf(minf(domain_size.x, domain_size.y), 0.001)
@@ -756,9 +932,60 @@ func _update_interactors(delta: float) -> void:
 		for offset in [-half_step, half_step]:
 			# ★ 源的世界高度 = base_height + 带内 1/4 处 + 胶囊两段偏移：
 			#   雾带抬高后，交互也必须跟着抬，否则"挖洞"挖在空气里。
-			add_source(position + Vector3(0.0, base_height + box_height * 0.25 + offset, 0.0),
+			add_source(node.global_position + Vector3(0.0, base_height + box_height * 0.25 + offset, 0.0),
 					radius, carve, velocity * float(interactor_velocity_scale),
-					drag, radial_domain)
+					drag, radial_domain, spin)
+
+	_stir_characters(delta)
+
+
+## 角色涡流：把"正在移动的角色"变成绕身涡流源（这也是本项目角色的默认效果）。
+## ★ 与交互体**同一套注入**，只是半径/挖雾/切向速度用 character_* 那几个参数，
+##   而且挂过 FogInteractor 的角色会被跳过（显式组件优先，避免双份注入）。
+func _stir_characters(delta: float) -> void:
+	if not character_stir_enabled or _characters.is_empty():
+		_hide_vortex_visual()
+		return
+	var stirred := false
+	for node in _characters:
+		if not is_instance_valid(node):
+			continue
+		if _handled_by_interactor(node):
+			continue
+		var velocity := _node_velocity(node, delta)
+		var speed_mps := velocity.length()
+		if speed_mps < 0.05:
+			continue                   # 站着不动 ⇒ 不注入（旧观感不变）
+		# ★ 涡流可视化层：与浓度注入无关，只看"角色在不在动"（见 vortex_visual_* 的说明）
+		_update_vortex_visual(node, speed_mps)
+		stirred = true
+		var reference := maxf(character_swirl_ref_speed, 0.1)
+		var speed_factor := clampf(speed_mps / reference, 0.25, 1.6)
+		var radius := character_swirl_radius_m
+		var carve := character_carve
+		# m/s → 域单位/秒（与 add_source 的 target_velocity_domain 同一约定）
+		var spin := character_swirl_mps * speed_factor \
+				/ maxf(minf(domain_size.x, domain_size.y), 0.001)
+		if node.get("fog_interactor_radius") != null:
+			radius = float(node.get("fog_interactor_radius"))
+		if node.get("fog_interactor_carve") != null:
+			carve = float(node.get("fog_interactor_carve"))
+		if node.get("fog_interactor_spin_mps") != null:
+			spin = float(node.get("fog_interactor_spin_mps")) * speed_factor \
+					/ maxf(minf(domain_size.x, domain_size.y), 0.001)
+		var radial := speed_mps * 0.9 + 0.6
+		var radial_domain := radial / maxf(minf(domain_size.x, domain_size.y), 0.001)
+		# 径向排开（把雾挤开）+ 切向环流（绕身卷起）+ 挖雾：一个高斯源全做完
+		add_source(node.global_position, radius, carve,
+				Vector3.ZERO, Vector2.ZERO, radial_domain, spin)
+	if not stirred:
+		_hide_vortex_visual()
+
+
+## 没有一个角色在动 ⇒ 涡流层收起（透明 = 不花任何代价）
+func _hide_vortex_visual() -> void:
+	if _vortex_visual != null and _vortex_visual.visible:
+		_vortex_visual.visible = false
 
 
 ## 把 add_source() 攒下的源转成求解器的高斯源（世界坐标 -> 域坐标）。
@@ -786,7 +1013,7 @@ func _apply_pending_sources() -> void:
 				velocity.z / maxf(domain_size.y, 0.001)
 			)
 		solver.add_splat(uv, radius_uv, target, source_velocity_rate, density_rate,
-				float(source["radial"]))
+				float(source["radial"]), float(source["swirl"]))
 	_source_queue.clear()
 
 
@@ -824,6 +1051,8 @@ func _apply_solver_params() -> void:
 	# ★ 浓度增益：转发给求解器的画笔吸引增益 base_gain。
 	#   （此前 density_gain 在 FogField 里**声明了却从未被读取**，是个死旋钮。）
 	solver.set_base_gain(density_gain)
+	# ★ 底图地板强度：0 时角色/法术的挖雾与涡流才压得下**可见**浓度（见该属性的说明）
+	solver.set_base_floor(composite_base_floor)
 
 
 ## 粒子侧的每帧参数（受光配色之外的运动/外观）。
@@ -882,6 +1111,8 @@ func _apply_volume_params() -> void:
 	# ★ 求解器参数每帧同步（否则面板上的涡量/耗散要等 rebuild 才生效）
 	_apply_solver_params()
 	_apply_particle_params()
+	# ★ 涡流可视化层的**样式**也每帧同步：面板上改颜色/圈数/锐度要立刻看得到
+	_apply_vortex_visual_params()
 	if _volume_material == null:
 		# 纯粒子模式：没有体积盒，但**光源/光束数据仍然要打包给粒子着色器**
 		_apply_local_sources()
@@ -966,11 +1197,14 @@ func _apply_volume_params() -> void:
 ## velocity_world 是"这片区域的目标风速"（m/s，只用 XZ 分量），不是冲量。
 ## radial_speed 是**径向排开速度**（域单位/秒，0 = 关闭）：>0 时该区域的速度被推向
 ##   "离开源中心"的方向 —— 物体挤开介质（FluidNinja 的 OutwardVelocityMult）。
+## swirl_speed 是**绕心切向速度**（域单位/秒，0 = 关闭）：>0 / <0 为两个旋转方向。
+##   它给该区域叠加一个绕源中心的切向目标速度 ⇒ 浓度场被卷成螺旋（"涡流环绕"）。
+##   ★ 想要"角色跑过、雾绕着转"用这个；只想要"把雾推开"用 radial_speed。
 ## 若希望源持续起效（篝火/角色），请**每帧**调用本函数（它只影响当帧）。
 func add_source(world_position: Vector3, radius_m: float,
 		density_rate: float, velocity_world: Vector3 = Vector3.ZERO,
 		target_velocity_domain: Vector2 = Vector2.ZERO,
-		radial_speed: float = 0.0) -> void:
+		radial_speed: float = 0.0, swirl_speed: float = 0.0) -> void:
 	_source_queue.append({
 		"position": world_position,
 		"radius": maxf(radius_m, 0.01),
@@ -978,7 +1212,18 @@ func add_source(world_position: Vector3, radius_m: float,
 		"velocity": velocity_world,
 		"target": target_velocity_domain,
 		"radial": maxf(radial_speed, 0.0),
+		"swirl": swirl_speed,
 	})
+
+
+## 只投一个**涡流**（绕心环流）的便捷接口：不挖雾、不排开，纯旋转。
+## radius_m 是涡流半径（米），spin_mps 是切向风速（m/s，正负 = 旋转方向）。
+## 例：`field.add_vortex(pos, 4.0, 8.0)` —— 在 pos 周围卷起一个半径 4 米、切向 8 m/s 的涡。
+func add_vortex(world_position: Vector3, radius_m: float = 3.0,
+		spin_mps: float = 8.0, density_rate: float = 0.0) -> void:
+	var spin := spin_mps / maxf(minf(domain_size.x, domain_size.y), 0.001)
+	add_source(world_position, radius_m, density_rate,
+			Vector3.ZERO, Vector2.ZERO, 0.0, spin)
 
 
 ## 直接指定风（m/s，世界 XZ）。调用后 auto_weather 的风向不再覆盖它（雾场被"接管"）。

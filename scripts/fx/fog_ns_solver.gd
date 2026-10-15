@@ -84,6 +84,11 @@ var vorticity_strength: float = 2.5
 var base_relax: float = 0.6
 ## 底图增益：>1 让刷出来的雾更浓
 var base_gain: float = 1.0
+## 底图**地板**强度（0..1）：1 = 旧行为（合成时 `浓度 = max(模拟, 底图×增益)`）。
+## 0 = 底图只当吸引子（base_relax），挖雾/涡流才压得下可见浓度。
+## ★ 为什么要有它：底图被刷满时 `max` 会把可见浓度锁死在 1，扰动全部不可见。
+## 细节见 ns_composite.gdshader 的 base_floor 注释。
+var base_floor: float = 1.0
 ## 合成通道的平滑权重（压掉低分辨率的格子感）
 var smooth_weight: float = 0.35
 
@@ -106,9 +111,12 @@ var _splat_radius: Array[float] = []
 var _splat_velocity: Array[Vector2] = []
 var _splat_velocity_rate: Array[float] = []
 var _splat_radial: Array[float] = []
+var _splat_swirl: Array[float] = []
 var _splat_density: Array[float] = []
 var _splat_vectors := PackedVector4Array()
 var _splat_forces := PackedVector4Array()
+## 每帧上传给 advect_velocity 的切向速度数组（长度必须恒为 MAX_SPLATS）
+var _splat_swirl_values := PackedFloat32Array()
 var _ready_done := false
 var _frame_delta: float = 0.0
 # 诊断计数：外部（自检脚本）可读，用于确认链真的在推进
@@ -118,6 +126,7 @@ var steps_done: int = 0
 func _ready() -> void:
 	_splat_vectors.resize(MAX_SPLATS)
 	_splat_forces.resize(MAX_SPLATS)
+	_splat_swirl_values.resize(MAX_SPLATS)
 	# 默认自动建链：FogField 直接实例化它就能用；也允许先改参数再手动 setup()。
 	if _passes.is_empty():
 		setup()
@@ -292,6 +301,7 @@ func _apply_static_uniforms() -> void:
 	if composite != null:
 		composite.set_shader_parameter("smooth_weight", smooth_weight)
 		composite.set_shader_parameter("base_gain", base_gain)
+		composite.set_shader_parameter("base_floor", base_floor)
 	_apply_base_texture()
 
 
@@ -361,15 +371,18 @@ func _flush_splats() -> void:
 					_splat_velocity[i].x, _splat_velocity[i].y,
 					_splat_velocity_rate[i], _splat_radial[i]
 				)
+				_splat_swirl_values[i] = _splat_swirl[i]
 			else:
 				_splat_vectors[i] = Vector4.ZERO
 				_splat_forces[i] = Vector4.ZERO
+				_splat_swirl_values[i] = 0.0
 
 	var advect_velocity := _pass_material("advect_velocity")
 	if advect_velocity != null:
 		advect_velocity.set_shader_parameter("splat_count", count)
 		advect_velocity.set_shader_parameter("splats", _splat_vectors)
 		advect_velocity.set_shader_parameter("splat_force", _splat_forces)
+		advect_velocity.set_shader_parameter("splat_swirl", _splat_swirl_values)
 
 	var advect_density := _pass_material("advect_density")
 	if advect_density != null:
@@ -381,6 +394,7 @@ func _flush_splats() -> void:
 	_splat_velocity.clear()
 	_splat_velocity_rate.clear()
 	_splat_radial.clear()
+	_splat_swirl.clear()
 	_splat_density.clear()
 
 
@@ -398,8 +412,12 @@ func _flush_splats() -> void:
 ## density_rate        浓度变化速率（每秒）：0.5 = 半秒把一格灌满；0 = 只推速度
 ##                     ★ **允许负值**：负值就是"把雾推开/挖掉"（角色穿过雾时挖洞），
 ##                       浓度通道最后会 clamp 到 0..1，所以不会出现负浓度。
+## swirl               绕心**切向**速度（域单位/秒）：>0 / <0 = 两个旋转方向，0 = 关闭
+##                     （**0 时逐字等于旧行为**）。它给目标速度叠加一个绕源中心的切向量，
+##                     浓度会被这个环流卷成螺旋 —— "角色跑过、雾绕着转"就靠它。
 func add_splat(uv: Vector2, radius_uv: float, target_velocity: Vector2,
-		velocity_rate: float, density_rate: float, radial_speed: float = 0.0) -> void:
+		velocity_rate: float, density_rate: float, radial_speed: float = 0.0,
+		swirl: float = 0.0) -> void:
 	if _splat_uv.size() >= MAX_SPLATS:
 		return
 	_splat_uv.append(Vector2(clampf(uv.x, 0.0, 1.0), clampf(uv.y, 0.0, 1.0)))
@@ -407,6 +425,7 @@ func add_splat(uv: Vector2, radius_uv: float, target_velocity: Vector2,
 	_splat_velocity.append(target_velocity)
 	_splat_velocity_rate.append(maxf(velocity_rate, 0.0))
 	_splat_radial.append(maxf(radial_speed, 0.0))
+	_splat_swirl.append(swirl)
 	# 只夹到 [-1, 1]：负值用来"挖雾"，绝对值过大反而会让单帧变化过猛
 	_splat_density.append(clampf(density_rate, -1.0, 1.0))
 
@@ -424,6 +443,15 @@ func set_base_gain(value: float) -> void:
 		var material := _pass_material(pass_name)
 		if material != null:
 			material.set_shader_parameter("base_gain", base_gain)
+
+
+## 设定底图**地板**强度（0..1，1 = 旧行为）。同样**立即**重传（见 set_base_gain 的注记）：
+## 运行中把它从 1 改成 0，下一帧起角色/法术的挖雾就能把可见浓度压下去。
+func set_base_floor(value: float) -> void:
+	base_floor = clampf(value, 0.0, 1.0)
+	var composite := _pass_material("composite")
+	if composite != null:
+		composite.set_shader_parameter("base_floor", base_floor)
 
 
 func set_wind(velocity_domain: Vector2) -> void:

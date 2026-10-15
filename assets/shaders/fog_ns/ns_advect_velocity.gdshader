@@ -39,6 +39,16 @@ uniform vec4 splats[8];
  *  ★ 曾经把力乘上 splat.w（浓度分量）—— 于是"只推速度、不投雾"的源完全失效
  *    （w=0 把力乘成 0，表现为"热源完全没反应"）。一个分量不要身兼两职。 */
 uniform vec4 splat_force[8];
+/** ★ 每个高斯源的**绕心切向速度**（域单位/秒）：>0 一个方向、<0 相反方向、0 = 关闭
+ *  （**逐字等于旧行为**）。
+ *  【为什么需要它】原来的两种注入都是"平移"：drag 把这片区域推向某个方向，radial 把它
+ *   推向"离开源中心"。两者都**没有旋转**，所以物体穿过雾只会排开/拖拽，不会卷。
+ *   本项给目标速度叠加一个**绕源中心 ±90° 的切向量** ⇒ 该区域整体绕心环流。
+ *   浓度是被动标量，由半拉格朗日平流输运 ⇒ 环流会把它**自然卷成螺旋臂**，
+ *   不需要额外写浓度通道，也不需要新增管线（用满已有的 8 个源配额）。
+ *  【符号与轴向】cell 是纹理单元坐标（v 向下），所以正负号只表示"顺时针/逆时针"，
+ *   具体哪边由调用方用带符号的参数决定（如 FogField.character_swirl_mps）。 */
+uniform float splat_swirl[8];
 
 const int MAX_SPLATS = 8;
 
@@ -81,6 +91,16 @@ void fragment() {
 		if (source.w > 0.0) {
 			vec2 outward = cell - center;
 			target_velocity = (length(outward) > 0.001 ? normalize(outward) : vec2(0.0)) * source.w;
+		}
+		// ★ 涡流（"绕身环绕"的来源）：在目标速度上再叠加一个**切向**分量 ——
+		//   把 radial 的"推开"和这里的"绕"叠在一起，就是"角色把雾挤开、同时卷着走"。
+		//   splat_swirl[i] == 0 时整块被跳过 ⇒ 旧行为逐字不变。
+		float swirl = splat_swirl[i];
+		if (abs(swirl) > 0.0) {
+			vec2 r = cell - center;
+			float rl = length(r);
+			vec2 tangent = rl > 0.001 ? vec2(-r.y, r.x) / rl : vec2(0.0);
+			target_velocity += tangent * swirl;
 		}
 		advected += (target_velocity - advected) * gaussian * clamp(source.z * dt, 0.0, 1.0);
 	}

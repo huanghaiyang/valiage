@@ -41,6 +41,29 @@ const TEST_FILES := [
 	"res://tests/test_fog_brush_field.gd",
 ]
 
+## ★ 检查器（Inspector）契约：这些属性必须**带 PROPERTY_USAGE_EDITOR** 出现在脚本的导出
+##   属性表里 —— 否则美术在检查器里根本看不到它们。写属性时最容易犯的两个错就是
+##   "漏了 @export"（普通 var 不进检查器）和"改了名字但忘了同步面板/文档"，
+##   这条哨兵把第一个错变成红字。
+const INSPECTOR_EXPECTED := {
+	"res://scripts/fx/fog_field.gd": [
+		"character_stir_enabled", "character_group", "character_swirl_mps",
+		"character_swirl_radius_m", "character_carve", "character_swirl_ref_speed",
+		"composite_base_floor", "base_relax", "density_dissipation",
+		"vortex_visual_enabled", "vortex_visual_alpha", "vortex_visual_turns", "vortex_visual_spin_speed", "vortex_visual_height_m", "vortex_visual_radius_m", "vortex_visual_sharpness", "vortex_visual_wobble", "vortex_visual_dark", "vortex_visual_light",
+	],
+	"res://scripts/fx/fog_interactor.gd": ["vortex_spin_mps"],
+}
+
+## ★ 笔刷面板（addons/fog_brush 的坞面板）要跟检查器保持同一套旋钮：
+##   面板控件与 FogField 属性**同名**是两边的契约（见 fog_brush_plugin.gd 的注释）。
+const DOCK_EXPECTED_CONTROLS := [
+	"character_stir_enabled", "character_swirl_mps", "character_swirl_radius_m",
+	"character_carve", "character_swirl_ref_speed", "character_group",
+		"composite_base_floor", "base_relax", "density_dissipation",
+		"vortex_visual_enabled", "vortex_visual_alpha", "vortex_visual_turns", "vortex_visual_spin_speed", "vortex_visual_height_m", "vortex_visual_radius_m", "vortex_visual_sharpness", "vortex_visual_wobble", "vortex_visual_dark", "vortex_visual_light",
+]
+
 const COMPUTE_SHADERS := [
 	"res://assets/shaders/fog_ns/probe_write.glsl",
 ]
@@ -81,6 +104,8 @@ func _build_targets() -> void:
 		_targets.append({"kind": "script", "path": path})
 	for path in DOCK_FILES:
 		_targets.append({"kind": "dock", "path": path})
+	for path in INSPECTOR_EXPECTED.keys():
+		_targets.append({"kind": "inspector", "path": path})
 	for path in COMPUTE_SHADERS:
 		_targets.append({"kind": "compute", "path": path})
 	for path in FRAGMENT_SHADERS:
@@ -113,6 +138,8 @@ func _process(_delta: float) -> void:
 			_check_script(path, true)
 		"dock":
 			_check_dock(path)
+		"inspector":
+			_check_inspector(path)
 		"compute":
 			_check_compute_shader(path)
 		"fragment":
@@ -160,7 +187,43 @@ func _check_dock(path: String) -> void:
 	_ck("%s 面板信号齐全" % path, missing_signals.is_empty(),
 			"缺少：%s" % str(missing_signals) if not missing_signals.is_empty() else "%d 个信号" % signals.size())
 
+	# ★ 角色涡流那几个旋钮必须真的在面板上（否则"检查器里有、面板里没有"，
+	#   而本项目的调参入口就是这块面板）。
+	var controls = dock.get("_fog_controls")
+	var missing_knobs: Array[String] = []
+	for param_name in DOCK_EXPECTED_CONTROLS:
+		if controls == null or not (controls as Dictionary).has(param_name):
+			missing_knobs.append(param_name)
+	_ck("%s 角色涡流旋钮都在面板上" % path, missing_knobs.is_empty(),
+			"缺少：%s" % str(missing_knobs) if not missing_knobs.is_empty() else "%d 个旋钮" % DOCK_EXPECTED_CONTROLS.size())
+
 	dock.queue_free()
+
+
+## 检查器契约：脚本里必须存在这些**导出**属性（带 PROPERTY_USAGE_EDITOR）。
+## ★ 为什么能这么查：`get_script_property_list()` 返回的正是编辑器用来填检查器的那张表，
+##   `@export` 会给属性打上 PROPERTY_USAGE_EDITOR；写漏 @export 的普通 var 不会带这个标记。
+func _check_inspector(path: String) -> void:
+	if not ResourceLoader.exists(path):
+		_skipped += 1
+		print("  [SKIP] %s（尚未实现）" % path)
+		return
+	var script := load(path) as GDScript
+	if script == null or not script.can_instantiate():
+		_ck("%s 可实例化（检查器属性表来自脚本）" % path, false, "脚本解析失败")
+		return
+	var editable := {}
+	for prop in script.get_script_property_list():
+		if int(prop["usage"]) & PROPERTY_USAGE_EDITOR:
+			editable[String(prop["name"])] = true
+	var expected: Array = INSPECTOR_EXPECTED[path]
+	var missing: Array[String] = []
+	for prop_name in expected:
+		if not editable.has(prop_name):
+			missing.append(prop_name)
+	_ck("%s 的新属性出现在检查器里" % path, missing.is_empty(),
+			"缺少 @export：%s" % str(missing) if not missing.is_empty()
+			else "%d 个属性可见（共 %d 个可编辑）" % [expected.size(), editable.size()])
 
 
 func _ck(label: String, ok: bool, extra: String = "") -> void:

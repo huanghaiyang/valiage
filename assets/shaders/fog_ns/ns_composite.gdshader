@@ -18,6 +18,14 @@ uniform sampler2D base_tex : filter_nearest, repeat_disable;
 uniform float smooth_weight;
 /** 底图在合成里的兜底增益 */
 uniform float base_gain;
+/** ★ 底图**地板**强度（0..1，默认 1 = **逐字等于旧行为**）：
+ *  1 = 底图是硬地板：`浓度 = max(模拟, 底图×增益)` —— 笔迹还没被模拟长出来时不会突然消失；
+ *  0 = 底图只通过"向底图松弛"（ns_advect_density 的 base_relax）当**吸引子**，不再当地板。
+ *  【为什么需要这个旋钮】底图一旦被刷满（浓度 1），`max` 就把**可见浓度锁死在 1**：
+ *  角色/法术的挖雾、涡流、风都只能让模拟值变化，而渲染读到的永远是 1 ⇒
+ *  "雾气扰动没效果"（实测：底图 1.0 + carve −1.4 时角色脚下浓度仍是 1.000）。
+ *  地板去掉后，扰动才落得到可见浓度上（底图形状仍由 base_relax 拽住，不会散掉）。 */
+uniform float base_floor = 1.0;
 /** 清零请求（1 = 本帧输出 0，供 FogNsSolver.clear_density() 用） */
 uniform float clear_request;
 
@@ -36,7 +44,7 @@ void fragment() {
 		neighbors *= 0.25;
 
 		float smoothed = mix(center, neighbors, clamp(smooth_weight, 0.0, 1.0));
-		float painted = texture(base_tex, SCREEN_UV).r * base_gain;
+		float painted = texture(base_tex, SCREEN_UV).r * base_gain * clamp(base_floor, 0.0, 1.0);
 
 		COLOR = vec4(clamp(max(smoothed, painted), 0.0, 1.0), 0.0, 0.0, 1.0);
 	}
