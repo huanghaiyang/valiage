@@ -1,4 +1,4 @@
-[gd_scene load_steps=18 format=3 uid="uid://bsmrb5nocmcin"]
+[gd_scene format=3 uid="uid://bwda7q02s3xuy"]
 
 [ext_resource type="Script" uid="uid://dnan3ytl8evv1" path="res://addons/fog_layer/Dock/CloudsEditorController.gd" id="1_c42ej"]
 [ext_resource type="Texture2D" uid="uid://l06i8g7p2msv" path="res://addons/fog_layer/Dock/Icons/caret-down-solid.svg" id="2_8dri0"]
@@ -100,15 +100,10 @@ layout_mode = 2
 text = "掩码文件:"
 
 [node name="LineEdit" type="LineEdit" parent="ScrollContainer/VBoxContainer/HBoxContainer"]
-visible = false   # ★ 掩码已改为内存，不再有文件路径（隐藏此输入框）
+visible = false
 layout_mode = 2
 size_flags_horizontal = 3
 text = "res://addons/fog_layer/CloudsMask.png"
-
-[node name="MaskBuildButton" type="Button" parent="ScrollContainer/VBoxContainer"]
-layout_mode = 2
-size_flags_horizontal = 0
-text = "刷新掩码引用"
 
 [node name="MaskSettings" type="PanelContainer" parent="ScrollContainer/VBoxContainer"]
 layout_mode = 2
@@ -347,7 +342,6 @@ custom_minimum_size = Vector2(0, 50)
 layout_mode = 2
 
 [connection signal="text_submitted" from="ScrollContainer/VBoxContainer/HBoxContainer/LineEdit" to="." method="UpdateMaskSettings" unbinds=1]
-[connection signal="pressed" from="ScrollContainer/VBoxContainer/MaskBuildButton" to="." method="UpdateMaskSettings"]
 [connection signal="value_changed" from="ScrollContainer/VBoxContainer/MaskSettings/VBoxContainer/Resolution/SpinBox" to="." method="UpdateMaskSettings" unbinds=1]
 [connection signal="value_changed" from="ScrollContainer/VBoxContainer/MaskSettings/VBoxContainer/Width/SpinBox" to="." method="UpdateMaskSettings" unbinds=1]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/PanelContainer/VBoxContainer/VBoxContainer/CheckButton" to="." method="SetCloudsUpdating"]

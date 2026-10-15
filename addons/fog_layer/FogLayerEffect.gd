@@ -51,15 +51,21 @@ class_name FogLayerEffect
 @export var cloud_ceiling : float = 45.0
 
 @export_subgroup("Performance")
-@export var max_step_count : float = 192
-@export var max_lighting_steps : float = 12
-@export_enum("Native","Half","Quarter","Eighth") var resolution_scale = 0:
+@export_range(1, 512, 1) var max_step_count : float = 48     # ★ 最小 1（步数=1 最省）
+@export_range(1, 64, 1) var max_lighting_steps : float = 4   # ★ 最小 1
+## 雾的计算分辨率：**1% ~ 100%**（100 = 原生分辨率；越小越快。雾是软效果，30%~50% 通常看不出差别）
+@export_range(1, 100, 1) var resolution_percent : int = 50:
 	get:
-		return resolution_scale
+		return resolution_percent
 	set(value):
-		resolution_scale = value
+		resolution_percent = value
 		last_size = Vector2i(0, 0)
 		lights_updated = true
+
+
+## 由百分比换算"降采样除数"：100% -> 1，50% -> 2，10% -> 10，1% -> 100
+func _resscale() -> int:
+	return maxi(1, int(round(100.0 / float(clampi(resolution_percent, 1, 100)))))
 @export_range(0, 2) var lod_bias : float = 2.0
 
 @export_subgroup("Noise Textures")
@@ -83,7 +89,7 @@ class_name FogLayerEffect
 @export_subgroup("Performance")
 @export var min_step_distance : float = 0.6
 @export var max_step_distance : float = 2.0
-@export var lighting_travel_distance : float = 70.0
+@export_range(1.0, 500.0, 1.0) var lighting_travel_distance : float = 20.0   # ★ 最小 1
 
 @export_subgroup("Mask")
 @export var extra_large_used_as_mask : bool = true
@@ -248,10 +254,10 @@ func adapt_to_ground_fog() -> void:
 	small_noise_scale = 12.0
 	mask_width_km = 0.4
 	extra_large_used_as_mask = true
-	max_step_count = 192
+	max_step_count = 48
 	lod_bias = 2.0
-	max_lighting_steps = 12
-	resolution_scale = 0
+	max_lighting_steps = 4
+	resolution_percent = 50
 	clouds_detail_power = 0.8
 	dither_speed = 15.0
 	curl_noise_strength = 3.0
@@ -263,7 +269,7 @@ func adapt_to_ground_fog() -> void:
 	clouds_coverage = 0.65
 	atmospheric_density = 0.03
 	lighting_density = 2.0
-	resolution_scale = 1
+	resolution_percent = 50
 	print("FogLayerEffect: 检测到云层尺度参数 -> 已自动适配为地面雾（贴地 0~45 米 / 掩码 400 米 / 薄雾）")
 
 func _notification(what):
@@ -640,7 +646,7 @@ func _render_callback(effect_callback_type, render_data):
 			if size.x == 0 and size.y == 0:
 				return
 			
-			var resscale = int(pow(2.0, float(resolution_scale)))
+			var resscale = _resscale()
 			#match resolution_scale:
 				#0: 
 					#resscale = 1
@@ -1281,7 +1287,7 @@ func update_matrices(camera_tr, view_proj, new_size: Vector2i):
 	else:
 		general_data.encode_float(idx, 0.0); idx += 4
 	
-	general_data.encode_float(idx, int(pow(2.0, float(resolution_scale)))); idx += 4
+	general_data.encode_float(idx, _resscale()); idx += 4
 	#
 	#general_data.encode_float(idx, last_size.x); idx += 4
 	#general_data.encode_float(idx, last_size.y); idx += 4

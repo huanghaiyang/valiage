@@ -249,6 +249,47 @@ func _export_mask_to_tres() -> void:
 	driver.mask_resource = loaded_res if loaded_res != null else mres
 	print("Fog Layer: 掩码已转存 %s（err=%d,%d）⇒ 之后保存场景只写 ExtResource ✓" % [tres_path, e1, e2])
 	_refresh_mask_path_display()
+	_add_perf_controls()
+
+## 把性能参数做进左侧面板（4 个滑条，直接读写 clouds_resource 上的导出属性）。
+##   为什么：这些属性本来只在资源检查器里（Performance 分组）⇒ 面板上看不到 ✗。
+func _add_perf_controls() -> void:
+	var parent := get_node_or_null("ScrollContainer/VBoxContainer/MaskSettings/VBoxContainer")
+	if parent == null or parent.has_node("PerfControls"):
+		return
+	var box := VBoxContainer.new()
+	box.name = "PerfControls"
+	var title := Label.new()
+	title.text = "性能（数值越小越快）"
+	box.add_child(title)
+	_perf_slider(box, "步数上限 max_step_count", 1.0, 512.0, 1.0, "max_step_count")
+	_perf_slider(box, "计算分辨率 %", 1.0, 100.0, 1.0, "resolution_percent")
+	_perf_slider(box, "光照步数 max_lighting_steps", 1.0, 64.0, 1.0, "max_lighting_steps")
+	_perf_slider(box, "光照距离 lighting_travel_distance", 1.0, 500.0, 1.0, "lighting_travel_distance")
+	parent.add_child(box)
+	print("Fog Layer: 已添加【性能】控件（步数/分辨率/光照步数/光照距离）")
+
+
+func _perf_slider(parent: Node, label_text: String, mn: float, mx: float, step: float, prop: String) -> void:
+	var row := HBoxContainer.new()
+	var lb := Label.new()
+	lb.text = label_text
+	lb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(lb)
+	var sl := HSlider.new()
+	sl.min_value = mn
+	sl.max_value = mx
+	sl.step = step
+	sl.custom_minimum_size = Vector2(160, 0)
+	if driver != null and driver.clouds_resource != null:
+		sl.value = float(driver.clouds_resource.get(prop))
+	sl.value_changed.connect(func(v: float) -> void:
+		if driver != null and driver.clouds_resource != null:
+			driver.clouds_resource.set(prop, v)
+			driver.clouds_resource.lights_updated = true     # 让渲染侧下次重建时用上新值
+	)
+	row.add_child(sl)
+	parent.add_child(row)
 
 func ClearMask() -> void:
 	if rd == null:
@@ -396,6 +437,7 @@ func SceneChanged(scene_root : Node):
 	currentRoot = scene_root
 	driver = RetrieveCloudsDriver(scene_root)
 	_refresh_mask_path_display()
+	_add_perf_controls()
 	# ★ 掩码来源只有一个：驱动上的 FogMaskResource（直接引用，不猜路径/场景名）
 	if driver != null and driver.clouds_resource != null and driver.mask_resource != null and driver.mask_resource.mask != null:
 		driver.clouds_resource.reload_mask_from_image(driver.mask_resource.mask)

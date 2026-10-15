@@ -146,6 +146,7 @@ func _apply_lights_data(dir_data : Array[Vector4], point_data : Array[Vector4], 
 	clouds_resource.lights_updated = true
 
 var _weather : Node = null
+var _last_sample_msec : int = 0   # add_sample 节流（每帧做会每帧触发一次 GPU 采样回传 ✗）
 ## 这个 Compositor 是本驱动建的（删除节点时应当一并撤掉）
 var _created_compositor : bool = false
 var _w_cached_dir := Vector2(2.0, 2.0)   # 缓存：只有天气真的变了才写属性（每帧写会触发重建/卡顿）
