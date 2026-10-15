@@ -1,0 +1,86 @@
+keys,zh_CN
+clouds_coverage,雾覆盖度
+clouds_density,雾浓度
+atmospheric_density,大气散射强度
+lighting_density,受光强度
+clouds_sharpness,边缘锐度
+clouds_detail_power,细节强度
+curl_noise_strength,卷曲强度
+wind_swept_range,风扫高度范围
+wind_swept_strength,风扫强度
+extra_large_noise_scale,超大结构尺度
+large_noise_scale,大结构尺度
+medium_noise_scale,中结构尺度
+small_noise_scale,小结构尺度
+cloud_floor,层底(自动)
+cloud_ceiling,层顶(自动)
+fog_base_height,离地高度(米)
+fog_thickness,层厚(米)
+max_step_count,最大步数
+max_lighting_steps,最大光照步数
+resolution_scale,渲染分辨率
+lod_bias,LOD 偏置
+dither_speed,抖动速度
+min_step_distance,最小步长
+max_step_distance,最大步长
+lighting_travel_distance,光照行进距离
+mask_width_km,掩码覆盖宽度(km)
+extra_large_used_as_mask,启用笔刷掩码
+accumulation_decay,时间累积衰减
+clouds_anisotropy,各向异性
+lighting_sharpness,光照锐度
+atmosphere_color,大气颜色
+cloud_ambient_color,雾环境光颜色
+cloud_ambient_tint,雾环境光染色
+ambient_occlusion_color,环境遮蔽颜色
+fog_effect_ground,贴地雾效果
+use_environment_fog,使用环境雾颜色
+blur_power,模糊强度
+blur_quality,模糊质量
+wind_direction,风向
+origin_offset,原点偏移
+current_time,当前时间
+dither_noise,抖动噪声
+height_gradient,高度剖面
+extra_large_noise_patterns,超大结构图案
+large_scale_noise,大尺度噪声
+medium_scale_noise,中尺度噪声
+small_scale_noise,小尺度噪声
+curl_noise,卷曲噪声
+pre_pass_compute_shader,预处理计算着色器
+compute_shader,主计算着色器
+post_pass_compute_shader,后处理计算着色器
+directional_lights_data,平行光数据
+point_lights_data,点光数据
+point_effector_data,点影响器数据
+enabled,启用
+effect_callback_type,回调时机
+needs_motion_vectors,需要运动矢量
+access_resolved_color,读取已解析颜色
+access_resolved_depth,读取已解析深度
+needs_normal_roughness,需要法线粗糙度
+Lights,光照
+Wind Controls,风控制
+Compositor Resource,合成器资源
+Optional World Environment,可选世界环境
+Light Controls,光照控制
+Internal Use,内部使用
+update_continuously,持续更新
+clouds_resource,雾资源（compositor effect）
+ambience_sample_environment,环境采样（WorldEnvironment）
+tracked_directional_lights,跟踪的平行光
+tracked_directional_light_shadow_steps,平行光阴影步数
+tracked_point_lights,跟踪的点光
+tracked_point_effectors,跟踪的点影响器
+directional_light_power_multiplier,平行光强度倍率
+point_light_power_multiplier,点光强度倍率
+origin_offset,原点偏移
+wind_direction,风向
+extra_large_structures_wind_speed,超大结构风速
+large_structures_wind_speed,大结构风速
+medium_structures_wind_speed,中结构风速
+small_structures_wind_speed,小结构风速
+extra_large_scale_clouds_position,超大结构位置
+large_scale_clouds_position,大结构位置
+medium_scale_clouds_position,中结构位置
+detail_clouds_position,细节位置

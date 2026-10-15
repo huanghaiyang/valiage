@@ -1,0 +1,1424 @@
+@tool
+extends CompositorEffect
+class_name FogLayerEffect
+
+@export_tool_button("Refresh Compute", "Clear") var refresh_action = refresh_compute
+
+
+@export_group("Basic Settings")
+@export_range(0, 1) var clouds_coverage : float = 0.65
+@export_range(0, 20) var clouds_density : float = 1.0
+@export_range(0, 2) var atmospheric_density : float = 0.03
+@export_range(0, 10) var lighting_density : float = 2.0
+@export_range(0, 1) var fog_effect_ground : float = 1.0
+@export_range(0, 1) var use_environment_fog : float = 0.0
+
+@export_subgroup("Colors")
+@export_range(0, 1) var clouds_anisotropy : float = 0.16
+@export_range(0, 1) var clouds_powder : float = 0.5
+@export var cloud_ambient_color : Color = Color(0.761, 0.784, 0.824, 1.0)
+@export var cloud_ambient_tint : Color = Color(0.133, 0.2, 0.243, 1.0)
+
+@export var atmosphere_color : Color = Color(1.0, 1.0, 1.0, 1.0)
+@export var sampled_environment_fog_color : Color = Color(0.518, 0.553, 0.608, 1.0)
+@export var ambient_occlusion_color : Color = Color(0.35, 0.4, 0.34, 1.0)
+
+@export_subgroup("Structure")
+@export_range(0, 1) var accumulation_decay : float = 0.7
+@export_range(10, 5000) var extra_large_noise_scale : float = 600.0
+@export_range(10, 2000) var large_noise_scale : float = 200.0
+@export_range(5, 500) var medium_noise_scale : float = 60.0
+@export_range(1, 200) var small_noise_scale : float = 12.0
+@export_range(0, 2) var clouds_sharpness : float = 0.746
+@export_range(0, 3) var clouds_detail_power : float = 0.8
+@export_range(0, 50) var curl_noise_strength : float = 3.0
+@export_range(0, 2) var lighting_sharpness : float = 0.38
+@export_range(0, 1) var wind_swept_range : float = 0.54
+@export_range(0, 20) var wind_swept_strength : float = 3.0
+
+# ★★ 地面雾的两个直观旋钮（映射到下面的 cloud_floor/cloud_ceiling，shader 与 uniform 无需改动）
+#    fog_base_height = 雾层**离地高度**（base，单位米；0 = 贴地）
+#    fog_thickness   = 雾层**厚度**（最小 0.1 米，可做极薄的一层）
+@export_range(0.0, 100.0, 0.01) var fog_base_height : float = 0.1:
+	set(v):
+		fog_base_height = max(v, 0.0)
+		_sync_fog_layer()
+@export_range(0.1, 100.0, 0.05) var fog_thickness : float = 1.2:
+	set(v):
+		fog_thickness = max(v, 0.1)
+		_sync_fog_layer()
+@export var cloud_floor : float = -5.0
+@export var cloud_ceiling : float = 45.0
+
+@export_subgroup("Performance")
+@export var max_step_count : float = 192
+@export var max_lighting_steps : float = 12
+@export_enum("Native","Half","Quarter","Eighth") var resolution_scale = 0:
+	get:
+		return resolution_scale
+	set(value):
+		resolution_scale = value
+		last_size = Vector2i(0, 0)
+		lights_updated = true
+@export_range(0, 2) var lod_bias : float = 2.0
+
+@export_subgroup("Noise Textures")
+@export var dither_noise : Texture3D
+@export var height_gradient : Texture2D
+@export var extra_large_noise_patterns : Texture2D
+@export var large_scale_noise : Texture3D
+@export var medium_scale_noise : Texture3D
+@export var small_scale_noise : Texture3D
+@export var curl_noise : Texture3D
+
+@export_group("Advanced Settings")
+@export_subgroup("Visuals")
+@export_range(0, 1000) var dither_speed : float = 15.111
+@export_range(0, 20) var blur_power : float = 2.0
+@export_range(0, 6) var blur_quality : float = 1.0
+
+@export_subgroup("Reflections")
+@export var reflections_globalshaderparam : String = ""
+
+@export_subgroup("Performance")
+@export var min_step_distance : float = 0.6
+@export var max_step_distance : float = 2.0
+@export var lighting_travel_distance : float = 70.0
+
+@export_subgroup("Mask")
+@export var extra_large_used_as_mask : bool = true
+@export var mask_width_km : float = 0.4;
+
+@export_group("Compute Shaders")
+@export var pre_pass_compute_shader : RDShaderFile
+@export var compute_shader : RDShaderFile
+@export var post_pass_compute_shader : RDShaderFile
+
+@export_group("Internal Use")
+@export var origin_offset : Vector3 = Vector3.ZERO
+@export_subgroup("Positions")
+@export var wind_direction : Vector3 = Vector3.ZERO
+var extra_large_scale_clouds_position : Vector3 = Vector3.ZERO
+var large_scale_clouds_position : Vector3 = Vector3.ZERO
+var medium_scale_clouds_position : Vector3 = Vector3.ZERO
+var detail_clouds_position : Vector3 = Vector3.ZERO
+var current_time : float = 0.0
+
+@export_subgroup("光照")
+@export var directional_lights_data : Array[Vector4] = []
+@export var point_lights_data : Array[Vector4] = []
+@export var point_effector_data : Array[Vector4] = []
+
+var positionQueries : Array[Vector3] = []
+var positionQueryCallables : Array[Callable] = []
+var positionQuerying : bool = false
+var positionResetting : bool = false
+
+var lights_updated = false
+
+## 把云层尺度的参数压成地面雾尺度（幂等；已是地面雾则什么都不做）
+## 运行时掩码（Image 对象，由 FogLayerDriver 从 FogMaskResource 推入；不入存档）
+var rd : RenderingDevice
+var maskDrawnRid : RID = RID()
+var last_size : Vector2i = Vector2i.ZERO
+## 1x1 黑纹理：掩码不可用时绑它 ⇒ 权重 0 ⇒ 没有雾（不回退噪声，避免满屏白）
+var black_mask_rid : RID = RID()
+
+var runtime_mask_image : Image = null
+var _last_state_msec : int = 0   # 状态打印节流
+
+
+## 直接推入掩码图像：编辑器与游戏同一条路，**不涉及任何文件路径**
+var shader : RID = RID()
+var pipeline : RID = RID()
+var prepass_shader : RID = RID()
+var prepass_pipeline : RID = RID()
+var postpass_shader : RID = RID()
+var postpass_pipeline : RID = RID()
+var display_shader : RID = RID()
+var display_pipeline : RID = RID()
+var display_vertex_format : int
+var display_vertex_buffer : RID = RID()
+var display_vertex_array : RID = RID()
+var framebuffer_format : int
+var nearest_sampler : RID = RID()
+var linear_sampler : RID = RID()
+var linear_sampler_no_repeat : RID = RID()
+var general_data_buffer : RID = RID()
+var light_data_buffer : RID = RID()
+var camera_override_buffer : RID = RID()
+var _prev_cam_transform : Transform3D = Transform3D.IDENTITY
+var _prev_view_proj : Projection = Projection.IDENTITY
+var _has_prev_camera : bool = false
+var point_sample_data_buffer : RID = RID()
+var accumulation_textures : Array[RID] = []
+var resized_depth : RID = RID()
+var color_images : Array[RID] = []
+var blit_screen_images : Array[RID] = []
+var buffers : RenderSceneBuffersRD
+var uniform_sets : Array[RID] = []
+var general_data : PackedByteArray
+var light_data : PackedByteArray
+var accumulation_is_a : bool = false
+var ignore_accumilation : bool = false
+var first_run : bool = true
+var filter_index = 0
+var last_render_target : RID
+var last_msaa_mode := RenderingServer.ViewportMSAA.VIEWPORT_MSAA_DISABLED
+var msaa_mode := RenderingServer.ViewportMSAA.VIEWPORT_MSAA_DISABLED
+var mask_white := PackedByteArray()
+
+
+const CAMERA_UBO_BYTES : int = 544
+
+
+## 由编辑器面板推入自己的内存掩码纹理（面板绘制用）
+func update_mask(rid: RID) -> void:
+	maskDrawnRid = rid
+	runtime_mask_image = null      # 面板接管：否则重建时又会拿资源里的旧图覆盖（一键清除会失效）
+	last_size = Vector2i.ZERO      # 触发下一帧用新掩码重建
+
+func _init():
+	# ★ 本项目的适配：这个资源可能是"云层尺度"的老值（floor 1500 / ceiling 25000 /
+	#   步长几百米 / 掩码 32 公里）。一旦发现是云层尺度，就地压成**地面雾**尺度，
+	#   这样无论在编辑器还是运行期、无论资源是哪来的，都不会再"雾在天上、笔圈巨大"。
+	adapt_to_ground_fog()
+	effect_callback_type = CompositorEffect.EFFECT_CALLBACK_TYPE_PRE_TRANSPARENT
+	access_resolved_depth = true
+	access_resolved_color = true
+	needs_motion_vectors = true
+	RenderingServer.call_on_render_thread(initialize_compute)
+
+
+## 把云层尺度的参数压成地面雾尺度（幂等；已是地面雾则什么都不做）
+
+
+func add_sample(callable : Callable, position : Vector3):
+	#if (positionQueries.size() == 32):
+		#print("Max cloud position sample queue reached (32), query failed.")
+		#return
+	positionQueries.append(position)
+	positionQueryCallables.append(callable)
+
+
+
+func reload_mask_from_image(img: Image) -> void:
+	runtime_mask_image = img
+	if img == null:
+		return
+	maskDrawnRid = RID()
+	last_size = Vector2i.ZERO
+	RenderingServer.call_on_render_thread(initialize_compute)
+
+
+## 把两个直观旋钮同步到 shader 实际使用的 cloud_floor / cloud_ceiling
+func _sync_fog_layer() -> void:
+	cloud_floor = max(fog_base_height, 0.0)
+	cloud_ceiling = cloud_floor + max(fog_thickness, 0.1)
+
+
+## 强制重建（面板/驱动在掩码变化后调用）
+func refresh_compute():
+	if rd == null:
+		rd = RenderingServer.get_rendering_device()
+	maskDrawnRid = RID()
+	last_size = Vector2i.ZERO
+	RenderingServer.call_on_render_thread(initialize_compute)
+
+func adapt_to_ground_fog() -> void:
+	# ★ 触发条件覆盖所有"云层尺度残留"：不只是层高/掩码，还包括 curl 位移(>50m)、
+	#   光照行程(>200m)、每步密度(>1.2)、dither 速度(>30)、步长(>50m)。
+	#   这样任何被"存了旧值"的资源（含场景内嵌资源）加载时都会被压到地面尺度。
+	var is_cloud_scale := cloud_floor > 200.0 or cloud_ceiling > 500.0 \
+			or mask_width_km > 1.0 or max_step_distance > 50.0 \
+			or curl_noise_strength > 50.0 or lighting_travel_distance > 200.0 \
+			or clouds_density > 1.2 or dither_speed > 30.0 \
+			or extra_large_noise_scale > 20000.0 or small_noise_scale > 500.0
+	if not is_cloud_scale:
+		return
+	fog_base_height = 0.1
+	fog_thickness = 1.2
+	_sync_fog_layer()
+	min_step_distance = 0.6
+	max_step_distance = 2.0
+	lighting_travel_distance = 70.0
+	extra_large_noise_scale = 600.0
+	large_noise_scale = 200.0
+	medium_noise_scale = 60.0
+	small_noise_scale = 12.0
+	mask_width_km = 0.4
+	extra_large_used_as_mask = true
+	max_step_count = 192
+	lod_bias = 2.0
+	max_lighting_steps = 12
+	resolution_scale = 0
+	clouds_detail_power = 0.8
+	dither_speed = 15.0
+	curl_noise_strength = 3.0
+	wind_swept_strength = 3.0
+	ambient_occlusion_color = Color(0.35, 0.4, 0.34, 1.0)
+	# ★ 不是越浓越好看：太浓 + 太阳没喂进来时会显示成"一整块黑板"。
+	#   地面雾按**薄雾**给默认值，先能看见地形再往上加。
+	clouds_density = 1.0
+	clouds_coverage = 0.65
+	atmospheric_density = 0.03
+	lighting_density = 2.0
+	resolution_scale = 1
+	print("FogLayerEffect: 检测到云层尺度参数 -> 已自动适配为地面雾（贴地 0~45 米 / 掩码 400 米 / 薄雾）")
+
+func _notification(what):
+	if what == NOTIFICATION_PREDELETE and is_instance_valid(self):
+		RenderingServer.call_on_render_thread(clear_compute)
+
+func clear_compute():
+	if rd:
+		if pipeline.is_valid():
+			rd.free_rid(pipeline)
+		pipeline = RID()
+
+		if shader.is_valid():
+			rd.free_rid(shader)
+		shader = RID()
+
+		if prepass_pipeline.is_valid():
+			rd.free_rid(prepass_pipeline)
+		prepass_pipeline = RID()
+
+		if prepass_shader.is_valid():
+			rd.free_rid(prepass_shader)
+		prepass_shader = RID()
+
+		if postpass_pipeline.is_valid():
+			rd.free_rid(postpass_pipeline)
+		postpass_pipeline = RID()
+
+		if postpass_shader.is_valid():
+			rd.free_rid(postpass_shader)
+		postpass_shader = RID()
+
+		if display_pipeline.is_valid():
+			rd.free_rid(display_pipeline)
+		display_pipeline = RID()
+
+		if display_shader.is_valid():
+			rd.free_rid(display_shader)
+		display_shader = RID()
+
+		if display_vertex_array.is_valid():
+			rd.free_rid(display_vertex_array)
+		display_vertex_array = RID()
+
+		if display_vertex_buffer.is_valid():
+			rd.free_rid(display_vertex_buffer)
+		display_vertex_buffer = RID()
+
+		if nearest_sampler.is_valid():
+			rd.free_rid(nearest_sampler)
+		nearest_sampler = RID()
+		
+		if linear_sampler.is_valid():
+			rd.free_rid(linear_sampler)
+		linear_sampler = RID()
+		
+		if linear_sampler_no_repeat.is_valid():
+			rd.free_rid(linear_sampler_no_repeat)
+		linear_sampler_no_repeat = RID()
+		
+		if general_data_buffer.is_valid():
+			rd.free_rid(general_data_buffer)
+		general_data_buffer = RID()
+		
+		if light_data_buffer.is_valid():
+			rd.free_rid(light_data_buffer)
+		light_data_buffer = RID()
+
+		if camera_override_buffer.is_valid():
+			rd.free_rid(camera_override_buffer)
+		camera_override_buffer = RID()
+		
+		if point_sample_data_buffer.is_valid():
+			rd.free_rid(point_sample_data_buffer)
+		point_sample_data_buffer = RID()
+		
+		if resized_depth.is_valid():
+			rd.free_rid(resized_depth)
+		resized_depth = RID()
+		
+		if accumulation_textures.size() > 0:
+			for item in accumulation_textures:
+				if item.is_valid():
+					rd.free_rid(item)
+			accumulation_textures.clear()
+
+		if blit_screen_images.size() > 0:
+			for item in blit_screen_images:
+				if item.is_valid():
+					rd.free_rid(item)
+			blit_screen_images.clear()
+
+
+## 平均 alpha 采样：判断这张掩码是不是"整张纯白"（= 满屏白，绝不是正常笔迹）
+##   纯白掩码会让整个场景全白，且完全掩盖其它问题 ⇒ 加载时忽略、保存时拒存。
+func mask_mean_alpha(img: Image) -> float:
+	if img == null:
+		return 0.0
+	var st : int = maxi(1, int(img.get_width() / 64))
+	var sum_a := 0.0
+	var n := 0
+	var xx := 0
+	while xx < img.get_width():
+		var yy := 0
+		while yy < img.get_height():
+			sum_a += img.get_pixel(xx, yy).a
+			n += 1
+			yy += st
+		xx += st
+	return sum_a / float(maxi(n, 1))
+
+
+func initialize_compute():
+	_sync_fog_layer()   # ★ 生效时机：加载完资源的属性后再同步一次
+	first_run = true
+	if not rd:
+		rd = RenderingServer.get_rendering_device()
+		if not rd:
+			enabled = false
+			printerr("No rendering device on load.")
+			return
+	clear_compute()
+	
+	var sampler_state = RDSamplerState.new()
+	sampler_state.min_filter = RenderingDevice.SAMPLER_FILTER_NEAREST
+	sampler_state.mag_filter = RenderingDevice.SAMPLER_FILTER_NEAREST
+	sampler_state.repeat_u = RenderingDevice.SAMPLER_REPEAT_MODE_REPEAT
+	sampler_state.repeat_v = RenderingDevice.SAMPLER_REPEAT_MODE_REPEAT
+	sampler_state.repeat_w = RenderingDevice.SAMPLER_REPEAT_MODE_REPEAT
+	nearest_sampler = rd.sampler_create(sampler_state)
+	
+	var linear_sampler_state = RDSamplerState.new()
+	linear_sampler_state.min_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
+	linear_sampler_state.mag_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
+	linear_sampler_state.repeat_u = RenderingDevice.SAMPLER_REPEAT_MODE_REPEAT
+	linear_sampler_state.repeat_v = RenderingDevice.SAMPLER_REPEAT_MODE_REPEAT
+	linear_sampler_state.repeat_w = RenderingDevice.SAMPLER_REPEAT_MODE_REPEAT
+	linear_sampler = rd.sampler_create(linear_sampler_state)
+	
+	var linear_sampler_state_no_repeat = RDSamplerState.new()
+	linear_sampler_state_no_repeat.min_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
+	linear_sampler_state_no_repeat.mag_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
+	linear_sampler_state_no_repeat.repeat_u = RenderingDevice.SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE
+	linear_sampler_state_no_repeat.repeat_v = RenderingDevice.SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE
+	linear_sampler_state_no_repeat.repeat_w = RenderingDevice.SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE
+	linear_sampler_no_repeat = rd.sampler_create(linear_sampler_state_no_repeat)
+	
+	if not black_mask_rid.is_valid():
+		var black_fmt := RDTextureFormat.new()
+		black_fmt.format = RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT
+		black_fmt.width = 1
+		black_fmt.height = 1
+		black_fmt.usage_bits = RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT
+		var black_bytes := PackedByteArray()
+		black_bytes.resize(16)
+		black_mask_rid = rd.texture_create(black_fmt, RDTextureView.new(), [black_bytes])
+	if not dither_noise:
+		dither_noise = ResourceLoader.load("res://addons/fog_layer/NoiseTextures/bluenoise_Dither.png")
+	if not height_gradient:
+		height_gradient = ResourceLoader.load("res://addons/fog_layer/NoiseTextures/HeightGradient.tres")
+	if not extra_large_noise_patterns:
+		extra_large_noise_patterns = ResourceLoader.load("res://addons/fog_layer/NoiseTextures/ExtraLargeScaleNoise.tres")
+	if not large_scale_noise:
+		large_scale_noise = ResourceLoader.load("res://addons/fog_layer/NoiseTextures/LargeScaleNoise.tres")
+	if not medium_scale_noise:
+		medium_scale_noise = ResourceLoader.load("res://addons/fog_layer/NoiseTextures/MediumScaleNoise.tres")
+	if not small_scale_noise:
+		small_scale_noise = ResourceLoader.load("res://addons/fog_layer/NoiseTextures/SmallScaleNoise.tres")
+	if not curl_noise:
+		curl_noise = ResourceLoader.load("res://addons/fog_layer/NoiseTextures/curl_noise_varied.tga")
+
+	# ★ 自动初始化"全黑掩码"：开了 Use Mask 但没人建过掩码时，原代码会**回退去用噪声图案**
+	#   ⇒ 表现就是"还没刷，整片地面已经有雾"。这里先建一张全 0 掩码：
+	#   黑 = 覆盖度 0 = 没有雾；笔刷画到哪，哪里才有雾。
+	if extra_large_used_as_mask and not maskDrawnRid.is_valid():
+		var mask_res : int = 512
+		var mask_fmt := RDTextureFormat.new()
+		mask_fmt.format = RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT   # ★ 16 字节/像素，与 Image.FORMAT_RGBAF 一致
+		mask_fmt.width = mask_res
+		mask_fmt.height = mask_res
+		mask_fmt.depth = 1
+		mask_fmt.array_layers = 1
+		mask_fmt.mipmaps = 1
+		mask_fmt.usage_bits = RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT \
+				| RenderingDevice.TEXTURE_USAGE_STORAGE_BIT \
+				| RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT \
+				| RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT
+		# ★ 掩码极性（按完整 shader 链 + 原示例掩码的实际表现）：**白(1)=允许出雾，黑(0)=完全无雾**。
+		#   （SunshineCloudsCompute.glsl:195-197 的 remap(shape, 1-largeShape, 1) 在 mask=0 时上下界相等 ⇒ 退化为 0）
+		#   所以未画状态必须是**黑(0)**，否则一进去就是满屏雾。
+		# ★★ 游戏运行时必走这里：面板是编辑器专属，游戏里拿不到内存掩码，
+		#    所以从磁盘加载"编辑器里画好后自动保存"的掩码（PNG，alpha 保留权重）。
+		var mask_img : Image = runtime_mask_image   # ★ 首选：直接推入的图像（无路径）
+		if mask_img != null and mask_mean_alpha(mask_img) > 0.98:
+			print("FogLayerEffect: 【白掩码护栏】掩码资源几乎整张纯白(%.3f)，按空掩码处理 ⇒ 不显示雾" % mask_mean_alpha(mask_img))
+			mask_img = null
+		if mask_img != null:
+			if mask_img.is_compressed():
+				mask_img.decompress()
+			if mask_img.get_format() != Image.FORMAT_RGBAF:
+				mask_img.convert(Image.FORMAT_RGBAF)
+			if mask_img.has_mipmaps():
+				mask_img.clear_mipmaps()
+			if mask_img.get_width() != mask_res or mask_img.get_height() != mask_res:
+				mask_img.resize(mask_res, mask_res, Image.INTERPOLATE_LANCZOS)
+			print("FogLayerEffect: 使用掩码资源（%dx%d）" % [mask_img.get_width(), mask_img.get_height()])
+			# ★ 打印平均 alpha：0≈没雾、1≈整屏白，一眼判断掩码内容
+			var sum_a := 0.0
+			var n_a := 0
+			var st := maxi(1, int(mask_img.get_width() / 64))
+			var xx := 0
+			while xx < mask_img.get_width():
+				var yy := 0
+				while yy < mask_img.get_height():
+					sum_a += mask_img.get_pixel(xx, yy).a
+					n_a += 1
+					yy += st
+				xx += st
+			if n_a > 0:
+				print("FogLayerEffect: 掩码平均 alpha = %.3f（0=无雾 / 1=整屏白）" % (sum_a / float(n_a)))
+		if mask_img == null:
+			var mask_black := PackedByteArray()
+			mask_black.resize(mask_res * mask_res * 16)   # RGBA32F：16 字节/像素，全 0 = 没有雾
+			mask_img = Image.create_from_data(mask_res, mask_res, false, Image.FORMAT_RGBAF, mask_black)
+		maskDrawnRid = rd.texture_create(mask_fmt, RDTextureView.new(), [mask_img.get_data()])
+		_log_state(mask_img)   # ★ 每次重建掩码时打印一行状态，用于对比编辑器与游戏
+		print("FogLayerEffect: 掩码未初始化 -> 自动建全黑掩码（%.0f 米 / %d²）⇒ 未画处无雾"
+				% [mask_width_km * 1000.0, mask_res])
+	
+	if not compute_shader:
+		compute_shader = ResourceLoader.load("res://addons/fog_layer/SunshineCloudsCompute.glsl")
+	if not pre_pass_compute_shader:
+		pre_pass_compute_shader = ResourceLoader.load("res://addons/fog_layer/SunshineCloudsPreCompute.glsl")
+	var display_shader_file : RDShaderFile
+	if msaa_mode == RenderingServer.ViewportMSAA.VIEWPORT_MSAA_DISABLED:
+		post_pass_compute_shader = ResourceLoader.load("res://addons/fog_layer/SunshineCloudsPostCompute.glsl")
+		display_shader_file = ResourceLoader.load("res://addons/fog_layer/SunshineCloudsDisplay.glsl")
+	else:
+		post_pass_compute_shader = ResourceLoader.load("res://addons/fog_layer/SunshineCloudsPostCompute.msaa.glsl")
+		display_shader_file = ResourceLoader.load("res://addons/fog_layer/SunshineCloudsDisplay.msaa.glsl")
+
+	if not compute_shader or not pre_pass_compute_shader or not post_pass_compute_shader or not display_shader_file:
+		enabled = false
+		printerr("No Shader found on load.")
+		clear_compute()
+		return
+	
+	
+	var prepass_shader_spirv = pre_pass_compute_shader.get_spirv()
+	prepass_shader = rd.shader_create_from_spirv(prepass_shader_spirv)
+	if prepass_shader.is_valid():
+		prepass_pipeline = rd.compute_pipeline_create(prepass_shader)
+	else:
+		enabled = false
+		printerr("Prepass Shader failed to compile.")
+		clear_compute()
+		return
+	
+	
+	var shader_spirv = compute_shader.get_spirv()
+	shader = rd.shader_create_from_spirv(shader_spirv)
+	if shader.is_valid():
+		pipeline = rd.compute_pipeline_create(shader)
+	else:
+		enabled = false
+		printerr("Shader failed to compile.")
+		clear_compute()
+		return
+	
+	
+	var postpass_shader_spirv = post_pass_compute_shader.get_spirv()
+	postpass_shader = rd.shader_create_from_spirv(postpass_shader_spirv)
+	if postpass_shader.is_valid():
+		postpass_pipeline = rd.compute_pipeline_create(postpass_shader)
+	else:
+		enabled = false
+		printerr("Post pass Shader failed to compile.")
+		clear_compute()
+		return
+
+
+	var display_shader_spirv = display_shader_file.get_spirv()
+	display_shader = rd.shader_create_from_spirv(display_shader_spirv)
+	if not display_shader.is_valid():
+		enabled = false
+		printerr("Display Shader failed to compile.")
+		clear_compute()
+		return
+
+
+	var display_vertex_attributes : Array[RDVertexAttribute] = [RDVertexAttribute.new()]
+	display_vertex_attributes[0].format = RenderingDevice.DataFormat.DATA_FORMAT_R32G32_SFLOAT
+	display_vertex_attributes[0].frequency = RenderingDevice.VERTEX_FREQUENCY_VERTEX
+	display_vertex_attributes[0].location = 0
+	display_vertex_attributes[0].offset = 0
+	display_vertex_attributes[0].stride = 8
+
+	display_vertex_format = rd.vertex_format_create(display_vertex_attributes)
+
+	# full-screen quad
+	var display_vertex_data : PackedByteArray = PackedFloat32Array([
+		-1.0, -1.0,
+		 1.0, -1.0,
+		-1.0,  1.0,
+		-1.0,  1.0,
+		 1.0, -1.0,
+		 1.0,  1.0,
+	]).to_byte_array()
+	display_vertex_buffer = rd.vertex_buffer_create(display_vertex_data.size(), display_vertex_data)
+	display_vertex_array = rd.vertex_array_create(6, display_vertex_format, [display_vertex_buffer])
+
+	last_msaa_mode = msaa_mode
+
+func initialize_raster_pipelines(color_texture : RID, depth_texture : RID):
+	var rd := RenderingServer.get_rendering_device()
+	assert(rd != null)
+
+	# ★ 防御：传入无效图层时，下面的 rd.texture_get_format() 会直接报 Parameter "tex" is null
+	if not color_texture.is_valid() or not depth_texture.is_valid():
+		return
+
+	var framebuffer_attachmentformats : Array[RDAttachmentFormat] = [ RDAttachmentFormat.new(), RDAttachmentFormat.new() ]
+	framebuffer_attachmentformats[0].format = rd.texture_get_format(color_texture).format
+	framebuffer_attachmentformats[0].samples = rd.texture_get_format(color_texture).samples
+	framebuffer_attachmentformats[0].usage_flags = rd.texture_get_format(color_texture).usage_bits
+	framebuffer_attachmentformats[1].format = rd.texture_get_format(depth_texture).format
+	framebuffer_attachmentformats[1].samples = rd.texture_get_format(depth_texture).samples
+	framebuffer_attachmentformats[1].usage_flags = rd.texture_get_format(depth_texture).usage_bits
+	framebuffer_format = rd.framebuffer_format_create(framebuffer_attachmentformats);
+
+	var pipeline_rasterization_state := RDPipelineRasterizationState.new()
+
+	var pipeline_multisample_state := RDPipelineMultisampleState.new()
+	match msaa_mode:
+		RenderingServer.ViewportMSAA.VIEWPORT_MSAA_2X:
+			pipeline_multisample_state.sample_count = RenderingDevice.TextureSamples.TEXTURE_SAMPLES_2
+		RenderingServer.ViewportMSAA.VIEWPORT_MSAA_4X:
+			pipeline_multisample_state.sample_count = RenderingDevice.TextureSamples.TEXTURE_SAMPLES_4
+		RenderingServer.ViewportMSAA.VIEWPORT_MSAA_8X:
+			pipeline_multisample_state.sample_count = RenderingDevice.TextureSamples.TEXTURE_SAMPLES_8
+		_:
+			pipeline_multisample_state.sample_count = RenderingDevice.TextureSamples.TEXTURE_SAMPLES_1
+
+	var pipeline_depthstencil_state := RDPipelineDepthStencilState.new()
+
+	var pipeline_colorblend_state := RDPipelineColorBlendState.new()
+	var pipeline_colorblend_state_attachment := RDPipelineColorBlendStateAttachment.new()
+	pipeline_colorblend_state.attachments.append(pipeline_colorblend_state_attachment)
+
+	display_pipeline = rd.render_pipeline_create(display_shader, framebuffer_format, display_vertex_format, RenderingDevice.RenderPrimitive.RENDER_PRIMITIVE_TRIANGLES, pipeline_rasterization_state, pipeline_multisample_state, pipeline_depthstencil_state, pipeline_colorblend_state)
+
+## 状态打印（每 2 秒最多一条）：用于对比"编辑器 vs 游戏"到底哪一项不同
+func _log_state(mask_img: Image) -> void:
+	var now := Time.get_ticks_msec()
+	if now - _last_state_msec < 2000:
+		return
+	_last_state_msec = now
+	var ma := mask_mean_alpha(mask_img) if mask_img != null else 0.0
+	var mres : int = mask_img.get_width() if mask_img != null else 0
+	print("FogLayerEffect 状态: 掩码均值=%.3f 宽度=%.0fm 层=%.2f..%.2f 浓度=%.2f 分辨率=%d 编辑器=%s"
+		% [ma, mask_width_km * 1000.0, cloud_floor, cloud_ceiling, clouds_density, mres, str(Engine.is_editor_hint())])
+
+
+func _render_callback(effect_callback_type, render_data):
+	if rd == null:
+		initialize_compute()
+	elif pipeline.is_valid() and height_gradient and extra_large_noise_patterns and large_scale_noise and medium_scale_noise and small_scale_noise and dither_noise and curl_noise:
+		buffers = render_data.get_render_scene_buffers() as RenderSceneBuffersRD
+		if buffers:
+			msaa_mode = buffers.get_msaa_3d()
+			var is_msaa_on := msaa_mode != RenderingServer.ViewportMSAA.VIEWPORT_MSAA_DISABLED
+
+			var size = buffers.get_internal_size()
+			if size.x == 0 and size.y == 0:
+				return
+			
+			var resscale = int(pow(2.0, float(resolution_scale)))
+			#match resolution_scale:
+				#0: 
+					#resscale = 1
+				#1: 
+					#resscale = 2
+				#2: 
+					#resscale = 4
+				#3: 
+					#resscale = 8
+			
+			var new_size = size / resscale
+			var view_count = buffers.get_view_count()
+			var rendersceneData : RenderSceneData = render_data.get_render_scene_data();
+
+			# ★★ 关键守卫：视口重建/切 MSAA 的那一帧，颜色层与深度层 RID 会是无效的。
+			#   一旦把无效 RID 交给 rd.texture_get_format() / FramebufferCacheRD，就会报：
+			#     Parameter "tex" is null
+			#     Uniforms were never supplied for set (0) at the time of drawing, …
+			#   （编辑器的 3D 视口每次改尺寸都会走到这一帧；点笔刷会强制多渲染一帧，所以"绘制时"也会撞上）
+			#   这一帧直接跳过：不做任何 RD 调用，等下一帧图层就绪。
+			var color_layer : RID = buffers.get_color_layer(0, is_msaa_on)
+			var depth_layer : RID = buffers.get_depth_layer(0, is_msaa_on)
+			if not color_layer.is_valid() or not depth_layer.is_valid():
+				return
+
+			if size != last_size or uniform_sets == null or uniform_sets.size() != view_count * 4 or color_images.size() == 0 or color_images[0] != color_layer or blit_screen_images.size() == 0 or msaa_mode != last_msaa_mode:
+				# ★ 重建前先把这次要用到的所有图层验证一遍：任一层无效就整帧跳过，
+				#   否则重建到一半 return 会留下 color_images 半填、blit_screen_images 已清空的坏状态。
+				#   这条检查挡掉的正是编辑器里 "Parameter tex is null" + "set (0) was never supplied" 的那一帧。
+				var layers_ok := true
+				for v in range(view_count):
+					if not buffers.get_color_layer(v, false).is_valid() \
+							or not buffers.get_depth_layer(v, false).is_valid() \
+							or not buffers.get_color_layer(v, is_msaa_on).is_valid():
+						layers_ok = false
+						break
+				if not layers_ok:
+					return
+
+				initialize_compute()
+				initialize_raster_pipelines(color_layer, depth_layer)
+
+				accumulation_textures.clear()
+				uniform_sets.clear()
+
+				color_images.clear()
+				for item in blit_screen_images:
+					if item.is_valid():
+						rd.free_rid(item)
+				blit_screen_images.clear()
+
+				for view in range(view_count):
+					color_images.append(buffers.get_color_layer(view, false))
+
+					var depth_image : RID = buffers.get_depth_layer(view, false)
+
+					var blankImageData : PackedByteArray = []
+					blankImageData.resize(new_size.x * new_size.y * 4 * 4)
+					
+					var base_colorformat : RDTextureFormat = rd.texture_get_format(color_images[view])
+
+					var blit_screen_format : RDTextureFormat = rd.texture_get_format(buffers.get_color_layer(view, is_msaa_on))
+					blit_screen_format.usage_bits |= RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT
+					blit_screen_images.append(rd.texture_create(blit_screen_format, RDTextureView.new()))
+
+					base_colorformat.format = RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT
+					base_colorformat.width = new_size.x
+					base_colorformat.height = new_size.y
+					
+					accumulation_textures.append(rd.texture_create(base_colorformat, RDTextureView.new(), [blankImageData]))
+					accumulation_textures.append(rd.texture_create(base_colorformat, RDTextureView.new(), [blankImageData]))
+					accumulation_textures.append(rd.texture_create(base_colorformat, RDTextureView.new(), [blankImageData]))
+					accumulation_textures.append(rd.texture_create(base_colorformat, RDTextureView.new(), [blankImageData]))
+					accumulation_textures.append(rd.texture_create(base_colorformat, RDTextureView.new(), [blankImageData]))
+					accumulation_textures.append(rd.texture_create(base_colorformat, RDTextureView.new(), [blankImageData]))
+					
+					#reflections
+					accumulation_textures.append(rd.texture_create(base_colorformat, RDTextureView.new(), [blankImageData]))
+					
+					general_data_buffer = rd.uniform_buffer_create(256)
+					
+					var depthformat : RDTextureFormat = rd.texture_get_format(depth_image)
+					depthformat.width = new_size.x
+					depthformat.height = new_size.y
+					depthformat.format = RenderingDevice.DATA_FORMAT_R32_SFLOAT
+					depthformat.usage_bits = RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT
+					resized_depth = rd.texture_create(depthformat, RDTextureView.new(), [])
+
+					#region Prepass Compute Shader
+					var prepass_uniforms_array : Array[RDUniform] = []
+					var prepass_depth_uniform = RDUniform.new()
+					prepass_depth_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+					prepass_depth_uniform.binding = 0
+					prepass_depth_uniform.add_id(nearest_sampler)
+					prepass_depth_uniform.add_id(depth_image)
+					prepass_uniforms_array.append(prepass_depth_uniform)
+					
+					var prepass_depth_output_uniform = RDUniform.new()
+					prepass_depth_output_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+					prepass_depth_output_uniform.binding = 1
+					prepass_depth_output_uniform.add_id(resized_depth)
+					prepass_uniforms_array.append(prepass_depth_output_uniform)
+					
+					var prepass_camera_uniform = RDUniform.new()
+					prepass_camera_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_UNIFORM_BUFFER
+					prepass_camera_uniform.binding = 2
+					prepass_camera_uniform.add_id(general_data_buffer)
+					prepass_uniforms_array.append(prepass_camera_uniform)
+					
+					uniform_sets.append(rd.uniform_set_create(prepass_uniforms_array, prepass_shader, 0))
+					#endregion
+
+					#region Base Compute Shader
+					var uniforms_array : Array[RDUniform] = []
+					var output_data_uniform = RDUniform.new()
+					output_data_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+					output_data_uniform.binding = 0
+					output_data_uniform.add_id(accumulation_textures[view * 7])
+					uniforms_array.append(output_data_uniform)
+					
+					var output_color_uniform = RDUniform.new()
+					output_color_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+					output_color_uniform.binding = 1
+					output_color_uniform.add_id(accumulation_textures[view * 7 + 1])
+					uniforms_array.append(output_color_uniform)
+					
+					var accum1A_uniform = RDUniform.new()
+					accum1A_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+					accum1A_uniform.binding = 2
+					accum1A_uniform.add_id(accumulation_textures[view * 7 + 2])
+					uniforms_array.append(accum1A_uniform)
+					
+					var accum1B_uniform = RDUniform.new()
+					accum1B_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+					accum1B_uniform.binding = 3
+					accum1B_uniform.add_id(accumulation_textures[view * 7 + 3])
+					uniforms_array.append(accum1B_uniform)
+					
+					var accum2A_uniform = RDUniform.new()
+					accum2A_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+					accum2A_uniform.binding = 4
+					accum2A_uniform.add_id(accumulation_textures[view * 7 + 4])
+					uniforms_array.append(accum2A_uniform)
+					
+					var accum2B_uniform = RDUniform.new()
+					accum2B_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+					accum2B_uniform.binding = 5
+					accum2B_uniform.add_id(accumulation_textures[view * 7 + 5])
+					uniforms_array.append(accum2B_uniform)
+					
+					var depth_uniform = RDUniform.new()
+					depth_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+					depth_uniform.binding = 6
+					depth_uniform.add_id(nearest_sampler)
+					depth_uniform.add_id(resized_depth)
+					uniforms_array.append(depth_uniform)
+					
+					var extra_noise_uniform = RDUniform.new()
+					extra_noise_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+					extra_noise_uniform.binding = 7
+					extra_noise_uniform.add_id(linear_sampler)
+					extra_noise_uniform.add_id(maskDrawnRid if extra_large_used_as_mask && maskDrawnRid.is_valid() else black_mask_rid)   # 回退到黑 ⇒ 没有雾
+					uniforms_array.append(extra_noise_uniform)
+					
+					var noise_uniform = RDUniform.new()
+					noise_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+					noise_uniform.binding = 8
+					noise_uniform.add_id(linear_sampler)
+					noise_uniform.add_id(RenderingServer.texture_get_rd_texture(large_scale_noise.get_rid()))
+					uniforms_array.append(noise_uniform)
+					
+					var medium_noise_uniform = RDUniform.new()
+					medium_noise_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+					medium_noise_uniform.binding = 9
+					medium_noise_uniform.add_id(linear_sampler)
+					medium_noise_uniform.add_id(RenderingServer.texture_get_rd_texture(medium_scale_noise.get_rid()))
+					uniforms_array.append(medium_noise_uniform)
+					
+					var small_noise_uniform = RDUniform.new()
+					small_noise_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+					small_noise_uniform.binding = 10
+					small_noise_uniform.add_id(linear_sampler)
+					small_noise_uniform.add_id(RenderingServer.texture_get_rd_texture(small_scale_noise.get_rid()))
+					uniforms_array.append(small_noise_uniform)
+					
+					var curl_noise_uniform = RDUniform.new()
+					curl_noise_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+					curl_noise_uniform.binding = 11
+					curl_noise_uniform.add_id(linear_sampler)
+					curl_noise_uniform.add_id(RenderingServer.texture_get_rd_texture(curl_noise.get_rid()))
+					uniforms_array.append(curl_noise_uniform)
+					
+					var dither_noise_uniform = RDUniform.new()
+					dither_noise_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+					dither_noise_uniform.binding = 12
+					dither_noise_uniform.add_id(nearest_sampler)
+					dither_noise_uniform.add_id(RenderingServer.texture_get_rd_texture(dither_noise.get_rid()))
+					uniforms_array.append(dither_noise_uniform)
+					
+					var height_gradient_uniform = RDUniform.new()
+					height_gradient_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+					height_gradient_uniform.binding = 13
+					height_gradient_uniform.add_id(linear_sampler_no_repeat)
+					height_gradient_uniform.add_id(RenderingServer.texture_get_rd_texture(height_gradient.get_rid()))
+					uniforms_array.append(height_gradient_uniform)
+					
+					
+					var camera_uniform = RDUniform.new()
+					camera_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_UNIFORM_BUFFER
+					camera_uniform.binding = 14
+					camera_uniform.add_id(general_data_buffer)
+					uniforms_array.append(camera_uniform)
+					
+					light_data_buffer = rd.uniform_buffer_create(6272)
+					var light_data_uniform = RDUniform.new()
+					light_data_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_UNIFORM_BUFFER
+					light_data_uniform.binding = 15
+					light_data_uniform.add_id(light_data_buffer)
+					uniforms_array.append(light_data_uniform)
+					
+					var sampleData : PackedByteArray = []
+					sampleData.resize(512)
+					point_sample_data_buffer = rd.storage_buffer_create(512, sampleData)
+					var point_sample_data_uniform = RDUniform.new()
+					point_sample_data_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER
+					point_sample_data_uniform.binding = 16
+					point_sample_data_uniform.add_id(point_sample_data_buffer)
+					uniforms_array.append(point_sample_data_uniform)
+					
+					# Our own version-independent camera UBO (replaces Godot's private
+					# SceneData UBO, which has no 4.7 byte-layout mirror and delivers a
+					# wrong camera in multi-camera setups). Two CameraData structs
+					# (current + previous frame) = 2 * 272 bytes. Packed each frame in
+					# update_matrices() from get_cam_transform/get_cam_projection.
+					camera_override_buffer = rd.uniform_buffer_create(CAMERA_UBO_BYTES)
+					var cameraData = camera_override_buffer
+					var camera_data_uniform = RDUniform.new()
+					camera_data_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_UNIFORM_BUFFER
+					camera_data_uniform.binding = 17
+					camera_data_uniform.add_id(cameraData)
+					uniforms_array.append(camera_data_uniform)
+					
+					uniform_sets.append(rd.uniform_set_create(uniforms_array, shader, 0))
+					#endregion
+
+					#region Post Pass Compute Shader
+					var postpass_uniforms_array : Array[RDUniform] = []
+					var prepass_color_data_uniform = RDUniform.new()
+					prepass_color_data_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+					prepass_color_data_uniform.binding = 0
+					prepass_color_data_uniform.add_id(linear_sampler_no_repeat)
+					prepass_color_data_uniform.add_id(accumulation_textures[view * 7])
+					postpass_uniforms_array.append(prepass_color_data_uniform)
+					
+					var prepass_color_uniform = RDUniform.new()
+					prepass_color_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+					prepass_color_uniform.binding = 1
+					prepass_color_uniform.add_id(linear_sampler_no_repeat)
+					prepass_color_uniform.add_id(accumulation_textures[view * 7 + 1])
+					postpass_uniforms_array.append(prepass_color_uniform)
+					
+					
+					var postpass_reflections_uniform = RDUniform.new()
+					postpass_reflections_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+					postpass_reflections_uniform.binding = 2
+					postpass_reflections_uniform.add_id(accumulation_textures[view * 7 + 6])
+					postpass_uniforms_array.append(postpass_reflections_uniform)
+					
+					if (reflections_globalshaderparam != ""):
+						var newTexture = Texture2DRD.new()
+						newTexture.texture_rd_rid = accumulation_textures[view * 7 + 6]
+						RenderingServer.global_shader_parameter_set(reflections_globalshaderparam, newTexture)
+
+					var postpass_input_screen_uniform = RDUniform.new()
+					postpass_input_screen_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+					postpass_input_screen_uniform.binding = 3
+					postpass_input_screen_uniform.add_id(nearest_sampler)
+					postpass_input_screen_uniform.add_id(buffers.get_color_layer(view, is_msaa_on))
+					postpass_uniforms_array.append(postpass_input_screen_uniform)
+
+					var postpass_output_screen_uniform = RDUniform.new()
+					postpass_output_screen_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+					postpass_output_screen_uniform.binding = 4
+					postpass_output_screen_uniform.add_id(blit_screen_images[view])
+					postpass_uniforms_array.append(postpass_output_screen_uniform)
+
+					var postpass_depth_uniform = RDUniform.new()
+					postpass_depth_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+					postpass_depth_uniform.binding = 5
+					postpass_depth_uniform.add_id(nearest_sampler)
+					postpass_depth_uniform.add_id(buffers.get_depth_layer(view, is_msaa_on))
+					postpass_uniforms_array.append(postpass_depth_uniform)
+					
+					var postpass_camera_uniform = RDUniform.new()
+					postpass_camera_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_UNIFORM_BUFFER
+					postpass_camera_uniform.binding = 6
+					postpass_camera_uniform.add_id(general_data_buffer)
+					postpass_uniforms_array.append(postpass_camera_uniform)
+					
+					var postpass_light_data_uniform = RDUniform.new()
+					postpass_light_data_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_UNIFORM_BUFFER
+					postpass_light_data_uniform.binding = 7
+					postpass_light_data_uniform.add_id(light_data_buffer)
+					postpass_uniforms_array.append(postpass_light_data_uniform)
+					
+					var postpass_camera_data_uniform = RDUniform.new()
+					postpass_camera_data_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_UNIFORM_BUFFER
+					postpass_camera_data_uniform.binding = 8
+					postpass_camera_data_uniform.add_id(cameraData)
+					postpass_uniforms_array.append(postpass_camera_data_uniform)
+					
+					uniform_sets.append(rd.uniform_set_create(postpass_uniforms_array, postpass_shader, 0))
+					#endregion
+
+					#region Display Shader
+					var display_uniforms_array : Array[RDUniform] = []
+					var display_screen_texture_uniform = RDUniform.new()
+					display_screen_texture_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+					display_screen_texture_uniform.binding = 0
+					display_screen_texture_uniform.add_id(nearest_sampler)
+					display_screen_texture_uniform.add_id(blit_screen_images[view])
+					display_uniforms_array.append(display_screen_texture_uniform)
+
+					uniform_sets.append(rd.uniform_set_create(display_uniforms_array, display_shader, 0))
+					#endregion
+
+				lights_updated = true
+
+			var framebuffer := FramebufferCacheRD.get_cache_multipass([color_layer, depth_layer], [], view_count)
+			# ★ 原代码是 assert(framebuffer_format == rd.framebuffer_get_format(framebuffer))：
+			#   编辑器里切 MSAA / 改视口尺寸时这个格式会不一致，而 assert 在 debug 构建下会
+			#   **直接中断整个 _render_callback**（雾当帧消失，后续逻辑也不执行）。
+			#   改成：失效就跳过这一帧；格式不一致就重建光栅管线。
+			if not framebuffer.is_valid():
+				return
+			if framebuffer_format != rd.framebuffer_get_format(framebuffer):
+				initialize_raster_pipelines(color_layer, depth_layer)
+
+			var cameraTR : Transform3D = rendersceneData.get_cam_transform();
+			var viewProj : Projection = rendersceneData.get_cam_projection();
+			
+			var rendertarget: RID = buffers.get_render_target()
+			if rendertarget != last_render_target:
+				last_render_target = rendertarget
+				ignore_accumilation = true
+			else:
+				ignore_accumilation = false
+			
+			
+			last_size = size
+			
+			update_matrices(cameraTR, viewProj, new_size)
+			if lights_updated or directional_lights_data.size() == 0:
+				update_lights()
+			
+			if (!positionQuerying && !positionResetting && positionQueries.size() > 0):
+				encode_sample_points()
+			
+			var prepass_x_groups = ((size.x - 1) / 8) + 1
+			var prepass_y_groups = ((size.y - 1) / 8) + 1
+			var x_groups = ((size.x - 1) / 8 / resscale) + 1
+			var y_groups = ((size.y - 1) / 8 / resscale) + 1
+			
+			for view in view_count:
+				# ★★ 防御（编辑器里必须）：视口尺寸变化那一帧，blit_screen_images / uniform_sets 会被
+				#   先 clear() 再重建。若这一帧还没就绪就绑定 + 绘制，Godot 会报：
+				#     "Uniforms were never supplied for set (0) at the time of drawing"
+				#     "Parameter \"tex\" is null"
+				#   编辑器的 3D 视口每次拖窗口都会走到这里，所以这条错误只在编辑器里刷屏。
+				#   做法：逐个 (index, set) 校验有效再绑定；无效就安静跳过这一帧。
+				var sets_ready := uniform_sets != null and uniform_sets.size() >= view * 4 + 4
+
+				if sets_ready and uniform_sets[view * 4].is_valid():
+					var prepass_list = rd.compute_list_begin()
+					rd.compute_list_bind_compute_pipeline(prepass_list, prepass_pipeline)
+					rd.compute_list_bind_uniform_set(prepass_list, uniform_sets[view * 4], 0)
+					rd.compute_list_dispatch(prepass_list, x_groups, y_groups, 1)
+					rd.compute_list_end()
+
+				if sets_ready and uniform_sets[view * 4 + 1].is_valid():
+					var compute_list = rd.compute_list_begin()
+					rd.compute_list_bind_compute_pipeline(compute_list, pipeline)
+					rd.compute_list_bind_uniform_set(compute_list, uniform_sets[view * 4 + 1], 0)
+					rd.compute_list_dispatch(compute_list, x_groups, y_groups, 1)
+					rd.compute_list_end()
+
+				if sets_ready and uniform_sets[view * 4 + 2].is_valid():
+					var postpass_list = rd.compute_list_begin()
+					rd.compute_list_bind_compute_pipeline(postpass_list, postpass_pipeline)
+					rd.compute_list_bind_uniform_set(postpass_list, uniform_sets[view * 4 + 2], 0)
+					rd.compute_list_dispatch(postpass_list, prepass_x_groups, prepass_y_groups, 1)
+					rd.compute_list_end()
+
+				var display_ready := sets_ready and uniform_sets[view * 4 + 3].is_valid() \
+						and display_pipeline.is_valid() and display_vertex_array.is_valid() \
+						and view < blit_screen_images.size() and blit_screen_images[view].is_valid()
+				if display_ready:
+					var display_list := rd.draw_list_begin(framebuffer, RenderingDevice.DRAW_DEFAULT_ALL)
+					rd.draw_list_bind_render_pipeline(display_list, display_pipeline)
+					rd.draw_list_bind_uniform_set(display_list, uniform_sets[view * 4 + 3], 0)
+					rd.draw_list_bind_vertex_array(display_list, display_vertex_array)
+					rd.draw_list_draw(display_list, false, 1)
+					rd.draw_list_end()
+
+			if (!positionResetting && positionQuerying):
+				positionResetting = true
+				rd.buffer_get_data_async(point_sample_data_buffer, retrieve_position_queries.bind())
+			#call_deferred("update_callbacktype", cameraTR.origin.y)
+			#if (cameraTR.origin.y > cloud_floor):
+				#if (self.effect_callback_type != CompositorEffect.EFFECT_CALLBACK_TYPE_POST_TRANSPARENT):
+					#self.effect_callback_type = CompositorEffect.EFFECT_CALLBACK_TYPE_POST_TRANSPARENT
+			#else:
+				#if (self.effect_callback_type != CompositorEffect.EFFECT_CALLBACK_TYPE_PRE_TRANSPARENT):
+					#self.effect_callback_type = CompositorEffect.EFFECT_CALLBACK_TYPE_PRE_TRANSPARENT
+
+func retrieve_position_queries(data : PackedByteArray):
+	
+	var idx = 0
+	while idx < 512 && positionQueryCallables.size() > 0:
+		var position : Vector3 = Vector3.ZERO
+		position.x = data.decode_float(idx)
+		idx += 4
+		position.y = data.decode_float(idx)
+		idx += 4
+		position.z = data.decode_float(idx)
+		idx += 4
+		var density = data.decode_float(idx)
+		idx += 4
+		
+		positionQueryCallables[0].call(position, density)
+		positionQueryCallables.remove_at(0)
+		
+	
+	positionQuerying = false
+	positionResetting = false
+
+
+#func update_callbacktype(lastY : float):
+	#if (lastY > cloud_floor):
+		#if (self.effect_callback_type != CompositorEffect.EFFECT_CALLBACK_TYPE_POST_TRANSPARENT):
+			#self.effect_callback_type = CompositorEffect.EFFECT_CALLBACK_TYPE_POST_TRANSPARENT
+	#else:
+		#if (self.effect_callback_type != CompositorEffect.EFFECT_CALLBACK_TYPE_PRE_TRANSPARENT):
+			#self.effect_callback_type = CompositorEffect.EFFECT_CALLBACK_TYPE_PRE_TRANSPARENT
+
+func update_matrices(camera_tr, view_proj, new_size: Vector2i):
+	if general_data.size() != 256: #64 * 4 bytes for each float = 256.
+		general_data.resize(256)
+	
+	var idx = 0
+	filter_index += 1
+	if filter_index > 16:
+		filter_index = 0
+	# Camera matrix (16 floats)
+	#general_data.encode_float(idx, camera_tr.basis.x.x); idx += 4
+	#general_data.encode_float(idx, camera_tr.basis.x.y); idx += 4
+	#general_data.encode_float(idx, camera_tr.basis.x.z); idx += 4
+	#general_data.encode_float(idx, 0); idx += 4
+	#
+	#general_data.encode_float(idx, camera_tr.basis.y.x); idx += 4
+	#general_data.encode_float(idx, camera_tr.basis.y.y); idx += 4
+	#general_data.encode_float(idx, camera_tr.basis.y.z); idx += 4
+	#general_data.encode_float(idx, 0); idx += 4
+	#
+	#general_data.encode_float(idx, camera_tr.basis.z.x); idx += 4
+	#general_data.encode_float(idx, camera_tr.basis.z.y); idx += 4
+	#general_data.encode_float(idx, camera_tr.basis.z.z); idx += 4
+	#general_data.encode_float(idx, 0); idx += 4
+	#
+	#general_data.encode_float(idx, camera_tr.origin.x); idx += 4
+	#general_data.encode_float(idx, camera_tr.origin.y); idx += 4
+	#general_data.encode_float(idx, camera_tr.origin.z); idx += 4
+	#general_data.encode_float(idx, 1.0); idx += 4
+#
+	## Previous or current camera matrix
+	#var mat = camera_tr if first_run else last_view_mat
+	#general_data.encode_float(idx, mat.basis.x.x); idx += 4
+	#general_data.encode_float(idx, mat.basis.x.y); idx += 4
+	#general_data.encode_float(idx, mat.basis.x.z); idx += 4
+	#general_data.encode_float(idx, 0); idx += 4
+	#
+	#general_data.encode_float(idx, mat.basis.y.x); idx += 4
+	#general_data.encode_float(idx, mat.basis.y.y); idx += 4
+	#general_data.encode_float(idx, mat.basis.y.z); idx += 4
+	#general_data.encode_float(idx, 0); idx += 4
+	#
+	#general_data.encode_float(idx, mat.basis.z.x); idx += 4
+	#general_data.encode_float(idx, mat.basis.z.y); idx += 4
+	#general_data.encode_float(idx, mat.basis.z.z); idx += 4
+	#general_data.encode_float(idx, 0); idx += 4
+	#
+	#general_data.encode_float(idx, mat.origin.x); idx += 4
+	#general_data.encode_float(idx, mat.origin.y); idx += 4
+	#general_data.encode_float(idx, mat.origin.z); idx += 4
+	#general_data.encode_float(idx, 1.0); idx += 4
+#
+	## Projection matrix (16 floats)
+	#general_data.encode_float(idx, view_proj.x.x); idx += 4
+	#general_data.encode_float(idx, view_proj.x.y); idx += 4
+	#general_data.encode_float(idx, view_proj.x.z); idx += 4
+	#general_data.encode_float(idx, view_proj.x.w); idx += 4
+	#
+	#general_data.encode_float(idx, view_proj.y.x); idx += 4
+	#general_data.encode_float(idx, view_proj.y.y); idx += 4
+	#general_data.encode_float(idx, view_proj.y.z); idx += 4
+	#general_data.encode_float(idx, view_proj.y.w); idx += 4
+	#
+	#general_data.encode_float(idx, view_proj.z.x); idx += 4
+	#general_data.encode_float(idx, view_proj.z.y); idx += 4
+	#general_data.encode_float(idx, view_proj.z.z); idx += 4
+	#general_data.encode_float(idx, view_proj.z.w); idx += 4
+	#
+	#general_data.encode_float(idx, view_proj.w.x); idx += 4
+	#general_data.encode_float(idx, view_proj.w.y); idx += 4
+	#general_data.encode_float(idx, view_proj.w.z); idx += 4
+	#general_data.encode_float(idx, view_proj.w.w); idx += 4
+#
+	## Previous or current camera matrix
+	#var proj = view_proj if first_run else last_projection_mat
+	#general_data.encode_float(idx, proj.x.x); idx += 4
+	#general_data.encode_float(idx, proj.x.y); idx += 4
+	#general_data.encode_float(idx, proj.x.z); idx += 4
+	#general_data.encode_float(idx, proj.x.w); idx += 4
+	#
+	#general_data.encode_float(idx, proj.y.x); idx += 4
+	#general_data.encode_float(idx, proj.y.y); idx += 4
+	#general_data.encode_float(idx, proj.y.z); idx += 4
+	#general_data.encode_float(idx, proj.y.w); idx += 4
+	#
+	#general_data.encode_float(idx, proj.z.x); idx += 4
+	#general_data.encode_float(idx, proj.z.y); idx += 4
+	#general_data.encode_float(idx, proj.z.z); idx += 4
+	#general_data.encode_float(idx, proj.z.w); idx += 4
+	#
+	#general_data.encode_float(idx, proj.w.x); idx += 4
+	#general_data.encode_float(idx, proj.w.y); idx += 4
+	#general_data.encode_float(idx, proj.w.z); idx += 4
+	#general_data.encode_float(idx, proj.w.w); idx += 4
+#
+	#last_projection_mat = view_proj
+	#last_view_mat = camera_tr
+	accumulation_is_a = not accumulation_is_a
+	first_run = false
+	
+	# Additional data (44 floats)
+	var width = mask_width_km * 1000.0
+	
+	if (extra_large_used_as_mask):
+		general_data.encode_float(idx, origin_offset.x + (width * 0.5) * -1.0); idx += 4
+		general_data.encode_float(idx, origin_offset.y + (width * 0.5) * -1.0); idx += 4
+		general_data.encode_float(idx, origin_offset.z + (width * 0.5) * -1.0); idx += 4
+		general_data.encode_float(idx, width); idx += 4
+	else:
+		general_data.encode_float(idx, extra_large_scale_clouds_position.x); idx += 4
+		general_data.encode_float(idx, extra_large_scale_clouds_position.y); idx += 4
+		general_data.encode_float(idx, extra_large_scale_clouds_position.z); idx += 4
+		general_data.encode_float(idx, extra_large_noise_scale); idx += 4
+	
+	#general_data.encode_float(idx, extra_large_scale_clouds_position.x); idx += 4
+	#general_data.encode_float(idx, extra_large_scale_clouds_position.y); idx += 4
+	#general_data.encode_float(idx, extra_large_scale_clouds_position.z); idx += 4
+	#general_data.encode_float(idx, extra_large_noise_scale); idx += 4
+	#
+	general_data.encode_float(idx, large_scale_clouds_position.x); idx += 4
+	general_data.encode_float(idx, large_scale_clouds_position.y); idx += 4
+	general_data.encode_float(idx, large_scale_clouds_position.z); idx += 4
+	general_data.encode_float(idx, lighting_sharpness); idx += 4
+
+	general_data.encode_float(idx, medium_scale_clouds_position.x); idx += 4
+	general_data.encode_float(idx, medium_scale_clouds_position.y); idx += 4
+	general_data.encode_float(idx, medium_scale_clouds_position.z); idx += 4
+	general_data.encode_float(idx, lighting_travel_distance); idx += 4
+
+	general_data.encode_float(idx, detail_clouds_position.x); idx += 4
+	general_data.encode_float(idx, detail_clouds_position.y); idx += 4
+	general_data.encode_float(idx, detail_clouds_position.z); idx += 4
+	general_data.encode_float(idx, atmospheric_density); idx += 4
+
+	general_data.encode_float(idx, cloud_ambient_color.r * cloud_ambient_tint.r); idx += 4
+	general_data.encode_float(idx, cloud_ambient_color.g * cloud_ambient_tint.g); idx += 4
+	general_data.encode_float(idx, cloud_ambient_color.b * cloud_ambient_tint.b); idx += 4
+	general_data.encode_float(idx, cloud_ambient_color.a * cloud_ambient_tint.a); idx += 4
+
+	general_data.encode_float(idx, ambient_occlusion_color.r); idx += 4
+	general_data.encode_float(idx, ambient_occlusion_color.g); idx += 4
+	general_data.encode_float(idx, ambient_occlusion_color.b); idx += 4
+	general_data.encode_float(idx, ambient_occlusion_color.a); idx += 4
+
+	general_data.encode_float(idx, lerpf(atmosphere_color.r, sampled_environment_fog_color.r, use_environment_fog)); idx += 4
+	general_data.encode_float(idx, lerpf(atmosphere_color.g, sampled_environment_fog_color.g, use_environment_fog)); idx += 4
+	general_data.encode_float(idx, lerpf(atmosphere_color.b, sampled_environment_fog_color.b, use_environment_fog)); idx += 4
+	general_data.encode_float(idx, lerpf(atmosphere_color.a, sampled_environment_fog_color.a, use_environment_fog)); idx += 4
+
+	general_data.encode_float(idx, small_noise_scale); idx += 4
+	general_data.encode_float(idx, min_step_distance); idx += 4
+	general_data.encode_float(idx, max_step_distance); idx += 4
+	general_data.encode_float(idx, lod_bias); idx += 4
+
+	general_data.encode_float(idx, clouds_sharpness); idx += 4
+	general_data.encode_float(idx, float(directional_lights_data.size()) / 2.0); idx += 4
+	general_data.encode_float(idx, clouds_powder); idx += 4
+	general_data.encode_float(idx, clouds_anisotropy); idx += 4
+
+	general_data.encode_float(idx, cloud_floor); idx += 4
+	general_data.encode_float(idx, cloud_ceiling); idx += 4
+	general_data.encode_float(idx, float(max_step_count)); idx += 4
+	general_data.encode_float(idx, float(max_lighting_steps)); idx += 4
+
+	general_data.encode_float(idx, use_environment_fog); idx += 4
+	general_data.encode_float(idx, float(blur_power)); idx += 4
+	general_data.encode_float(idx, float(blur_quality)); idx += 4
+	general_data.encode_float(idx, float(curl_noise_strength)); idx += 4
+	
+	general_data.encode_float(idx, wind_direction.x); idx += 4
+	general_data.encode_float(idx, wind_direction.z); idx += 4
+	general_data.encode_float(idx, fog_effect_ground); idx += 4
+	general_data.encode_float(idx, positionQueries.size()); idx += 4
+	
+	general_data.encode_float(idx, float(point_lights_data.size()) / 2.0); idx += 4
+	general_data.encode_float(idx, float(point_effector_data.size()) / 2.0); idx += 4
+	general_data.encode_float(idx, wind_swept_range); idx += 4
+	general_data.encode_float(idx, wind_swept_strength); idx += 4
+	
+	general_data.encode_float(idx, new_size.x); idx += 4
+	general_data.encode_float(idx, new_size.y); idx += 4
+	general_data.encode_float(idx, large_noise_scale); idx += 4
+	general_data.encode_float(idx, medium_noise_scale); idx += 4
+	
+	general_data.encode_float(idx, current_time); idx += 4
+	general_data.encode_float(idx, clouds_coverage); idx += 4
+	general_data.encode_float(idx, clouds_density); idx += 4
+	general_data.encode_float(idx, clouds_detail_power); idx += 4
+	
+	general_data.encode_float(idx, lighting_density); idx += 4
+	general_data.encode_float(idx, accumulation_decay if !ignore_accumilation else 0.0); idx += 4
+	if (accumulation_is_a):
+		general_data.encode_float(idx, 1.0); idx += 4
+	else:
+		general_data.encode_float(idx, 0.0); idx += 4
+	
+	general_data.encode_float(idx, int(pow(2.0, float(resolution_scale)))); idx += 4
+	#
+	#general_data.encode_float(idx, last_size.x); idx += 4
+	#general_data.encode_float(idx, last_size.y); idx += 4
+	#general_data.encode_float(idx, 0.0); idx += 4
+	#general_data.encode_float(idx, 0.0); idx += 4
+	
+	# Copy to byte buffer
+	rd.buffer_update(general_data_buffer, 0, general_data.size(), general_data)
+
+	update_camera_data(camera_tr, view_proj)
+
+
+## Packs the version-independent camera UBO (binding 17 / postpass 8) with the
+## current and previous frame's matrices, derived from get_cam_transform() /
+## get_cam_projection() - no dependency on Godot's private SceneData layout.
+## Layout per CameraData (272 bytes, std140), x2 (current, then previous):
+##   [  0] inv_projection_matrix    (mat4, clip->view)
+##   [ 64] main_cam_inv_view_matrix (mat4, view->world = camera transform)
+##   [128] view_matrix              (mat4, world->view)
+##   [192] projection_matrix        (mat4, view->clip)
+##   [256] z_far, z_near, pad, pad
+func update_camera_data(camera_tr : Transform3D, view_proj : Projection):
+	if not camera_override_buffer.is_valid():
+		return
+	# First frame: seed prev = current so reprojection has valid matrices.
+	if not _has_prev_camera:
+		_prev_cam_transform = camera_tr
+		_prev_view_proj = view_proj
+		_has_prev_camera = true
+
+	var bytes : PackedByteArray = []
+	bytes.resize(CAMERA_UBO_BYTES)
+
+	_encode_camera_data(bytes, 0, camera_tr, view_proj)
+	_encode_camera_data(bytes, 272, _prev_cam_transform, _prev_view_proj)
+
+	rd.buffer_update(camera_override_buffer, 0, CAMERA_UBO_BYTES, bytes)
+
+	_prev_cam_transform = camera_tr
+	_prev_view_proj = view_proj
+
+
+## Encode one CameraData block (272 bytes) at byte offset `o`.
+func _encode_camera_data(bytes : PackedByteArray, o : int, cam_tr : Transform3D, proj : Projection):
+	_encode_projection_mat4(bytes, o + 0, proj.inverse())          # inv_projection_matrix
+	_encode_transform_mat4(bytes, o + 64, cam_tr)                  # main_cam_inv_view_matrix (view->world)
+	_encode_transform_mat4(bytes, o + 128, cam_tr.affine_inverse()) # view_matrix (world->view)
+	_encode_projection_mat4(bytes, o + 192, proj)                  # projection_matrix (view->clip)
+	bytes.encode_float(o + 256, proj.get_z_far())
+	bytes.encode_float(o + 260, proj.get_z_near())
+	bytes.encode_float(o + 264, 0.0)
+	bytes.encode_float(o + 268, 0.0)
+
+
+## Encode a Transform3D as a column-major GLSL mat4 (16 floats) at byte offset.
+## Columns 0-2 are the basis axes (image of local x/y/z), column 3 is the origin.
+func _encode_transform_mat4(bytes : PackedByteArray, o : int, t : Transform3D):
+	var b : Basis = t.basis
+	var p : Vector3 = t.origin
+	bytes.encode_float(o + 0,  b.x.x); bytes.encode_float(o + 4,  b.x.y); bytes.encode_float(o + 8,  b.x.z); bytes.encode_float(o + 12, 0.0)
+	bytes.encode_float(o + 16, b.y.x); bytes.encode_float(o + 20, b.y.y); bytes.encode_float(o + 24, b.y.z); bytes.encode_float(o + 28, 0.0)
+	bytes.encode_float(o + 32, b.z.x); bytes.encode_float(o + 36, b.z.y); bytes.encode_float(o + 40, b.z.z); bytes.encode_float(o + 44, 0.0)
+	bytes.encode_float(o + 48, p.x);   bytes.encode_float(o + 52, p.y);   bytes.encode_float(o + 56, p.z);   bytes.encode_float(o + 60, 1.0)
+
+
+## Encode a Projection as a column-major GLSL mat4 (16 floats) at byte offset.
+## Projection.x/.y/.z/.w are the columns.
+func _encode_projection_mat4(bytes : PackedByteArray, o : int, m : Projection):
+	bytes.encode_float(o + 0,  m.x.x); bytes.encode_float(o + 4,  m.x.y); bytes.encode_float(o + 8,  m.x.z); bytes.encode_float(o + 12, m.x.w)
+	bytes.encode_float(o + 16, m.y.x); bytes.encode_float(o + 20, m.y.y); bytes.encode_float(o + 24, m.y.z); bytes.encode_float(o + 28, m.y.w)
+	bytes.encode_float(o + 32, m.z.x); bytes.encode_float(o + 36, m.z.y); bytes.encode_float(o + 40, m.z.z); bytes.encode_float(o + 44, m.z.w)
+	bytes.encode_float(o + 48, m.w.x); bytes.encode_float(o + 52, m.w.y); bytes.encode_float(o + 56, m.w.z); bytes.encode_float(o + 60, m.w.w)
+
+
+func update_lights():
+	lights_updated = false
+	
+	if light_data.size() != 6272: #32 + 1024 + 512 * 4 bytes for each float = 6272.
+		light_data.resize(6272)
+	
+	if (directional_lights_data.size() == 0): #defaults to having a default light.
+		directional_lights_data.append(Vector4(0.5, 1.0, 0.5, 16.0))
+		directional_lights_data.append(Vector4(1.0, 1.0, 1.0, 1.0))
+	
+	var idx = 0
+	for i in range(min(directional_lights_data.size(), 8)):
+		light_data.encode_float(idx, directional_lights_data[i].x)
+		idx += 4
+		light_data.encode_float(idx, directional_lights_data[i].y)
+		idx += 4
+		light_data.encode_float(idx, directional_lights_data[i].z)
+		idx += 4
+		light_data.encode_float(idx, directional_lights_data[i].w)
+		idx += 4
+	
+	
+	idx = 128
+	for i in range(min(point_lights_data.size(), 256)):
+		light_data.encode_float(idx, point_lights_data[i].x)
+		idx += 4
+		light_data.encode_float(idx, point_lights_data[i].y)
+		idx += 4
+		light_data.encode_float(idx, point_lights_data[i].z)
+		idx += 4
+		light_data.encode_float(idx, point_lights_data[i].w)
+		idx += 4
+	
+	idx = 4224
+	for i in range(min(point_effector_data.size(), 128)):
+		light_data.encode_float(idx, point_effector_data[i].x)
+		idx += 4
+		light_data.encode_float(idx, point_effector_data[i].y)
+		idx += 4
+		light_data.encode_float(idx, point_effector_data[i].z)
+		idx += 4
+		light_data.encode_float(idx, point_effector_data[i].w)
+		idx += 4
+	
+	rd.buffer_update(light_data_buffer, 0, light_data.size(), light_data)
+
+func encode_sample_points():
+	positionQuerying = true
+	var sample_points_data_floats : PackedByteArray = []
+	sample_points_data_floats.resize(512)
+	
+	var idx = 0
+	while idx < 512 && positionQueries.size() > 0:
+		
+		sample_points_data_floats.encode_float(idx, positionQueries[0].x)
+		idx += 4
+		sample_points_data_floats.encode_float(idx, positionQueries[0].y)
+		idx += 4
+		sample_points_data_floats.encode_float(idx, positionQueries[0].z)
+		idx += 4
+		sample_points_data_floats.encode_float(idx, 0.0)
+		idx += 4
+		positionQueries.remove_at(0)
+	
+	
+	rd.buffer_update(point_sample_data_buffer, 0, sample_points_data_floats.size(), sample_points_data_floats)

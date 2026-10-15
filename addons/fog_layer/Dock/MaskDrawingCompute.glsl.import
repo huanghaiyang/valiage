@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://ck1yv82gbxncv"
+path="res://.godot/imported/MaskDrawingCompute.glsl-9130d35927c5b034884ce4e417de7ed9.res"
+
+[deps]
+
+source_file="res://addons/fog_layer/Dock/MaskDrawingCompute.glsl"
+dest_files=["res://.godot/imported/MaskDrawingCompute.glsl-9130d35927c5b034884ce4e417de7ed9.res"]
+
+[params]
+

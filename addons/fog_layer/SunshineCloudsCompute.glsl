@@ -1,0 +1,1080 @@
+#[compute]
+#version 450
+#define PI 3.141592
+#define ABSORPTION_COEFFICIENT 0.9
+
+#include "./CloudsInc.comp"
+
+// Invocations in the (x, y, z) dimension
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(rgba16f, binding = 0) uniform image2D output_data_image;
+layout(rgba16f, binding = 1) uniform image2D output_color_image;
+
+layout(rgba32f, binding = 2) uniform image2D accum_1A_image;
+layout(rgba32f, binding = 3) uniform image2D accum_1B_image;
+
+layout(rgba32f, binding = 4) uniform image2D accum_2A_image;
+layout(rgba32f, binding = 5) uniform image2D accum_2B_image;
+
+layout(binding = 6) uniform sampler2D depth_image;
+layout(binding = 7) uniform sampler2D extra_large_noise;
+layout(binding = 8) uniform sampler3D large_noise;
+layout(binding = 9) uniform sampler3D noise_medium;
+layout(binding = 10) uniform sampler3D noise_small;
+layout(binding = 11) uniform sampler3D curl_noise;
+layout(binding = 12) uniform sampler3D dither_small;
+layout(binding = 13) uniform sampler2D heightmask;
+
+layout(binding = 14) uniform uniformBuffer {
+	GenericData data;
+} genericData;
+
+layout(binding = 15) uniform LightsBuffer {
+	DirectionalLight directionalLights[4];
+	PointLight pointLights[128];
+	PointEffector pointEffectors[64];
+};
+
+layout(binding = 16, std430) restrict buffer SamplePointsBuffer {
+	vec4 SamplePoints[32];
+};
+
+
+layout(binding = 17, std140) uniform SceneDataBlock {
+	CameraData data;
+	CameraData prev_data;
+} scene_data_block;
+
+// Our push constant
+// layout(push_constant, std430) uniform Params {
+// 	vec2 raster_size;
+// 	float large_noise_scale;
+// 	float medium_noise_scale;
+
+// 	float time;
+// 	float cloud_coverage;
+// 	float cloud_density;
+// 	float small_noise_strength;
+
+// 	float cloud_lighting_power;
+// 	float accumilation_decay;
+// 	vec2 cameraRotation;
+// } params;
+
+//Helpers
+const int BayerFilter16[16] =
+{
+    0, 8, 2, 10,
+    12, 4, 14, 6,
+    3, 11, 1, 9,
+    15, 7, 13, 5
+};
+const int BayerFilter4[4] =
+{
+    0, 1,
+    3, 2,
+};
+
+const mat4 bayer_matrix = mat4(
+    vec4(00.0 / 16.0, 12.0 / 16.0, 03.0 / 16.0, 15.0 / 16.0),
+    vec4(08.0 / 16.0, 04.0 / 16.0, 11.0 / 16.0, 07.0 / 16.0),
+    vec4(02.0 / 16.0, 14.0 / 16.0, 01.0 / 16.0, 13.0 / 16.0),
+    vec4(10.0 / 16.0, 06.0 / 16.0, 09.0 / 16.0, 05.0 / 16.0));
+
+float quadraticOut(float t) {
+  return -t * (t - 2.0);
+}
+
+float quadraticIn(float t) {
+  return t * t;
+}
+
+float rand(vec2 co){
+    return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+float get_dither_value(vec2 pixel) {
+    int x = int(pixel.x - 4.0 * floor(pixel.x / 4.0));
+    int y = int(pixel.y - 4.0 * floor(pixel.y / 4.0));
+    return bayer_matrix[x][y];
+}
+
+float remap(float value, float min1, float max1, float min2, float max2) {
+  return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
+}
+
+float BeersLaw (float dist, float absorption) {
+  return exp(-dist * absorption);
+}
+
+float Powder (float dist, float absorption) {
+  return 1.0 - exp(-dist * absorption * 2.0);
+}
+
+float HenyeyGreenstein(float g, float costh)
+{
+    return (1.0 - g * g) / (4.0 * PI * pow(1.0 + g * g - 2.0 * g * costh, 3.0/2.0));
+}
+
+bool renderBayer(ivec2 fragCoord, int framecount)
+{
+	//int BAYER = 16;
+    //int index = framecount % BAYER;
+    
+    return (fragCoord.x + 4 * fragCoord.y) % 16 == BayerFilter16[framecount];
+}
+
+//Sample functions
+
+float sampleEffectorAdditive(vec3 worldPosition) {
+	float effectorAdditive = 0.0;
+	for (int i = 0; i < int(genericData.data.pointEffectorCount); i++) {
+		float effectorDistance = distance(pointEffectors[i].position, worldPosition);
+		if (effectorDistance < pointEffectors[i].radius){
+			effectorAdditive += mix(pointEffectors[i].power, 0.0, effectorDistance / pointEffectors[i].radius);
+		}
+	}
+	return effectorAdditive;
+}
+
+// ★★ 流动性：让**掩码本身**随风缓慢漂移 ⇒ 画出来的雾会动，而不是贴死在原地 ★★
+//   amplitude 由 windSweptPower（= wind_swept_strength）决定，用 sin 平滑往复（避免时间 wrap 造成跳变）
+vec2 WindDrift(){
+	float t = genericData.data.time;
+	vec2 w = genericData.data.WindDirection;
+	float amp = max(genericData.data.windSweptPower, 0.0) * 2.0;   // ★ 原 8 倍太快（最高 24m/s）
+	return w * (amp * (0.5 + 0.5 * sin(t * 0.03)));
+}
+float sampleScene(
+	vec3 largeNoisePos, 
+	vec3 mediumNoisePos, 
+	vec3 smallNoisePos, 
+	vec3 worldPosition, 
+	float cloudceiling, 
+	float cloudfloor, 
+	float extralargeNoiseValue,
+	float largenoisescale, 
+	float mediumnoisescale, 
+	float smallnoisescale, 
+	float coverage, 
+	float smallscalePower, 
+	float curlPower, 
+	float lod, 
+	bool ambientsample)
+	{
+	float clampedWorldHeight = remap(worldPosition.y, cloudfloor, cloudceiling, 0.0, 1.0);
+	vec4 gradientSample = texture(heightmask, vec2(clampedWorldHeight, 0.5)).rgba;
+	
+
+	// ★ 地面雾：删掉"贴地 10% 高度淡出"。45m 层里 10% = 4.5m，且 h=0 处该式为 0
+	//   ⇒ 贴地密度恒为 0（雾悬空、地平线下一条暗带）。地面雾在贴地处最浓，只保留顶部淡出。
+	float edgeFade = smoothstep(1.0, 0.9, clampedWorldHeight);
+	float extraLargeShape = extralargeNoiseValue * gradientSample.b;
+
+	float smallShape = texture(noise_small, (worldPosition - smallNoisePos) / smallnoisescale).r;
+
+	float curlHeightSample = (1.0 - gradientSample.a);
+
+	float effectorAdditive = 0.0;
+	vec2 WindDirection = genericData.data.WindDirection;
+	worldPosition += vec3(WindDirection.x, 0.0, WindDirection.y) * genericData.data.windSweptPower * quadraticIn(1.0 - clamp(clampedWorldHeight / genericData.data.windSweptRange, 0.0, 1.0));
+
+	if (lod > 0.0){
+		effectorAdditive = sampleEffectorAdditive(worldPosition) * edgeFade;
+
+		if (!ambientsample && curlHeightSample > 0.0 && min(curlPower, lod) > 0.5){
+			
+			float curlLod = remap(lod, 0.5, 1.0, 0.0, 1.0);
+			worldPosition += (((texture(curl_noise, (worldPosition - mediumNoisePos) / mediumnoisescale).xyz * 2.0) - 1.0) * vec3(1.0, 0.2, 1.0) + vec3(WindDirection.x, 0.0, WindDirection.y) * 0.9) * curlPower * curlHeightSample * curlLod;
+			worldPosition += (((texture(curl_noise, (worldPosition - mediumNoisePos) / mediumnoisescale).xyz * 2.0) - 1.0) * vec3(1.0, 0.2, 1.0) + vec3(WindDirection.x, 0.0, WindDirection.y) * 0.9) * curlPower * curlHeightSample * curlLod;
+			worldPosition += (((texture(curl_noise, (worldPosition - mediumNoisePos) / mediumnoisescale).xyz * 2.0) - 1.0) * vec3(1.0, 0.2, 1.0) + vec3(WindDirection.x, 0.0, WindDirection.y) * 0.9) * curlPower * curlHeightSample * curlLod;
+			
+			clampedWorldHeight = remap(worldPosition.y, cloudfloor, cloudceiling, 0.0, 1.0);
+			gradientSample = texture(heightmask, vec2(clampedWorldHeight, 0.5)).rgba;
+		}
+	}
+
+	float largeShape = texture(large_noise, (worldPosition - largeNoisePos + vec3(WindDirection.x, 0.35, WindDirection.y) * (genericData.data.time * 0.5)) / largenoisescale).r * extraLargeShape;
+	largeShape = smoothstep(coverage , coverage - 0.1, 1.0 - (largeShape * gradientSample.r)) + max(effectorAdditive, 0.0);
+	vec4 mediumShapes = texture(noise_medium, (worldPosition - mediumNoisePos) / mediumnoisescale).rgba;
+	float mediumshape = 1.0 - mediumShapes.b;
+	smallShape = smallShape * gradientSample.g * pow((1.0 - mediumshape), smallscalePower);
+	
+
+	// ★★★ 地面雾适配（本项目核心改动）★★★
+	//   原来这里是云层形状链：mediumshape → remap(shape, 1-largeShape, 1) → remap(shape, smallShape, 1)。
+	//   两个问题在 45 米薄层里同时发作：
+	//     · 权重图值很小 ⇒ largeShape=1 ⇒ 第一层 remap 退化为恒等；
+	//     · 权重图值变大 ⇒ largeShape→0 ⇒ remap(shape, 1.0, 1.0) **上下界相等 ⇒ 结果恒为 0**。
+	//   ⇒ 结果就是"画了也看不见"。地面雾不需要这套云朵造型门控，
+	//   这里让**绑定 7 的权重图（笔刷掩码的 alpha）直接决定密度**，噪声只做轻微起伏。
+	float groundWeight = clamp(extralargeNoiseValue, 0.0, 1.0);   // 未落笔 = 0 ⇒ 没有雾
+	float groundDetail = mix(1.0,
+			texture(large_noise, (worldPosition - largeNoisePos + vec3(WindDirection.x, 0.35, WindDirection.y) * (genericData.data.time * 0.5)) / largenoisescale).r,
+			0.6);                                                      // 只保留一点起伏，不参与"有没有"
+	float shape = clamp(groundWeight * groundDetail, 0.0, 1.0);
+	shape += max(effectorAdditive, 0.0);
+
+	return clamp((shape * edgeFade), 0.0, 1.0);
+}
+
+float sampleSceneCoarse(
+	vec3 largeNoisePos, 
+	vec3 worldPosition, 
+	float cloudceiling, 
+	float cloudfloor, 
+	float extralargeNoiseValue,
+	float largenoisescale, 
+	float coverage,
+	float lod)
+	{
+	float clampedWorldHeight = remap(worldPosition.y, cloudfloor, cloudceiling, 0.0, 1.0);
+	vec4 gradientSample = texture(heightmask, vec2(clampedWorldHeight, 0.5)).rgba;
+
+	// ★ 地面雾：删掉"贴地 10% 高度淡出"。45m 层里 10% = 4.5m，且 h=0 处该式为 0
+	//   ⇒ 贴地密度恒为 0（雾悬空、地平线下一条暗带）。地面雾在贴地处最浓，只保留顶部淡出。
+	float edgeFade = smoothstep(1.0, 0.9, clampedWorldHeight);
+	float extraLargeShape = extralargeNoiseValue * gradientSample.b;
+
+	float effectorAdditive = 0.0;
+	vec2 WindDirection = genericData.data.WindDirection;
+	worldPosition += vec3(WindDirection.x, 0.0, WindDirection.y) * genericData.data.windSweptPower * quadraticIn(1.0 - clamp(clampedWorldHeight / genericData.data.windSweptRange, 0.0, 1.0));
+
+	if (lod > 0.0){
+		effectorAdditive = sampleEffectorAdditive(worldPosition) * edgeFade;
+	}
+
+	float largeShape = texture(large_noise, (worldPosition - largeNoisePos + vec3(WindDirection.x, 0.35, WindDirection.y) * (genericData.data.time * 0.5)) / largenoisescale).r * extraLargeShape;
+	largeShape = smoothstep(coverage , coverage - 0.1, 1.0 - (largeShape * gradientSample.r)) + max(effectorAdditive, 0.0);
+
+	// ★ 地面雾：与 sampleScene 保持一致 —— 权重图直接决定形状。
+	//   否则浓度用权重、而光照/自遮挡仍用云层链 ⇒ 亮边、暗斑、自遮挡对不上。
+	float shape = clamp(clamp(extralargeNoiseValue, 0.0, 1.0) * mix(1.0,
+			texture(large_noise, (worldPosition - largeNoisePos + vec3(WindDirection.x, 0.35, WindDirection.y) * (genericData.data.time * 0.5)) / largenoisescale).r, 0.6), 0.0, 1.0)
+			+ max(effectorAdditive, 0.0);
+	return clamp((shape * edgeFade), 0.0, 1.0);
+}
+
+float sampleLighting(
+	int stepCount, 
+	vec3 worldPosition,
+	vec3 extralargeNoisePos, 
+	vec3 largeNoisePos, 
+	vec3 mediumNoisePos, 
+	vec3 smallNoisePos, 
+	vec3 sunDirection,
+	float densityMultiplier,
+	float sunUpWeight, 
+	float stepDistance,  
+	float cloudceiling, 
+	float cloudfloor, 
+	float extralargenoisescale,
+	float largenoisescale, 
+	float mediumnoisescale, 
+	float smallnoisescale, 
+	float coverage, 
+	float smallscalePower, 
+	float curlPower, 
+	float lod)
+	{
+	float density = 0.0;
+	float stepCountFloat = max(float(stepCount) * lod, 2.0);
+	float actualDistance = mix(stepDistance * 4.0, stepDistance, lod);
+	float eachShortStep = actualDistance / (float(stepCount) / stepCountFloat) / stepCountFloat;
+	float traveledDistance = 0.0;
+	
+	float sunUpValue = 1.0 - sunUpWeight;
+	float eachStepWeight = 1.0 / stepCountFloat;
+
+	float heightGradient = 0.0;
+	float thisDensity = 0.0;
+	float count = 0.0;
+	vec3 curPos = worldPosition;
+	for (float i = 0.0; i < stepCountFloat; i++) {
+		traveledDistance = mix(eachShortStep, actualDistance, clamp(quadraticOut(i / stepCountFloat), 0.0, 1.0));
+		curPos = worldPosition + sunDirection * traveledDistance;
+
+		if (density < 1.0 && clamp(curPos.y, cloudfloor, cloudceiling) == curPos.y){
+			heightGradient = remap(curPos.y, cloudfloor, cloudceiling, 0.0, 1.0);
+			
+			heightGradient = clamp(smoothstep(sunUpValue - 0.1, sunUpValue, heightGradient), 0.0, 1.0);
+			float extraLargeShape = texture(extra_large_noise, (curPos.xz - extralargeNoisePos.xz) / extralargenoisescale).a;
+
+			thisDensity = sampleScene(largeNoisePos, mediumNoisePos, smallNoisePos, curPos, cloudceiling, cloudfloor, extraLargeShape, largenoisescale, mediumnoisescale, smallnoisescale, coverage, smallscalePower, curlPower, lod, true) * densityMultiplier * eachStepWeight;
+			// if (thisDensity <= 0.0){
+			// 	break;
+			// }
+			// ★ 低太阳时原式 mix(1.0, thisDensity, h) 会把每一步都加成 1.0 ⇒ 整层瞬间全黑。
+			//   0.1 的归一化带在 45m 层里只有 4.5m，判据失效 ⇒ 改成从 0 起混。
+			density += mix(0.0, thisDensity, heightGradient);
+		}
+		else{
+			break;
+		}
+	}
+
+	return density;
+}
+
+float sampleAO(
+	vec3 extralargeNoisePos,
+	vec3 largeNoisePos, 
+	vec3 mediumNoisePos, 
+	vec3 smallNoisePos, 
+	vec3 worldPosition, 
+	float lightingSampleRange, 
+	float cloudceiling, 
+	float cloudfloor,
+	float extralargenoisescale,
+	float largenoisescale, 
+	float mediumnoisescale, 
+	float smallnoisescale, 
+	float coverage, 
+	float smallscalePower, 
+	float curlPower, 
+	float lod)
+	{
+	vec3 samplePos = worldPosition;
+	samplePos.y += lightingSampleRange * 0.5;
+	samplePos.y += lightingSampleRange * (rand(samplePos.xz) * 2.0 - 1.0);
+	samplePos.x += lightingSampleRange * (rand(samplePos.zy) * 2.0 - 1.0);
+	samplePos.z += lightingSampleRange * (rand(samplePos.yx) * 2.0 - 1.0);
+
+	float extraLargeShape = texture(extra_large_noise, (samplePos.xz - extralargeNoisePos.xz) / extralargenoisescale).a;
+	return sampleScene(largeNoisePos, mediumNoisePos, smallNoisePos, samplePos, cloudceiling, cloudfloor, extraLargeShape, largenoisescale, mediumnoisescale, smallnoisescale, coverage, smallscalePower, curlPower, lod, true);
+}
+
+void sampleAtmospherics(
+	vec3 curPos, 
+	float atmosphericHeight, 
+	float distanceTraveled,
+	float Rayleighscaleheight, 
+	float Miescaleheight, 
+	vec3 RayleighScatteringCoef, 
+	float MieScatteringCoef, 
+	float atmosphericDensity, 
+	float density, 
+	inout vec3 totalRlh, 
+	inout vec3 totalMie, 
+	inout float iOdRlh, 
+	inout float iOdMie)
+	{
+	float iHeight = curPos.y / atmosphericHeight;
+	float odStepRlh = exp(-iHeight / Rayleighscaleheight) * distanceTraveled;
+	float odStepMie = exp(-iHeight / Miescaleheight) * distanceTraveled;
+	iOdRlh += odStepRlh;
+	iOdMie += odStepMie;
+
+	vec3 attn = exp(-(MieScatteringCoef * (iOdMie + Miescaleheight) + RayleighScatteringCoef * (iOdRlh + Rayleighscaleheight))) * atmosphericDensity * (1.0 - clamp(iHeight, 0.0, 1.0));
+	totalRlh += odStepRlh * attn * (1.0 - density);
+	totalMie += odStepMie * attn * (1.0 - density);
+}
+
+
+vec4 sampleAllAtmospherics(
+	vec3 worldPos, 
+	vec3 rayDirection,
+	float linear_depth,
+	float highestDensityDistance,
+	float density,
+	float stepDistance,
+	float stepCount,
+	float atmosphericDensity, 
+	vec3 sunDirection, 
+	vec3 sunlightColor, 
+	vec3 ambientLight)
+	{
+	vec3 totalRlh = vec3(0,0,0);
+    vec3 totalMie = vec3(0,0,0);
+	float iOdRlh = 0.0;
+    float iOdMie = 0.0;
+	// float odStepRlh = 0.0;
+	// float odStepMie = 0.0;
+
+	const float atmosphericHeight = 40000.0;
+	const vec3 RayleighScatteringCoef = vec3(5.5e-6, 13.0e-6, 22.4e-6);
+	const float Rayleighscaleheight = 8e3;
+	const float MieScatteringCoef = 21e-6;
+	const float Miescaleheight = 1.2e3;
+	const float MieprefferedDirection = 0.758;
+
+	// Calculate the Rayleigh and Mie phases.
+    float mu = dot(rayDirection, sunDirection);
+    float mumu = mu * mu;
+    float gg = MieprefferedDirection * MieprefferedDirection;
+    float pRlh = 3.0 / (16.0 * PI) * (1.0 + mumu);
+    float pMie = 3.0 / (8.0 * PI) * ((1.0 - gg) * (mumu + 1.0)) / (pow(1.0 + gg - 2.0 * mu * MieprefferedDirection, 1.5) * (2.0 + gg));
+
+	vec3 curPos = vec3(0.0);
+	float traveledDistance = 0.0;
+	//bool sampledDistanceAtmo = false;
+	float currentWeight = 0.0;
+	float sampleCount = 0.0;
+
+	for (float i = 0.0; i < stepCount; i++) {
+		traveledDistance = stepDistance * (i + 1);
+		
+		currentWeight = density * (1.0 - (highestDensityDistance - traveledDistance) / stepDistance);
+
+		if (traveledDistance > linear_depth || currentWeight >= 1.0){
+			traveledDistance = traveledDistance - stepDistance;
+			currentWeight = 1.0 - clamp((linear_depth - traveledDistance) / stepDistance, 0.0, 1.0);
+			sampleAtmospherics(curPos, atmosphericHeight, stepDistance, Rayleighscaleheight, Miescaleheight, RayleighScatteringCoef, MieScatteringCoef, atmosphericDensity, currentWeight, totalRlh, totalMie, iOdRlh, iOdMie); 
+			break;
+		}
+		sampleCount += 1.0;
+		
+		curPos = worldPos + rayDirection * traveledDistance;
+		
+		sampleAtmospherics(curPos, atmosphericHeight, stepDistance, Rayleighscaleheight, Miescaleheight, RayleighScatteringCoef, MieScatteringCoef, atmosphericDensity, currentWeight, totalRlh, totalMie, iOdRlh, iOdMie); 
+	}
+
+	// pRlh *= (1.0 - lightingWeight);
+	// pMie *= (1.0 - lightingWeight);
+
+	float AtmosphericsDistancePower = length(vec3(RayleighScatteringCoef * totalRlh + MieScatteringCoef * totalMie));
+	vec3 atmospherics = 22.0 * (ambientLight * RayleighScatteringCoef * totalRlh + pMie * MieScatteringCoef * sunlightColor * totalMie) / sampleCount;
+	return vec4(atmospherics, AtmosphericsDistancePower);
+}
+
+
+void main() {
+	//SETTING UP UVS/RAY DATA
+	ivec2 uv = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 size = ivec2(genericData.data.raster_size);
+
+	// Prevent reading/writing out of bounds.
+	if (uv.x >= size.x || uv.y >= size.y) {
+		return;
+	}
+	
+	vec2 depthUV = (uv + 0.5) / vec2(size);
+	float depth = texture(depth_image, depthUV).r;
+
+	vec4 view = scene_data_block.data.inv_projection_matrix * vec4(depthUV*2.0-1.0,depth,1.0);
+	view.xyz /= view.w;
+	float linear_depth = length(view); //used to calculate depth based on the view angle, idk just works.
+	// Sky/far pixels: Godot uses reverse-Z, so cleared sky reads depth == 0.
+	// Push the ray's max distance far past the camera far plane so distant clouds
+	// still draw. (The stock test compared length(view) >= z_far, which is
+	// marginal exactly at screen center where the forward ray length ~= z_far,
+	// carving an oval hole of missing sky/fog there.)
+	if (depth <= 0.0){
+		linear_depth = 1e9;
+	}
+	
+	// Convert screen coordinates to normalized device coordinates
+	vec2 clipUV = vec2(depthUV.x, depthUV.y);
+	vec2 ndc = clipUV * 2.0 - 1.0;	
+	// Convert NDC to view space coordinates
+	vec4 clipPos = vec4(ndc, 0.0, 1.0);
+	vec4 viewPos = scene_data_block.data.inv_projection_matrix * clipPos;
+	viewPos.xyz /= viewPos.w;
+	
+	vec3 rd_world = normalize(viewPos.xyz);
+	rd_world = mat3(scene_data_block.data.main_cam_inv_view_matrix) * rd_world;
+	// Define the ray properties
+	
+	vec3 raydirection = normalize(rd_world);
+	vec3 rayOrigin = scene_data_block.data.main_cam_inv_view_matrix[3].xyz; //center of camera for the ray origin, not worried about the screen width playing in, as it's for clouds.
+
+
+	//DITHER
+
+	// expirements with interleved gradient noise.
+	// float ditherScale = 40.037;
+	// vec3 ditherUV = vec3(depthUV.x * ditherScale , depthUV.y * ditherScale , genericData.data.time);
+	// float smallNoise = texture(dither_small, ditherUV).r;
+	// vec3 ign_noise_uv = vec3(float(uv.x), fract(genericData.data.time) * 2.0 - 1.0, float(uv.y));
+	// float ign_noise = fract(52.9829189 * fract(dot(ign_noise_uv, vec3(0.006711056, 0.00583715, 1.61803398875))));
+	// float ditherValue = ign_noise;
+
+	float ditherScale = 40.037;
+	vec3 ditherUV = vec3(depthUV.x * ditherScale , depthUV.y * ditherScale , genericData.data.time);
+	float smallNoise = texture(dither_small, ditherUV).r;
+
+	float ditherValue = smallNoise;
+
+	//ATMOSPHERICS
+	vec3 ambientfogdistancecolor = genericData.data.ambientfogdistancecolor.rgb;
+	vec3 totalRlh = vec3(0,0,0);
+    vec3 totalMie = vec3(0,0,0);
+	float iOdRlh = 0.0;
+    float iOdMie = 0.0;
+	float atmosphericDensity = genericData.data.atmospheric_density;
+
+	const float atmosphericHeight = 40000.0;
+	const vec3 RayleighScatteringCoef = vec3(5.5e-6, 13.0e-6, 22.4e-6);
+	const float Rayleighscaleheight = 8e3;
+	const float MieScatteringCoef = 21e-6;
+	const float Miescaleheight = 1.2e3;
+	const float MieprefferedDirection = 0.758;
+
+	//IMPORTED DATA
+	int stepCount = int(genericData.data.max_step_count);
+	int lightingStepCount = int(genericData.data.max_lighting_step_count);
+	int directionalLightCount = int(genericData.data.directionalLightsCount);
+	int pointLightCount = int(genericData.data.pointLightsCount);
+
+	vec3 extralargeNoisePos = genericData.data.extralargenoiseposition;
+	vec3 largeNoisePos = genericData.data.largenoiseposition;
+	vec3 mediumNoisePos = genericData.data.mediumnoiseposition;
+	vec3 smallNoisePos = genericData.data.smallnoiseposition;
+
+	float extralargenoiseScale = genericData.data.extralargenoisescale;
+	float largenoiseScale = genericData.data.large_noise_scale;
+	float mediumnoiseScale = genericData.data.medium_noise_scale;
+	float smallnoiseScale = genericData.data.small_noise_scale;
+
+	float minstep = genericData.data.min_step_distance;
+	float maxstep = genericData.data.max_step_distance;
+	
+
+	float curlPower = genericData.data.curlPower;
+	float lightingStepDistance = genericData.data.lighting_step_distance;
+	float cloudfloor = genericData.data.cloud_floor;
+	float cloudceiling = genericData.data.cloud_ceiling;
+
+	float densityMultiplier = genericData.data.cloud_density;
+	float sharpness = clamp(1.0 - genericData.data.cloud_sharpness, 0.001, 1.0) * 2.0;
+	float lightingSharpness = genericData.data.cloud_lighting_sharpness;
+	float smallNoiseMultiplier = genericData.data.small_noise_strength;
+
+	float coverage = genericData.data.cloud_coverage * 1.01;
+	float lightingdensityMultiplier = genericData.data.cloud_lighting_power;
+	lightingdensityMultiplier += lightingdensityMultiplier * 3.0 * coverage;
+
+	vec4 aobase = genericData.data.ambientGroundLightColor;
+	
+	//bool debugCollisions = false;
+	//int frameIndex = int(genericData.data.filterIndex);
+	
+	//REUSABLE VARIABLES
+	bool override = false;
+	bool densityBreak = false;
+	bool depthBreak = false;
+
+	float maxTheoreticalStep = float(stepCount) * maxstep;
+	float highestDensity = 0.0;
+	float highestDensityDistance = maxTheoreticalStep;
+	//float ceilingSample = cloudceiling;
+	float lodMaxDistance = maxstep * float(stepCount) * genericData.data.lod_bias;
+	// ★ 地面雾：解析求"层区间 [tEnter, tExit]"。
+	//   原版出层判据 min(curPos.y - cloudceiling, raydirection.y) > 0 … 把**米**与**方向分量**混用，
+	//   只在层厚 ≫ 1（云层 25km）时成立；45m 层里阈值与层厚同量级 ⇒ 过早/过晚终止。
+	float tEnter = 0.0;
+	float tExit = maxTheoreticalStep;
+	if (abs(raydirection.y) > 1e-6){
+		float ta = (cloudfloor - rayOrigin.y) / raydirection.y;
+		float tb = (cloudceiling - rayOrigin.y) / raydirection.y;
+		tEnter = max(min(ta, tb), 0.0);
+		tExit = min(max(ta, tb), maxTheoreticalStep);
+	}
+	else if (rayOrigin.y < cloudfloor || rayOrigin.y > cloudceiling){
+		tExit = 0.0;   // 与层平行且在层外 ⇒ 无交集
+	}
+	//float halfcloudThickness = (cloudceiling - cloudfloor) * 0.5;
+	//float halfCeiling = cloudceiling - halfcloudThickness;
+	
+
+	// ★ 薄雾适配：首采样步长原来是 maxstep（2 米）⇒ 对 0.1~1 米的薄层会**整层跳过**、什么都看不见。
+	//   改为"不超过半个层厚"，并给抖动一个下限，保证每帧都会踩进层里。
+	float layerThickness = max(cloudceiling - cloudfloor, 0.05);
+	float firstStepMax = min(maxstep, layerThickness * 0.5);
+	float newStep = firstStepMax * mix(0.15, 1.0, clamp(ditherValue, 0.0, 1.0));
+	float traveledDistance = newStep;
+
+	// ★★ 薄层关键适配 ★★
+	//   薄层（<=5 米）时，射线是否"正好采到层内"原本是抽签 ⇒ 按距离出现同心环带/斑点。
+	//   这里把首采样点直接放到**层区间 [tEnter,tExit] 的中点**，并把步长限制在层内，
+	//   于是每一帧都必然采到层里 ⇒ 环带消失，只留下笔刷权重本身的形状。
+	if (layerThickness <= 5.0 && tExit > tEnter){
+		traveledDistance = tEnter + (tExit - tEnter) * 0.5;
+		newStep = max((tExit - tEnter) * 0.5, 0.02);
+		firstStepMax = newStep;
+	}
+
+	vec4 currentColorAccumilation = vec4(0.0);
+	vec4 currentDataAccumilation = vec4(0.0);
+
+
+
+
+	//Used for interlaced rendering, not currently enabled due to it's long accumilation time, results in a lot of noticable artifacts.
+	//Though it does improve performance, so maybe for some people it will be helpful.
+
+				//bool rebuildFrame = renderBayer(uv, frameIndex);
+				// bool rebuildFrame = true;
+				
+				// if (!rebuildFrame){
+				// 	//accumulation preperation:
+				// 	vec4 niaveDataRetreval = vec4(0.0);
+				// 	float usingaccumA = genericData.data.isAccumulationA;
+				// 	if (usingaccumA > 0.0){
+				// 		niaveDataRetreval = imageLoad(accum_2A_image, uv).rgba;
+				// 	}
+				// 	else{
+				// 		niaveDataRetreval = imageLoad(accum_2B_image, uv).rgba;
+				// 	}
+				// 	//depthBreak = niaveDataRetreval.r > linear_depth;
+
+				// 	vec3 worldFinalPos = curPos + raydirection * niaveDataRetreval.g;
+				// 	worldFinalPos += (rayOrigin - genericData.data.prevview[3].xyz);
+				// 	//Prevview is already actually the inv_view (due to the way retrieving the transform works), so inversing it here is making it the equalivant of View_Matrix.
+				// 	vec4 reprojectedClipPos = inverse(genericData.data.prevview) * vec4(worldFinalPos, 1.0);
+					
+					
+				// 	if (reprojectedClipPos.z > 0.0){
+				// 		override = true;
+				// 	}
+				// 	else{
+				// 		vec4 reprojectedScreenPos = genericData.data.prevproj * reprojectedClipPos;
+						
+				// 		// Convert clip space to normalized device coordinates
+				// 		ndc = (reprojectedScreenPos.xy / reprojectedScreenPos.w);
+
+				// 		// Convert normalized device coordinates to screen space
+				// 		vec2 screen_position = ndc * 0.5 + 0.5;
+				// 		//screen_position = clamp(screen_position, vec2(0.0), vec2(1.0));
+				// 		screen_position = screen_position - depthUV;
+				// 		ivec2 adjustedUV = ivec2(int(screen_position.x * size.x), int(screen_position.y * size.y));
+				// 		//float change = length(vec2(adjustedUV));
+				// 		adjustedUV += uv; //Size is the screen resolution.
+						
+				// 		ivec2 clampedUV = clamp(adjustedUV, ivec2(0), size - ivec2(1)); //having two lets me check if clamping it changed the reprojected uv, if it did that means it was offscreen, so rebuild data.
+
+				// 		//execute accumilation.
+				// 		float accumdecay = genericData.data.accumilation_decay;
+
+				// 		//alternate back and forth to avoid stepping on pixels being written too.
+						
+				// 		float actualDepth = abs(reprojectedClipPos.z);
+						
+				// 		if (usingaccumA > 0.0){
+				// 			currentDataAccumilation = imageLoad(accum_2A_image, adjustedUV).rgba;
+				// 			bool lastDepthBreak = currentDataAccumilation.a < 0.0;
+				// 			float sampledDepth = currentDataAccumilation.r;
+				// 			depthBreak = actualDepth > sampledDepth;
+				// 			if (clampedUV != adjustedUV || depthBreak != lastDepthBreak){
+				// 				override = true;
+				// 				//debugCollisions = true;
+				// 			}
+				// 			else{
+				// 				imageStore(accum_1B_image, uv, imageLoad(accum_1A_image, adjustedUV));
+				// 				imageStore(accum_2B_image, uv, currentDataAccumilation);
+				// 			}
+							
+				// 		}
+				// 		else{
+				// 			currentDataAccumilation = imageLoad(accum_2B_image, adjustedUV).rgba;
+				// 			bool lastDepthBreak = currentDataAccumilation.a < 0.0;
+				// 			float sampledDepth = abs(currentDataAccumilation.r);
+				// 			depthBreak = actualDepth > sampledDepth;
+				// 			if (clampedUV != adjustedUV || depthBreak != lastDepthBreak){
+				// 				override = true;
+				// 				//debugCollisions = true;
+				// 			}
+				// 			else{
+				// 				imageStore(accum_1A_image, uv, imageLoad(accum_1B_image, adjustedUV));
+				// 				imageStore(accum_2A_image, uv, currentDataAccumilation);
+
+				// 			}
+				// 		}
+				// 	}
+
+				// }
+				
+	// END INTERLACED RENDERING
+
+
+	
+	//if (rebuildFrame || override){ //Re-enable for interlaced rendering
+	//If it is our render, build the data for this pixel
+	
+	
+	vec3 directionalLightSunUpPower[4] = vec3[4](vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0));
+	float totalLightPower = 0.0;
+
+	for (int lightI = 0; lightI < directionalLightCount; lightI++){
+		if (directionalLights[lightI].color.a > 0.0){
+			
+			directionalLightSunUpPower[lightI].r = smoothstep(-0.03, 0.07, dot(directionalLights[lightI].direction.xyz, vec3(0.0, 1.0, 0.0)));
+			totalLightPower += directionalLights[lightI].color.a * directionalLightSunUpPower[lightI].r;
+
+			directionalLightSunUpPower[lightI].b = dot(directionalLights[lightI].direction.xyz, raydirection);
+		}
+	}
+	
+
+	
+	
+	vec4 lightColor = vec4(0.0);
+	vec3 paintedColor = vec3(0.0);
+	float initialdistanceSample = 0.0;
+
+	float lightingSamples = 0.0;
+	float atmoSamples = 0.0;
+
+	float density = 0.0;
+	float ambient = 0.0;
+	float depthFade = 1.0;
+	float newdensity = 0.0;
+	vec3 curPos = vec3(0.0);
+	
+	float curLod = 1.0;
+	float samplePosCount = genericData.data.samplePointsCount;
+
+	if (samplePosCount > 0 && uv == ivec2(0)){
+		for (int i = 0; i < samplePosCount; i++){
+			curPos = SamplePoints[i].xyz;
+			vec4 maskSample = texture(extra_large_noise, (curPos.xz - extralargeNoisePos.xz - WindDrift()) / extralargenoiseScale);
+			//ceilingSample = mix(halfCeiling, cloudceiling, maskSample.a);
+			//ceilingSample = cloudceiling;
+			
+			SamplePoints[i].w = pow(sampleScene(largeNoisePos, mediumNoisePos, smallNoisePos, curPos, cloudceiling, cloudfloor, maskSample.a, largenoiseScale, mediumnoiseScale, smallnoiseScale, coverage, smallNoiseMultiplier, curlPower, 1.0, false) * densityMultiplier, sharpness);
+		}
+	}
+
+	for (int i = 0; i < stepCount; i++) {
+		
+		if (traveledDistance > linear_depth){
+			// depthFade = 1.0 - smoothstep(linear_depth - newStep, linear_depth, traveledDistance);
+			depthBreak = true;
+		}
+		
+		curPos = rayOrigin + raydirection * traveledDistance;
+		
+		vec4 maskSample = texture(extra_large_noise, (curPos.xz - extralargeNoisePos.xz - WindDrift()) / extralargenoiseScale);
+		//ceilingSample = mix(halfCeiling, cloudceiling, maskSample.a);
+		//ceilingSample = cloudceiling;
+		
+		//sampleAtmospherics(curPos, atmosphericHeight, newStep, Rayleighscaleheight, Miescaleheight, RayleighScatteringCoef, MieScatteringCoef, atmosphericDensity, density, totalRlh, totalMie, iOdRlh, iOdMie); 
+		atmoSamples += 1.0;
+		if (clamp(curPos.y, cloudfloor, cloudceiling) == curPos.y){
+
+			curLod = 1.0 - clamp(traveledDistance / lodMaxDistance, 0.0, 1.0);
+			// newdensity = sampleSceneCoarse(largeNoisePos, curPos, cloudceiling, cloudfloor, maskSample.a, largenoiseScale, coverage, curLod);
+			newdensity = clamp(pow(sampleScene(largeNoisePos, mediumNoisePos, smallNoisePos, curPos, cloudceiling, cloudfloor, maskSample.a, largenoiseScale, mediumnoiseScale, smallnoiseScale, coverage, smallNoiseMultiplier, curlPower, curLod, false), sharpness) * densityMultiplier, 0.0, 1.0) * depthFade;   // ★ 浓淡线性：density 在 pow 之外
+			// if (newdensity > 0.0) {
+			// 	newdensity = clamp(pow(sampleScene(largeNoisePos, mediumNoisePos, smallNoisePos, curPos, cloudceiling, cloudfloor, maskSample.a, largenoiseScale, mediumnoiseScale, smallnoiseScale, coverage, smallNoiseMultiplier, curlPower, curLod, false), sharpness) * densityMultiplier, 0.0, 1.0) * depthFade;   // ★ 浓淡线性：density 在 pow 之外
+			// }
+			
+			
+			if (newdensity > 0.0){
+				if (initialdistanceSample == 0.0){
+					initialdistanceSample = traveledDistance;
+				}
+
+				float powderEffect = pow(newdensity, genericData.data.powderStrength * 2.0);
+
+				paintedColor += maskSample.rgb;
+				lightingSamples += 1.0;
+				for (int lightI = 0; lightI < directionalLightCount; lightI++){
+					vec3 sundir = directionalLights[lightI].direction.xyz;
+					float sunUpWeight = directionalLightSunUpPower[lightI].r;
+
+					int thislightingStepCount = min(int(directionalLights[lightI].direction.w), lightingStepCount);
+					float henyeygreenstein =  pow(HenyeyGreenstein(genericData.data.anisotropy, directionalLightSunUpPower[lightI].b), mix(1.0, 2.0, 1.0 - genericData.data.anisotropy)); 
+					float densitySample = sampleLighting(thislightingStepCount, curPos, extralargeNoisePos, largeNoisePos, mediumNoisePos, smallNoisePos, sundir, densityMultiplier * lightingdensityMultiplier, sunUpWeight, lightingStepDistance, cloudceiling, cloudfloor, extralargenoiseScale, largenoiseScale, mediumnoiseScale, smallnoiseScale, coverage, smallNoiseMultiplier, curlPower, curLod);
+					densitySample = BeersLaw(lightingStepDistance, densitySample * henyeygreenstein);
+					//densitySample = Powder(lightingStepDistance, densitySample);
+					float thisStepLightingWeight = (pow(densitySample, lightingSharpness)) * sunUpWeight;
+					
+
+					lightColor.rgb += pow(directionalLights[lightI].color.rgb * directionalLights[lightI].color.a * thisStepLightingWeight, vec3(2.2)) * powderEffect;
+					directionalLightSunUpPower[lightI].g += directionalLights[lightI].color.a * thisStepLightingWeight;
+					// if (thislightingStepCount > 0){
+					// 	float henyeygreenstein =  pow(HenyeyGreenstein(genericData.data.anisotropy, directionalLightSunUpPower[lightI].b), mix(1.0, 2.0, 1.0 - genericData.data.anisotropy)); 
+					// 	float densitySample = sampleLighting(thislightingStepCount, curPos, extralargeNoisePos, largeNoisePos, mediumNoisePos, smallNoisePos, sundir, densityMultiplier * lightingdensityMultiplier, sunUpWeight, lightingStepDistance, ceilingSample, cloudfloor, extralargenoiseScale, largenoiseScale, mediumnoiseScale, smallnoiseScale, coverage, smallNoiseMultiplier, curlPower, curLod);
+					// 	densitySample = BeersLaw(lightingStepDistance, densitySample * henyeygreenstein);
+					// 	//densitySample = Powder(lightingStepDistance, densitySample);
+					// 	float thisStepLightingWeight = (clamp(pow(densitySample, lightingSharpness), 0.0, 1.0)) * sunUpWeight;
+						
+
+					// 	lightColor.rgb += pow(directionalLights[lightI].color.rgb * directionalLights[lightI].color.a * thisStepLightingWeight, vec3(2.2)) * powderEffect;
+					// 	directionalLightSunUpPower[lightI].g += directionalLights[lightI].color.a * thisStepLightingWeight;
+					// }
+					// else{
+					// 	lightColor.rgb += pow(directionalLights[lightI].color.rgb * directionalLights[lightI].color.a * sunUpWeight, vec3(2.2)) * powderEffect;
+					// 	directionalLightSunUpPower[lightI].g += directionalLights[lightI].color.a * sunUpWeight;
+					// }
+					// if (directionalLights[lightI].color.a > 0.0){
+						
+					// 	vec3 sundir = directionalLights[lightI].direction.xyz;
+					// 	float sunUpWeight = directionalLightSunUpPower[lightI].r;
+
+					// 	int thislightingStepCount = min(int(directionalLights[lightI].direction.w), lightingStepCount);
+					// 	if (thislightingStepCount > 0){
+					// 		float henyeygreenstein =  pow(HenyeyGreenstein(genericData.data.anisotropy, directionalLightSunUpPower[lightI].b), mix(1.0, 2.0, 1.0 - genericData.data.anisotropy)); 
+					// 		float densitySample = sampleLighting(thislightingStepCount, curPos, extralargeNoisePos, largeNoisePos, mediumNoisePos, smallNoisePos, sundir, densityMultiplier * lightingdensityMultiplier, sunUpWeight, lightingStepDistance, ceilingSample, cloudfloor, extralargenoiseScale, largenoiseScale, mediumnoiseScale, smallnoiseScale, coverage, smallNoiseMultiplier, curlPower, curLod);
+					// 		densitySample = BeersLaw(lightingStepDistance, densitySample * henyeygreenstein);
+					// 		//densitySample = Powder(lightingStepDistance, densitySample);
+					// 		float thisStepLightingWeight = (clamp(pow(densitySample, lightingSharpness), 0.0, 1.0)) * sunUpWeight;
+							
+
+					// 		lightColor.rgb += pow(directionalLights[lightI].color.rgb * directionalLights[lightI].color.a * thisStepLightingWeight, vec3(2.2)) * powderEffect;
+					// 		directionalLightSunUpPower[lightI].g += directionalLights[lightI].color.a * thisStepLightingWeight;
+					// 	}
+					// 	else{
+					// 		lightColor.rgb += pow(directionalLights[lightI].color.rgb * directionalLights[lightI].color.a * sunUpWeight, vec3(2.2)) * powderEffect;
+					// 		directionalLightSunUpPower[lightI].g += directionalLights[lightI].color.a * sunUpWeight;
+					// 	}
+
+						
+					// }
+				}
+
+				for (int lightI = 0; lightI < pointLightCount; lightI++){
+					vec3 lightToOriginDelta = pointLights[lightI].position.xyz - curPos;
+					float lightDistanceWeight = length(lightToOriginDelta); 
+					if (pointLights[lightI].color.a > 0.0 && lightDistanceWeight < pointLights[lightI].position.w){
+						lightToOriginDelta = normalize(lightToOriginDelta);
+						//float densitySample = 1.0 - newdensity;
+						float densitySample = sampleLighting(3, curPos, extralargeNoisePos, largeNoisePos, mediumNoisePos, smallNoisePos, lightToOriginDelta, densityMultiplier, 1.0, min(maxstep, lightDistanceWeight), cloudceiling, cloudfloor, extralargenoiseScale, largenoiseScale, mediumnoiseScale, smallnoiseScale, coverage, smallNoiseMultiplier, curlPower, curLod);
+						
+						float henyeygreenstein = pow(HenyeyGreenstein(genericData.data.anisotropy, dot(lightToOriginDelta, raydirection)), mix(1.0, 2.0, 1.0 - genericData.data.anisotropy)); 
+						densitySample = BeersLaw(lightDistanceWeight, densitySample * henyeygreenstein);
+						densitySample = mix(densitySample, newdensity, 0.5) * powderEffect;
+						lightDistanceWeight = lightDistanceWeight / pointLights[lightI].position.w;
+						lightDistanceWeight = pointLights[lightI].color.a * pow((1.0 - lightDistanceWeight), 2.2) * densitySample;
+
+
+						lightColor.rgb += pow(pointLights[lightI].color.rgb * lightDistanceWeight, vec3(2.2));
+					}
+				}
+				
+				if (aobase.a > 0.0){
+					ambient += sampleScene(largeNoisePos, mediumNoisePos, smallNoisePos, curPos + vec3(0.0, 1.0, 0.0) * minstep, cloudceiling, cloudfloor, maskSample.a, largenoiseScale, mediumnoiseScale, smallnoiseScale, coverage, smallNoiseMultiplier, curlPower, curLod, true) * densityMultiplier * lightingdensityMultiplier ;
+				}
+
+				
+				// ★ 薄雾适配：层内自适应步长也要跟着层厚缩小（否则 0.1m 层里一步就跨出去了）
+			float effectiveMinStep = min(minstep, layerThickness * 0.25);
+			newStep = mix(mix(maxstep, effectiveMinStep, pow(newdensity, 0.1)), maxstep, float(i) / float(stepCount));
+				if (newdensity > highestDensity){
+					highestDensity = newdensity;
+					highestDensityDistance = traveledDistance;
+				}
+			}
+			else{
+				newStep = maxstep;
+			}
+
+			if (i == 0){
+				newdensity = mix(newdensity, 0.0, traveledDistance / maxstep);
+			}
+
+			// ★ 每步密度必须按 **步长/层厚** 加权（原版是"每样本"累加）：
+			//   薄层里近水平光线在 0~45m 内不会离开 slab，不加权就会沿整条射线累加到饱和 ⇒ 地平线实心墙。
+						// ★ 归一化必须用**实际层厚**（原来封底在 1.0 米 ⇒ 0.1 米的薄层会被压到十分之一，几乎看不见）
+			// ★★ 薄雾适配：不按步累加，而是**取沿途最大值**。
+			//   累加的问题：水平光线在薄层里会走几百步 ⇒ 轻轻一笔(权重 0.011)也累加到饱和 ⇒ 实心白墙。
+			//   取最大值后：不透明度 ≈ 沿途最强的那个权重点 ⇒ 落笔权重直接对应浓淡，与层厚/路径无关。
+			density = max(density, newdensity);
+			if (density >= 1.0){
+				densityBreak = true;
+				break;
+			}
+		}
+		else{
+			// ★ 用解析出层点判断，替掉原来的"米/方向分量混用"近似
+			if (traveledDistance > tExit){
+				
+				traveledDistance = min(maxTheoreticalStep, linear_depth);
+				curPos = rayOrigin + raydirection * traveledDistance;
+				
+				//debugCollisions = true;
+				break;
+			}
+			
+			newStep = maxstep;
+		}
+		
+		traveledDistance += newStep;
+		if (depthBreak){
+			break;
+		}
+		
+	}
+
+	// ★★ 地面雾适配（必改项 #1）★★
+	//   原版：density *= clamp(smoothstep(maxstep*stepCount, minstep*stepCount, traveledDistance), 0.0, 1.0);
+	//   两个问题叠在一起：
+	//     ① smoothstep 的 edge0(=maxstep*stepCount) > edge1(=minstep*stepCount) —— GLSL 规定未定义行为；
+	//     ② 上面 L818-824 的 break 会把 traveledDistance 强制设成 maxstep*stepCount，而天空/仰视光线正是
+	//        走这条分支 ⇒ 这些光线的雾被整条归零。
+	//   云层因为密度很快饱和、提前在 L812 break（traveledDistance 小，因子=1）所以看不出问题；
+	//   地面雾很薄、永不饱和 ⇒ 直接表现为"什么都看不见"。
+	//   地面雾需要的是"按**最大雾距**淡出"：近水平光线在层内永不离开 slab，没有截止就会累加成实心墙。
+	float fogMaxDistance = maxstep * stepCount;
+	density *= 1.0 - smoothstep(fogMaxDistance * 0.35, fogMaxDistance, traveledDistance);
+
+	ambient = clamp(ambient / lightingSamples, 0.0, 1.0);
+	paintedColor = clamp(paintedColor / lightingSamples, 0.0, 1.0);
+
+
+	vec3 ambientLight = genericData.data.ambientLightColor.rgb * totalLightPower;
+	ambientLight = mix(ambientLight, ambientLight * aobase.rgb, ambient * aobase.a) * paintedColor;
+	lightColor.rgb += ambientLight;
+	// lightColor.rgb = ambientLight + clamp(lightColor.rgb / lightingSamples, vec3(0.0), vec3(1.0));
+	lightColor.a = density;
+
+	vec3 physicalFogColor = lightColor.rgb;
+	float fogweight = 0.0;
+	
+	// ★ 原判据 linear_depth > maxstep：maxstep 从 500 降到 2 后，连脚下的地面都会走这里
+	//   ⇒ 整层大气散射叠加到全屏、画面发灰。改用雾尺度的固定门槛。
+	if (linear_depth > 50.0 && directionalLightCount > 0.0){
+		for (float i = 0.0; i < directionalLightCount; i++){
+			DirectionalLight light = directionalLights[int(i)];
+			vec3 sundir = light.direction.xyz;
+			//sampleColor = sundir;
+			float sunUpWeight = smoothstep(0.0, 0.4, dot(sundir, vec3(0.0, 1.0, 0.0)));
+			float sundensityaffect = 1.0 - clamp(dot(sundir, raydirection) * density, 0.0, 1.0);
+			// sundensityaffect = min(1.0 - (sundensityaffect * density), 1.0 - (sundensityaffect * clamp(maxTheoreticalStep - linear_depth, 0.0, 1.0)));
+			float lightPower = light.color.a * sunUpWeight * sundensityaffect;
+			vec4 atmosphericData = sampleAllAtmospherics(rayOrigin, raydirection, linear_depth, traveledDistance, 0.0, traveledDistance / 10.0, 10.0, atmosphericDensity, sundir, light.color.rgb * lightPower, ambientfogdistancecolor);
+			
+			physicalFogColor = mix(physicalFogColor, atmosphericData.rgb, atmosphericData.a); //causes jitter in the sky
+			fogweight += atmosphericData.a;
+		}
+	}
+
+
+
+	lightColor.rgb = mix(physicalFogColor, mix(lightColor.rgb, ambientfogdistancecolor, fogweight),  genericData.data.atmosphere_simple_blend);
+	//lightColor.rgb = physicalFogColor;
+	// initialdistanceSample = max(initialdistanceSample, 0.0);
+
+
+	//accumulation preperation:
+	float finalDensityDistance = min(traveledDistance, highestDensityDistance);
+	vec3 worldFinalPos = rayOrigin + raydirection * traveledDistance;
+	// Camera movement this frame (used only by the accumulation-break heuristic
+	// below, via travelspeed). We do NOT add this to worldFinalPos: that
+	// camera-relative term compensated for Godot's internal camera-relative
+	// rendering, but our matrices are absolute world-space, so adding it cancels
+	// parallax and screen-locks the accumulated image to the camera.
+	vec3 delta = rayOrigin - scene_data_block.prev_data.main_cam_inv_view_matrix[3].xyz;
+
+	vec4 reprojectedScreenPos = vec4(0.0);
+
+	// Standard absolute reprojection: world -> prev view -> prev clip, using our
+	// own reliable prev-frame matrices (world->view is a real mat4 here, so no
+	// version-specific mat3x4 transpose needed).
+	vec4 reprojectedClipPos = scene_data_block.prev_data.view_matrix * vec4(worldFinalPos, 1.0);
+
+	reprojectedClipPos.z -= 0.01;
+	if (reprojectedClipPos.z > 0.0){
+		override = true;
+	}
+
+	reprojectedScreenPos = scene_data_block.prev_data.projection_matrix * reprojectedClipPos;
+
+	// Convert clip space to normalized device coordinates
+	ndc = (reprojectedScreenPos.xy / reprojectedScreenPos.w);
+
+	// Convert normalized device coordinates to screen space
+	vec2 screen_position = ndc * 0.5 + 0.5;
+	//screen_position = clamp(screen_position, vec2(0.0), vec2(1.0));
+	screen_position = screen_position - depthUV;
+
+	ivec2 adjustedUV = ivec2(int(screen_position.x * size.x), int(screen_position.y * size.y));
+	//float change = length(vec2(adjustedUV));
+	adjustedUV += uv; //Size is the screen resolution.
+	
+	ivec2 clampedUV = clamp(adjustedUV, ivec2(0), size - ivec2(1)); //having two lets me check if clamping it changed the reprojected uv, if it did that means it was offscreen, so rebuild data.
+
+	//execute accumilation.
+	float accumdecay = genericData.data.accumilation_decay;
+
+	//alternate back and forth to avoid stepping on pixels being written too.
+	float usingaccumA = genericData.data.isAccumulationA;
+	
+	//float finalDensityDistance = max(traveledDistance, highestDensityDistance);
+	//linear_depth = max(linear_depth, traveledDistance);
+	float travelspeed = max(length(delta) + maxstep, 4.0);   // ★ 原容差随 maxstep 一起缩到 1~2m ⇒ 时间累积几乎每帧失效；给 4m 下限保住降噪
+	//bool debugCollisions = false;
+	if (usingaccumA > 0.0){
+		currentColorAccumilation = imageLoad(accum_1A_image, adjustedUV).rgba;
+		currentDataAccumilation = imageLoad(accum_2A_image, adjustedUV).rgba;
+
+		float currentDepthBreak = float(depthBreak);
+
+		// bool lastDepthBreak = currentDataAccumilation.a < 0.0;
+		float if_break = max(float(override), abs(length(clampedUV - adjustedUV)));
+		// if_break = max(if_break, lightColor.a - 0.8 - currentColorAccumilation.a); //Lets super high accumilation still look passable, but at the cost of less soft edges.
+
+		if (if_break > 0.0 || (currentDepthBreak != currentDataAccumilation.a && abs(initialdistanceSample - currentDataAccumilation.r) > travelspeed * 0.5)){
+			currentColorAccumilation = lightColor;
+			//debugCollisions = true;
+			currentDataAccumilation.r = initialdistanceSample;
+			currentDataAccumilation.g = traveledDistance;
+			currentDataAccumilation.b = finalDensityDistance;
+		}
+		else{
+			currentColorAccumilation = (currentColorAccumilation * accumdecay) + lightColor * (1.0 - accumdecay);
+
+			currentDataAccumilation.r = mix(currentDataAccumilation.r, initialdistanceSample, (1.0 - accumdecay));
+			currentDataAccumilation.g = mix(currentDataAccumilation.g, traveledDistance,  (1.0 - accumdecay));
+			currentDataAccumilation.b = mix(currentDataAccumilation.b, finalDensityDistance,  (1.0 - accumdecay));
+		}
+
+		currentDataAccumilation.a = currentDepthBreak;
+
+		imageStore(accum_1B_image, uv, currentColorAccumilation);
+		imageStore(accum_2B_image, uv, currentDataAccumilation);
+	}
+	else{
+		currentColorAccumilation = imageLoad(accum_1B_image, adjustedUV).rgba;
+		currentDataAccumilation = imageLoad(accum_2B_image, adjustedUV).rgba;
+
+		float currentDepthBreak = float(depthBreak);
+		
+		// bool lastDepthBreak = currentDataAccumilation.a < 0.0;
+		float if_break = max(float(override), abs(length(clampedUV - adjustedUV)));
+		// if_break = max(if_break, lightColor.a - 0.8 - currentColorAccumilation.a); //Lets super high accumilation still look passable, but at the cost of less soft edges.
+
+		if (if_break > 0.0 || (currentDepthBreak != currentDataAccumilation.a && abs(initialdistanceSample - currentDataAccumilation.r) > travelspeed * 0.5)){
+			currentColorAccumilation = lightColor;
+			//debugCollisions = true;
+			currentDataAccumilation.r = initialdistanceSample;
+			currentDataAccumilation.g = traveledDistance;
+			currentDataAccumilation.b = finalDensityDistance;
+		}
+		else{
+			currentColorAccumilation = (currentColorAccumilation * accumdecay) + lightColor * (1.0 - accumdecay);
+
+			currentDataAccumilation.r = mix(currentDataAccumilation.r, initialdistanceSample, (1.0 - accumdecay));
+			currentDataAccumilation.g = mix(currentDataAccumilation.g, traveledDistance,  (1.0 - accumdecay));
+			currentDataAccumilation.b = mix(currentDataAccumilation.b, finalDensityDistance,  (1.0 - accumdecay));
+		}
+
+		currentDataAccumilation.a = currentDepthBreak;
+
+		imageStore(accum_1A_image, uv, currentColorAccumilation);
+		imageStore(accum_2A_image, uv, currentDataAccumilation);
+	}
+	// if (linear_depth < maxTheoreticalStep){
+	// 	float nearby_blend = smoothstep(maxstep, minstep, abs(currentDataAccumilation.b - linear_depth));
+	// 	depthFade = 1.0 - clamp(linear_depth - maxstep - currentDataAccumilation.b, 0.0, minstep) / minstep;
+		
+	// 	currentColorAccumilation.a = mix(currentColorAccumilation.a, 0.0, nearby_blend);
+	// 	// currentDataAccumilation.g = mix(currentDataAccumilation.g, maxTheoreticalStep, clamp(finalDensityDistance - linear_depth, 0.0, 1.0) * depthFade * nearby_blend);
+	// 	//currentColorAccumilation.rgb = mix(currentColorAccumilation.rgb, vec3(1.0, 0.0, 0.0), float(depthFade));
+	// }
+	// // currentDataAccumilation.g = mix(currentDataAccumilation.g, maxTheoreticalStep, clamp(finalDensityDistance - linear_depth, 0.0, 1.0) * depthFade);
+	
+	// if (depthBreak){
+	// 	currentColorAccumilation.rgb = vec3(1.0, 0.0, 0.0);
+	// }
+
+	// currentDataAccumilation.g += maxTheoreticalStep * float(depthBreak);
+
+	currentDataAccumilation.r = min(currentDataAccumilation.r, initialdistanceSample);
+	
+	imageStore(output_color_image, uv, currentColorAccumilation);
+	imageStore(output_data_image, uv, currentDataAccumilation);
+	//}
+}

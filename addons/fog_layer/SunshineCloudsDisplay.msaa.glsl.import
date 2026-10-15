@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://jri8gylu1f8i"
+path="res://.godot/imported/SunshineCloudsDisplay.msaa.glsl-62608d4911800081d30518166ee3a9d2.res"
+
+[deps]
+
+source_file="res://addons/fog_layer/SunshineCloudsDisplay.msaa.glsl"
+dest_files=["res://.godot/imported/SunshineCloudsDisplay.msaa.glsl-62608d4911800081d30518166ee3a9d2.res"]
+
+[params]
+

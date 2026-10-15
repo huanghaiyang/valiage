@@ -1,0 +1,47 @@
+[gd_resource type="CompositorEffect" script_class="FogLayerEffect" format=3 uid="uid://560d7ytxsg8x"]
+
+[ext_resource type="RDShaderFile" uid="uid://dx1y5cye1m1hu" path="res://addons/fog_layer/SunshineCloudsCompute.glsl" id="1_tv1nj"]
+[ext_resource type="CompressedTexture3D" uid="uid://dei12lsgrjpyu" path="res://addons/fog_layer/NoiseTextures/curl_noise_varied.tga" id="2_tv1nj"]
+[ext_resource type="CompressedTexture3D" uid="uid://b3uyfsp4in821" path="res://addons/fog_layer/NoiseTextures/bluenoise_Dither.png" id="3_1ah3a"]
+[ext_resource type="Texture2D" uid="uid://de2nsujnhdlg0" path="res://addons/fog_layer/NoiseTextures/ExtraLargeScaleNoise.tres" id="4_ndhw8"]
+[ext_resource type="Texture2D" uid="uid://g02m2ewpwusq" path="res://addons/fog_layer/NoiseTextures/HeightGradient.tres" id="5_rjkq8"]
+[ext_resource type="NoiseTexture3D" uid="uid://6ed3lvlpbqmg" path="res://addons/fog_layer/NoiseTextures/LargeScaleNoise.tres" id="6_gbwfl"]
+[ext_resource type="NoiseTexture3D" uid="uid://dxyewgt7o40m0" path="res://addons/fog_layer/NoiseTextures/MediumScaleNoise.tres" id="7_ttvxe"]
+[ext_resource type="RDShaderFile" uid="uid://cqhejbalsrvjp" path="res://addons/fog_layer/SunshineCloudsPostCompute.glsl" id="8_5qsws"]
+[ext_resource type="RDShaderFile" uid="uid://crfpk8ta4qxsk" path="res://addons/fog_layer/SunshineCloudsPreCompute.glsl" id="9_qvdau"]
+[ext_resource type="Script" uid="uid://dfjextq0twk5w" path="res://addons/fog_layer/FogLayerEffect.gd" id="10_ynas1"]
+[ext_resource type="NoiseTexture3D" uid="uid://bnck2kxeg5bkg" path="res://addons/fog_layer/NoiseTextures/SmallScaleNoise.tres" id="11_oob35"]
+
+[resource]
+resource_local_to_scene = false
+resource_name = ""
+enabled = true
+effect_callback_type = 3
+access_resolved_color = true
+access_resolved_depth = true
+needs_motion_vectors = true
+needs_normal_roughness = false
+script = ExtResource("10_ynas1")
+clouds_anisotropy = 0.3
+cloud_ambient_color = Color(0.351825, 0.624474, 0.784178, 1)
+atmosphere_color = Color(0.80121, 0.892869, 0.961545, 1)
+accumulation_decay = 0.5
+clouds_sharpness = 0.75
+lighting_sharpness = 0.05
+fog_thickness = 1.0
+cloud_floor = 0.1
+cloud_ceiling = 1.1
+resolution_scale = 1
+dither_noise = ExtResource("3_1ah3a")
+height_gradient = ExtResource("5_rjkq8")
+extra_large_noise_patterns = ExtResource("4_ndhw8")
+large_scale_noise = ExtResource("6_gbwfl")
+medium_scale_noise = ExtResource("7_ttvxe")
+small_scale_noise = ExtResource("11_oob35")
+curl_noise = ExtResource("2_tv1nj")
+dither_speed = 15.0
+pre_pass_compute_shader = ExtResource("9_qvdau")
+compute_shader = ExtResource("1_tv1nj")
+post_pass_compute_shader = ExtResource("8_5qsws")
+wind_direction = Vector3(1, 0, 1)
+directional_lights_data = Array[Vector4]([Vector4(-0.36868784, 0.7660445, 0.5265408, 4), Vector4(1, 0.88, 0.68, 1.3), Vector4(0.75, 0.5, -0.4330127, 4), Vector4(0.9, 0.78, 0.55, 0.4), Vector4(0.57735026, 0.57735026, 0.57735026, 4), Vector4(1, 1, 1, 1), Vector4(0, -1, 0, 4), Vector4(0.5, 0.5, 0.5, 1)])
