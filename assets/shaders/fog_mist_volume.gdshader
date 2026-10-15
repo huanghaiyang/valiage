@@ -31,7 +31,21 @@
 // ============================================================================
 
 shader_type spatial;
-render_mode unshaded, blend_mix, depth_draw_never, cull_disabled, fog_disabled, shadows_disabled;
+// ★★ 几何与渲染模式：**每像素必须恰好一个片元** —— 这是"盒面衔接处折痕"的根治点。
+//   盒子网格只是"覆盖代理"：片元着色器自己用 slab 法算出射线与盒的进出点，与"哪个面被
+//   光栅化"无关。据此选这两个模式：
+//     · cull_front —— 只画**背面**（远壁）。相机在盒外时远壁覆盖整个盒子轮廓；相机在盒内
+//       时看到的本来就是远壁 —— 两种情形都恰好一个片元。
+//       旧版是 cull_disabled ⇒ 每个像素被"正面 + 背面"两个片元各混合一次，于是：
+//         ① 雾被混合两次（浓度≈翻倍，而且"混合了几次"还随遮挡情况变化）；
+//         ② `camera_soft` 用到**片元自己的世界坐标**，正/背面到相机的距离差一个盒子直径
+//            ⇒ 同一个像素的结果取决于"它被哪几个面覆盖"，而"面的集合"只在盒子棱边的
+//            投影线上变化 ⇒ 屏幕上沿棱边切出**扇形硬折痕**（薄板地面雾侧看时最明显）。
+//     · depth_test_disabled —— 只画背面时远壁通常落在物体之后，硬件深度测试会把片元整块
+//       剔掉（雾明明在物体前面却不画）。所以关掉硬件深度测试，遮挡交给着色器自己用
+//       depth_tex 逐步裁剪（partial / depth_soft / edge_soft_m），与 fog_screen_volume
+//       的既有做法一致：雾仍然只画在"相机 → 物体表面"那一段里。
+render_mode unshaded, blend_mix, depth_test_disabled, depth_draw_never, cull_front, fog_disabled, shadows_disabled;
 
 /** 合成后的雾浓度场（R 通道），由 fog_ns_solver.gd 的链尾提供。
  *  这里要 filter_linear：96 格的场铺到 80 米见方，最近邻会看到明显格子。 */
@@ -501,7 +515,10 @@ void fragment() {
 			? clamp(scattered / accumulated, 0.0, 1.0)
 			: 1.0;
 
-		// 相机附近淡出：避免镜头钻进雾里变成一片白
+		// 相机附近淡出：避免镜头钻进雾里变成一片白。
+		// ★ 这里读的是**片元自己的世界坐标**，所以它只在"每像素恰好一个片元"时才是确定量：
+		//   cull_front ⇒ 每个像素只由远壁那一个片元着色，v_world 唯一定义，不会再因为
+		//   "正面/背面片元各算一次"而在盒子棱边处跳变（那是折痕的第二个来源）。
 		float camera_distance = distance(ray_origin, v_world);
 		float camera_soft = camera_fade > 0.0
 			? smoothstep(0.0, camera_fade, camera_distance)
