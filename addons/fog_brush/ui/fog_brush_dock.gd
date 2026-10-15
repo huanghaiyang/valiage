@@ -127,9 +127,49 @@ func _build_ui() -> void:
 	_add_float_param("不透明度", "fog_opacity", 0.0, 4.0, 0.05, 1.1, "")
 	_add_float_param("浓度增益", "density_gain", 0.0, 8.0, 0.05, 2.4, "")
 	_add_float_param("竖向衰减", "height_power", 0.2, 6.0, 0.05, 1.6, "")
+	# ★★ 粒子开关必须放在面板上：`particles_enabled` 默认 **false**，而面板原先只有
+	#    数量/尺寸/浓度三个旋钮 —— 于是"把数量设成 8000 却一颗都不发射"（用户实测反馈）。
+	#    `_particles.emitting = particles_enabled and particle_count > 0`，开关不开，数量白设。
+	var particles_check := CheckBox.new()
+	particles_check.text = "启用粒子（烟由粒子承担）"
+	particles_check.tooltip_text = "★ 默认关闭，也是『设置了粒子数量却没效果』的头号原因：\n" \
+			+ "emitting = 本开关 and 粒子数量 > 0，所以开关不开时数量/尺寸/浓度全都不发射。\n" \
+			+ "另外：运行时 particle_count 会被画质档位表 apply_quality 覆盖（中档=240）——\n" \
+			+ "要让面板设的数量在游戏里生效，把『数量跟随画质档位』关掉。"
+	particles_check.toggled.connect(func(pressed: bool) -> void:
+		if not _syncing:
+			fog_toggle_changed.emit("particles_enabled", pressed))
+	add_child(particles_check)
+	_fog_controls["particles_enabled"] = particles_check
 	_add_float_param("粒子数量", "particle_count", 0.0, 8000.0, 10.0, 900.0, "")
 	_add_float_param("粒子尺寸", "particle_size", 0.1, 60.0, 0.1, 13.0, "m")
+	# ★ 最小屏幕尺寸（像素）：远处雾团不会缩成几个闪烁的像素点
+	_add_float_param("粒子最小像素", "particle_min_pixel_size", 0.0, 8.0, 0.1, 1.0, "px")
+	# ★ 只在雾内：用画笔底图当判据（调大阈值 → 只在更浓处生成；调小 → 连雾气表面也算）
+	var inside_check := CheckBox.new()
+	inside_check.text = "粒子只在雾内（表面及内部）"
+	inside_check.tooltip_text = "用画笔底图判定『这里有雾』：只在有雾的格子里生成，漂出雾外会被拉回雾里。\n" \
+			+ "关掉 = 旧行为（整个雾带里随机播撒，包括没画雾的地方）。\n" \
+			+ "『雾内阈值』调小 = 连雾气的边缘（表面）也算 ⇒ 粒子会贴着表面游走。"
+	inside_check.toggled.connect(func(pressed: bool) -> void:
+		if not _syncing:
+			fog_toggle_changed.emit("particle_inside_fog_only", pressed))
+	add_child(inside_check)
+	_fog_controls["particle_inside_fog_only"] = inside_check
+	_add_float_param("雾内阈值", "particle_mask_min", 0.0, 1.0, 0.01, 0.08, "")
 	_add_float_param("粒子浓度", "particle_strength", 0.0, 2.0, 0.01, 0.55, "")
+	# ★ 运行时档位表要不要覆盖粒子数量：默认 true = 旧行为（会被覆盖）。
+	#   关掉它，面板/检查器里设的 particle_count 才会在游戏里生效。
+	var particles_follow_check := CheckBox.new()
+	particles_follow_check.text = "数量跟随画质档位"
+	particles_follow_check.tooltip_text = "打开（默认）：运行时 apply_quality 按画质档位覆盖粒子数量（低120/中240/高400/极高600），\n" \
+			+ "所以在面板上改『粒子数量』在游戏里看不到效果。\n" \
+			+ "关掉它：面板/检查器设的数量就是游戏里真正用的数量。"
+	particles_follow_check.toggled.connect(func(pressed: bool) -> void:
+		if not _syncing:
+			fog_toggle_changed.emit("particle_count_follows_quality", pressed))
+	add_child(particles_follow_check)
+	_fog_controls["particle_count_follows_quality"] = particles_follow_check
 	# ★ 颜色模型（拆分后）：烟底色 与 亮部受光叠加量，两个滑块分别控制"多黑"与"亮部多亮"
 	_add_float_param("烟底色", "particle_ambient", 0.0, 1.0, 0.01, 0.34, "")
 	_add_float_param("受光叠加", "particle_light_add", 0.0, 2.0, 0.01, 0.55, "")
@@ -348,6 +388,26 @@ func sync_fog_params(field: Object) -> void:
 			only_volume.tooltip_text = "%s\n\n%s" % [_hint_for(key),
 					"当前生效中" if box_on
 					else "★ 仅体积雾路径生效；当前 volumetric_box = false（纯粒子模式）"]
+	# ★★ 粒子三旋钮的"状态提示"：数量 > 0 但开关没开时，必须明确告诉用户"设了也不发射"。
+	#    这就是"插件支持粒子、我设了却不生效"的直接原因，不能只靠 tooltip 藏着。
+	var particles_on := bool(field.get("particles_enabled"))
+	var count := float(field.get("particle_count"))
+	var follows := true
+	if field.get("particle_count_follows_quality") != null:
+		follows = bool(field.get("particle_count_follows_quality"))
+	var status := ""
+	if not particles_on:
+		status = "★★ 未发射：『启用粒子』开关没打开（粒子数量设成 %d 也不会发射）" % int(count)
+	elif count <= 0.0:
+		status = "★★ 未发射：粒子数量 = 0"
+	elif follows:
+		status = "★ 已发射，但数量会被画质档位表覆盖（运行时 中档=240）：想让面板数量生效，关掉『数量跟随画质档位』"
+	else:
+		status = "已发射：数量 %d（不跟随画质档位）" % int(count)
+	for key in ["particle_count", "particle_size", "particle_strength"]:
+		var control: Control = _fog_controls.get(key)
+		if control is SpinBox:
+			control.tooltip_text = "%s\n\n%s" % [_hint_for(key), status]
 
 
 ## 每个参数的"人话说明"，鼠标悬停时显示。
@@ -366,8 +426,13 @@ const PARAM_HINTS := {
 	"fog_opacity": "整体不透明度。体积雾与粒子两条路径都吃它（粒子端是乘在单颗浓度上）。",
 	"density_gain": "浓度增益：画笔底图对浓度的吸引强度（求解器的 base_gain）。越大，画过的地方雾越浓。",
 	"height_power": "竖直衰减：越大雾越贴地（仅体积雾路径生效）。",
-	"particle_count": "粒子数量，0 = 完全不发射。注意：运行时会被画质档位表 apply_quality 覆盖，改档位表才改得动游戏里的值。",
+	"particles_enabled": "粒子总开关。★ 默认关闭，而 emitting = 本开关 and 粒子数量 > 0 —— 所以开关不开时，数量/尺寸/浓度三个旋钮全都不发射（这就是『插件支持粒子、我设了却不生效』的头号原因）。",
+	"particle_count_follows_quality": "运行时是否让画质档位表接管粒子数量。打开（默认）= 旧行为：apply_quality 会按档位覆盖成 低120/中240/高400/极高600，于是面板上改数量在游戏里看不到效果。关掉它，面板/检查器设的数量才真正生效。",
+	"particle_count": "粒子数量，0 = 完全不发射（另外还要打开『启用粒子』）。注意：运行时会被画质档位表 apply_quality 覆盖 —— 想让面板值生效，关掉『数量跟随画质档位』。",
 	"particle_size": "单颗粒子尺寸（米）。要更浓应优先加数量，而不是加大尺寸并提高单颗不透明度。",
+	"particle_min_pixel_size": "最小屏幕尺寸（像素）：太远/太小的粒子会被撑到至少这么大，避免远处雾团只剩几个闪烁的像素点。0 = 关闭（旧行为）。注意撑大后单位面积不透明度不变 ⇒ 极小粒子会略微变亮。",
+	"particle_inside_fog_only": "粒子只在雾里生成与存活（判据是『雾内阈值』对应的画笔底图）。关掉 = 旧行为：整个雾带里随机播撒，包括根本没画雾的地方。漂出雾外的粒子会被自动拉回雾里。",
+	"particle_mask_min": "雾内阈值：底图大于它就认为『这里有雾』。调大 = 只在更浓的地方生成（往内部缩）；调小 = 连雾气边缘（表面）也算 ⇒ 粒子会贴着雾气表面游走。",
 	"particle_strength": "单颗粒子浓度（不透明度）。别调太高：粒子是上百颗叠加，单颗一大就累积饱和、整片糊成一块；0.2~0.4 是薄雾区间。",
 	"particle_ambient": "粒子的环境底色亮度（没被光照到时多亮）。明亮场景里雾要比地面亮才像雾；太暗就成了地上的脏斑。",
 	"particle_light_add": "受光叠加量：亮部（黑体色温带）的强度上限，只有被照亮的部分才加。",

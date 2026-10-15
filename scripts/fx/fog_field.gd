@@ -132,9 +132,26 @@ const PARTICLE_DRAW_SHADER_LEGACY := "res://assets/shaders/fog_mist_particle_dra
 ##   想要"看得见的一团团雾"再打开它，或把 particle_count 调起来。
 @export var particles_enabled: bool = false
 @export_range(0, 8000, 10) var particle_count: int = 900
+## 运行时是否让画质档位表接管粒子数量。
+## ★ 默认 true = 旧行为：`apply_quality()` 会把 `particle_count` 覆盖成档位值
+##   （低 120 / 中 240 / 高 400 / 极高 600）—— 于是"在面板上把数量改成 8000，游戏里没变化"
+##   （用户实测反馈）。关掉它，面板/检查器里设的数量才在游戏里真正生效。
+@export var particle_count_follows_quality: bool = true
 @export var particle_size: float = 13.0
 @export_range(0.0, 2.0, 0.01) var particle_strength: float = 0.55
 @export var particle_color := Color(0.62, 0.63, 0.68)
+# ==================== 粒子"只在雾里"与"最小 1 像素"====================
+## 粒子只在**雾气所在处**生成与存活（画笔底图上 > particle_mask_min 的格子）。
+## ★ 用画笔底图判据而不是模拟浓度：底图静态、场景一开就有值、编辑器预览里也存在；
+##   模拟浓度开局是 0，用它会出现"开局几秒一颗粒子都生不出来"。
+## 关掉 = 旧行为（在整个雾带里随机播撒）。
+@export var particle_inside_fog_only: bool = true
+## 判定"这里算有雾"的底图阈值：调大 = 只在更浓处生成（往内部缩）；
+## 调小 = 连雾的边缘也算 ⇒ 粒子贴着**雾气表面**游走。
+@export_range(0.0, 1.0, 0.01) var particle_mask_min: float = 0.08
+## 粒子最小屏幕尺寸（像素）：太远/太小的粒子会被撑到至少这么大，避免远处雾团闪烁消失。
+## 0 = 关闭（旧行为）。
+@export_range(0.0, 8.0, 0.1) var particle_min_pixel_size: float = 1.0
 ## 粒子寿命（秒）：烟团越大越该长一些，否则会看到"一茬一茬"刷新
 @export_range(1.0, 40.0, 0.5) var particle_lifetime: float = 11.0
 
@@ -443,6 +460,29 @@ func _bind_flow_texture() -> void:
 	if _particles_material != null:
 		_particles_material.set_shader_parameter("flow_tex", texture)
 		_particles_material.set_shader_parameter("domain_size", domain_size)
+
+
+## 把"雾画在哪儿"的底图接到粒子上（决定粒子能不能在这一点生成/存活）。
+## ★ 编辑器预览也要接：不然"粒子只在雾内"这个功能在编辑器里完全看不出效果。
+func _bind_particle_mask() -> void:
+	if _particles == null:
+		return
+	var process_material := _particles.process_material as ShaderMaterial
+	if process_material == null:
+		return
+	var mask: Texture2D = null
+	if brush_field != null:
+		mask = brush_field.to_texture()
+	if mask != null:
+		process_material.set_shader_parameter("fog_mask_tex", mask)
+		process_material.set_shader_parameter("mask_enabled", 1)
+	else:
+		# 没底图（没刷过雾）⇒ 关掉限制：未赋值的 sampler2D 会绑成白图，
+		# 那时"限制"会退化成"哪里都算有雾"，等于没限制却没有提示。
+		process_material.set_shader_parameter("mask_enabled", 0)
+	process_material.set_shader_parameter("mask_min", particle_mask_min)
+	process_material.set_shader_parameter("spawn_inside_only",
+			1 if particle_inside_fog_only else 0)
 
 
 # =========================================================
@@ -851,6 +891,13 @@ func _apply_particle_params() -> void:
 		_particles_material.set_shader_parameter("erosion", particle_erosion)
 		# 受光也要能实时调（否则面板上的"粒子受光/光源散射"看起来同样"没反应"）
 		_particles_material.set_shader_parameter("emissive_clamp", emissive_clamp_color())
+		# ★ 最小屏幕尺寸（像素）：视口尺寸每帧写进去（窗口大小会变）
+		_particles_material.set_shader_parameter("min_pixel_size", particle_min_pixel_size)
+		if is_inside_tree():
+			_particles_material.set_shader_parameter("viewport_size_px",
+					Vector2(get_viewport().get_visible_rect().size))
+		# ★ 底色/形态之外，还有"粒子只在雾内"这套判据（底图/阈值/开关）也要每帧同步
+	_bind_particle_mask()
 	if _particles != null:
 		var process_material := _particles.process_material as ShaderMaterial
 		if process_material != null:
@@ -1086,7 +1133,10 @@ func apply_quality(tier: int) -> void:
 	var preset: Dictionary = presets[clamped]
 	resolution = int(preset["resolution"])
 	jacobi_passes = int(preset["jacobi"])
-	particle_count = int(preset["particles"])
+	# ★ 粒子数量是否交给档位表：默认交给（旧行为）；关掉后保留用户设的数量
+	#   （"面板改了数量，游戏里没变化"的根治开关）。
+	if particle_count_follows_quality:
+		particle_count = int(preset["particles"])
 	march_steps = int(preset["steps"])
 	light_steps = int(preset["light_steps"])
 	rebuild()
@@ -1109,6 +1159,7 @@ func rebuild() -> void:
 	set_brush_field(brush_field)
 	_bind_density_texture()
 	_bind_flow_texture()
+	_bind_particle_mask()
 	_apply_solver_settings()
 	if _particles != null:
 		_particles.amount = maxi(particle_count, 1)

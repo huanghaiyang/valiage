@@ -54,6 +54,24 @@ uniform float life_max : hint_range(0.1, 60.0) = 9.0;
  *  （失败后粒子系统照样派发 compute，于是刷屏报 "No compute pipeline was set"）。 */
 uniform float lifetime_seconds : hint_range(0.1, 60.0) = 9.0;
 
+// ==================== 只在"有雾的地方"生成/存活 ====================
+// 需求：粒子要在**雾气的表面及内部**移动，禁止在雾外面生成。
+// ★ 用**画笔底图**（雾画在哪儿）当判据，而不是求解器的模拟浓度：
+//   底图是静态的、场景一开就有值、编辑器预览里也存在；模拟浓度开局是 0，
+//   用它会出现"开局几秒一颗粒子都生不出来"。
+uniform sampler2D fog_mask_tex : filter_linear, repeat_disable;
+/** 0 = 不做任何限制（旧行为：整个雾带里随机播撒）；1 = 启用雾内限制。
+ *  ★ 没绑底图（编辑器里没刷过雾）时必须为 0：未赋值的 sampler2D 会绑成白图，
+ *    否则"限制"会退化成"哪里都算有雾"。 */
+uniform int mask_enabled = 0;
+/** 判定"这里算有雾"的底图阈值：调大 = 只在更浓的地方生成（往内部缩）；
+ *  调小 = 连雾的边缘（表面）也算 ⇒ 粒子会贴着雾气表面游走。 */
+uniform float mask_min : hint_range(0.0, 1.0) = 0.08;
+/** 1 = 只在雾内生成，并且寿命内漂到雾外时**拉回雾内**（而不是留在外面） */
+uniform int spawn_inside_only = 1;
+/** 每次重掷生成位置的最大尝试次数（雾只占地图一角时需要多试几次） */
+uniform int respawn_attempts = 12;
+
 // ==================== 受光（局部光源/光束照亮烟团） ====================
 // ★ 参考画面的核心：暗场景里让烟显形的是**烟内部的发光体**（激光/火焰/余烬）。
 //   这里在粒子阶段算出"这颗粒子被哪些光找到、有多亮"，结果写进 COLOR.rgb，
@@ -81,18 +99,56 @@ float fog_hash(float seed) {
 	return fract(sin(seed * 12.9898 + 78.233) * 43758.5453);
 }
 
+/** 该点处的"雾有多少"（0..1）。没绑底图时返回 1（= 处处有雾，等价旧行为）。 */
+float fog_mask_at(vec3 pos) {
+	if (mask_enabled == 0) {
+		return 1.0;
+	}
+	vec2 uv = clamp(pos.xz / domain_size + vec2(0.5), vec2(0.0), vec2(1.0));
+	return texture(fog_mask_tex, uv).r;
+}
+
+bool inside_fog(vec3 pos) {
+	return fog_mask_at(pos) >= mask_min;
+}
+
+/** 在雾带里掷一个候选位置（第 i 次尝试用不同的哈希种子，高度以 ry 为基准微调）。 */
+vec3 roll_spot(float base, float i, float ry) {
+	float seed = base + i * 7.13;
+	float sx = fog_hash(seed + 0.11);
+	float sz = fog_hash(seed + 0.37);
+	float sy = fog_hash(seed + 0.73);
+	return vec3((sx - 0.5) * domain_size.x,
+			mix(ry, sy, 0.65) * box_height,
+			(sz - 0.5) * domain_size.y);
+}
+
 void start() {
 	float base = float(INDEX) * 0.6180339887;
-	float rx = fog_hash(base + 0.11);
-	float rz = fog_hash(base + 0.37);
 	float ry = fog_hash(base + 0.73);
 	float rl = fog_hash(base + 1.19);
 
-	TRANSFORM[3].xyz = vec3(
-		(rx - 0.5) * domain_size.x,
-		ry * box_height,                  // ★ 铺满整个雾带（不是只在下半层）
-		(rz - 0.5) * domain_size.y
-	);
+	// ★ 只在雾内生成：最多试 respawn_attempts 次；全失败就标记"局外"（CUSTOM.z = 1），
+	//   process() 会继续找位置 —— 于是绝不会在没雾的地方冒出一团烟。
+	vec3 spawn = roll_spot(base, 0.0, ry);
+	if (mask_enabled != 0 && spawn_inside_only != 0) {
+		bool found = false;
+		for (int i = 0; i < 16; i++) {
+			if (i >= respawn_attempts) {
+				break;
+			}
+			spawn = roll_spot(base, float(i), ry);
+			if (inside_fog(spawn)) {
+				found = true;
+				break;
+			}
+		}
+		CUSTOM.z = found ? 0.0 : 1.0;
+	} else {
+		CUSTOM.z = 0.0;
+	}
+
+	TRANSFORM[3].xyz = spawn;
 	VELOCITY = vec3(0.0);
 	CUSTOM.x = 0.0;                      // 自累计年龄
 	// 逐粒子寿命差异：用 life_scale 影响淡出速度（而不是改 LIFETIME，见上）
@@ -116,6 +172,35 @@ void process() {
 		CUSTOM.x = 0.0;                   // 年龄重置：回收后的粒子重新走一遍生命曲线
 	}
 	vec2 uv = clamp(pos.xz / domain_size + vec2(0.5), vec2(0.0), vec2(1.0));
+
+	// ★ 漂出雾气范围 ⇒ 找一个雾内的新位置把它拉回来（而不是让它留在没雾的地方）。
+	//   CUSTOM.z: 1 = 当前处在雾外（这一帧就被拉回；找不到位置时保持标记，下一帧继续找）。
+	if (mask_enabled != 0 && spawn_inside_only != 0 && !inside_fog(pos)) {
+		float base = float(INDEX) * 0.6180339887 + CUSTOM.x;   // 用年龄当种子，逐帧尝试不同位置
+		bool found = false;
+		vec3 spot = pos;
+		for (int i = 0; i < 16; i++) {
+			if (i >= respawn_attempts) {
+				break;
+			}
+			spot = roll_spot(base, float(i), 0.5);
+			if (inside_fog(spot)) {
+				found = true;
+				break;
+			}
+		}
+		if (found) {
+			TRANSFORM[3].xyz = spot;
+			VELOCITY = vec3(0.0);           // 重新从静止开始被流场推着走
+			CUSTOM.x = 0.0;                 // 年龄重置：当成刚在雾里出生
+			pos = spot;
+			CUSTOM.z = 0.0;
+		} else {
+			CUSTOM.z = 1.0;
+		}
+	} else {
+		CUSTOM.z = 0.0;
+	}
 
 	// 采样流场：**域单位/秒 × domain_size = 米/秒**（单位换算，见 flow_speed_cap_mps 说明）
 	vec2 flow = synthetic_wind;

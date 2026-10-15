@@ -149,6 +149,41 @@ func _check_dock(path: String) -> void:
 	_ck("%s 面板控件全部建出来了" % path, missing.is_empty(),
 			"缺少：%s" % str(missing) if not missing.is_empty() else "控件齐全")
 
+	# ★ 粒子控件必须在面板上：`particles_enabled` 默认 false，而面板原先只有
+	#   数量/尺寸/浓度三个旋钮 ⇒ 出现"把粒子数量设成 8000 却一颗都不发射"
+	#   （`emitting = particles_enabled and particle_count > 0`，用户实测反馈）。
+	#   这条哨兵就是防止那个开关再被漏掉/删掉。
+	var fog_controls = dock.get("_fog_controls")
+	var particle_knobs := ["particles_enabled", "particle_count_follows_quality",
+			"particle_count", "particle_size", "particle_strength"]
+	var missing_particles: Array[String] = []
+	if fog_controls is Dictionary:
+		for key in particle_knobs:
+			if not (fog_controls as Dictionary).has(key):
+				missing_particles.append(key)
+	else:
+		missing_particles.append("_fog_controls 不是字典")
+	_ck("%s 粒子开关与粒子旋钮都在面板上" % path, missing_particles.is_empty(),
+			"缺少：%s" % str(missing_particles) if not missing_particles.is_empty()
+			else "%d 个粒子控件" % particle_knobs.size())
+
+	# ★ 检查器侧同一条：这两个属性必须真的 @export（带 EDITOR 用途）才会出现在检查器里，
+	#   否则"在面板/检查器里找不到粒子开关"会重演。
+	var fog_script := ResourceLoader.load("res://scripts/fx/fog_field.gd") as GDScript
+	var inspector_knobs := ["particles_enabled", "particle_count_follows_quality",
+			"particle_min_pixel_size", "particle_inside_fog_only", "particle_mask_min"]
+	var exposed: Array[String] = []
+	if fog_script != null:
+		for prop in fog_script.get_script_property_list():
+			if (int(prop.get("usage", 0)) & PROPERTY_USAGE_EDITOR) != 0 \
+					and inspector_knobs.has(str(prop.get("name", ""))):
+				exposed.append(str(prop["name"]))
+	_ck("res://scripts/fx/fog_field.gd 粒子开关出现在检查器里",
+			exposed.size() == inspector_knobs.size(),
+			"缺少：%s" % str(inspector_knobs.filter(func(k: String) -> bool:
+					return not exposed.has(k))) if exposed.size() != inspector_knobs.size()
+			else "%d 个属性可见" % exposed.size())
+
 	# 关键信号必须存在（插件靠它们通信）
 	var signals := ["brush_enabled_changed", "mode_changed", "params_changed",
 			"clear_requested", "fill_requested", "export_requested", "import_requested",
