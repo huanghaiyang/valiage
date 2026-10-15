@@ -248,6 +248,7 @@ func _export_mask_to_tres() -> void:
 	var loaded_res := ResourceLoader.load(tres_path) as FogMaskResource
 	driver.mask_resource = loaded_res if loaded_res != null else mres
 	print("Fog Layer: 掩码已转存 %s（err=%d,%d）⇒ 之后保存场景只写 ExtResource ✓" % [tres_path, e1, e2])
+	_refresh_mask_path_display()
 
 func ClearMask() -> void:
 	if rd == null:
@@ -371,6 +372,19 @@ func FindSceneNode() -> Node:
 	
 	return sceneRoot
 
+## 把"掩码文件:"那一行变成**真实路径显示**（复用原来的 LineEdit，改成只读 ✓）。
+##   为什么：原来它读的是旧的文件路径输入框，从来没填过 ⇒ 一直空白 ✗。
+func _refresh_mask_path_display() -> void:
+	if not is_instance_valid(MaskFilePath):
+		return
+	MaskFilePath.editable = false
+	MaskFilePath.visible = true
+	var p : String = ""
+	if driver != null and driver.mask_resource != null:
+		p = String(driver.mask_resource.resource_path)
+	if MaskFilePath.text != p:
+		MaskFilePath.text = p
+
 func SceneChanged(scene_root : Node):
 	
 	pause_updates = true
@@ -381,6 +395,7 @@ func SceneChanged(scene_root : Node):
 	
 	currentRoot = scene_root
 	driver = RetrieveCloudsDriver(scene_root)
+	_refresh_mask_path_display()
 	# ★ 掩码来源只有一个：驱动上的 FogMaskResource（直接引用，不猜路径/场景名）
 	if driver != null and driver.clouds_resource != null and driver.mask_resource != null and driver.mask_resource.mask != null:
 		driver.clouds_resource.reload_mask_from_image(driver.mask_resource.mask)
