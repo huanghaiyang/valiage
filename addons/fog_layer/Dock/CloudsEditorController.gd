@@ -91,6 +91,14 @@ func _add_clear_button() -> void:
 	b2.focus_mode = Control.FOCUS_NONE
 	b2.pressed.connect(_cleanup_unused_masks)
 	parent.add_child(b2)
+
+	var b3 := Button.new()
+	b3.name = "ExportMaskToTresButton"
+	b3.text = "掩码转存为 .tres（去掉场景内联图片）"
+	b3.tooltip_text = "把当前掩码像素写成独立 .res，生成 .tres 并把驱动关联到它；之后保存场景只写一行 ExtResource，不再内联图片数据"
+	b3.focus_mode = Control.FOCUS_NONE
+	b3.pressed.connect(_export_mask_to_tres)
+	parent.add_child(b3)
 	parent.add_child(b)
 	print("Fog Layer: 已添加【一键清除雾】按钮")
 
@@ -190,6 +198,56 @@ func _zero_resource_mask() -> void:
 	img.clear_mipmaps()
 	driver.mask_resource.mask = img
 	driver.mask_resource.resolution = res
+
+## 【一键转存】把当前掩码像素写成独立的 .res（file-backed Image ✓），生成 .tres 并把驱动关联到它。
+##   为什么要这么做：场景里内联图片数据，是因为"节点引用的资源对象没有文件路径"。
+##   本操作把像素存成文件、把 .tres 存成文件，再让节点引用**重新 load 回来的** file-backed 对象
+##   ⇒ 之后每次 Ctrl+S 只会写一行 ExtResource ✓（图片数据再也不进场景 ✓）
+func _export_mask_to_tres() -> void:
+	if driver == null:
+		printerr("Fog Layer: 转存失败 —— 没有 driver（先在场景里选中 FogLayerDriver）")
+		return
+	# 1) 取像素：优先面板内存掩码 → 驱动资源里的 mask → 全 0 空图
+	var img : Image = null
+	if rd != null and currentDrawingMask.is_valid():
+		var data : PackedByteArray = rd.texture_get_data(currentDrawingMask, 0)
+		if data.size() >= 16:
+			img = Image.create_from_data(int(MaskResolution.value), int(MaskResolution.value), false, Image.FORMAT_RGBAF, data)
+	if img == null and driver.mask_resource != null and driver.mask_resource.mask != null:
+		img = driver.mask_resource.mask.duplicate() as Image
+	if img == null:
+		img = Image.create(int(MaskResolution.value), int(MaskResolution.value), false, Image.FORMAT_RGBAF)
+		img.fill(Color(0.0, 0.0, 0.0, 0.0))
+	if img.is_compressed():
+		img.decompress()
+	if img.get_format() != Image.FORMAT_RGBAF:
+		img.convert(Image.FORMAT_RGBAF)
+	if img.has_mipmaps():
+		img.clear_mipmaps()
+
+	# 2) 像素写成独立 .res（Image 直接存成文件资源，无需导入 ✓）
+	var base : String = driver.mask_dir if driver.mask_dir != "" else "res://data/fog_masks"
+	if not DirAccess.dir_exists_absolute(base):
+		DirAccess.make_dir_recursive_absolute(base)
+	var stem : String = driver.mask_file_path().get_basename()
+	var res_path : String = stem + ".res"
+	var tres_path : String = stem + ".tres"
+	var e1 := ResourceSaver.save(img, res_path)
+
+	# 3) 建 .tres 并指向那份 file-backed Image
+	var mres := FogMaskResource.new()
+	mres.resolution = int(MaskResolution.value)
+	mres.width_km = driver.clouds_resource.mask_width_km if driver.clouds_resource != null else 0.0
+	mres.base_height = driver.clouds_resource.fog_base_height if driver.clouds_resource != null else 0.0
+	mres.thickness = driver.clouds_resource.fog_thickness if driver.clouds_resource != null else 0.0
+	var loaded_img := ResourceLoader.load(res_path)
+	mres.mask = loaded_img if loaded_img is Image else img
+	var e2 := ResourceSaver.save(mres, tres_path)
+
+	# 4) ★ 关键：save() 不会让内存对象变成文件型 ⇒ 必须重新 load 再挂回节点
+	var loaded_res := ResourceLoader.load(tres_path) as FogMaskResource
+	driver.mask_resource = loaded_res if loaded_res != null else mres
+	print("Fog Layer: 掩码已转存 %s（err=%d,%d）⇒ 之后保存场景只写 ExtResource ✓" % [tres_path, e1, e2])
 
 func ClearMask() -> void:
 	if rd == null:
