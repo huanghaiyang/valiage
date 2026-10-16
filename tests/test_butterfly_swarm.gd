@@ -791,6 +791,121 @@ func test_uv_autodetect_for_arbitrary_image() -> void:
 	print("[蝴蝶测试] UV 自动探测：任意图 (16,14,32,20) ✓ ｜ 换图缓存失效 (4,4,56,40) ✓ ｜ 群用自身裁剪 ✓")
 
 
+## ★ `body_scale` 真的改变身体几何 + 身体不会埋住翅膀。
+## 用户实测反馈"body_scale 疑似未生效"，查下来是**值被设得过大**（场景里存着 3.0）：
+##   实测身体半径 = body_scale × 翼展的 12.5%，3.0 时就是 37.3% —— 粗到几乎与翅根同宽，
+##   翅膀被埋进身体里，看起来就像"这个参数没用"。这条测试钉住"单调 + 上限"。
+func test_body_scale_changes_body_geometry() -> void:
+	var paths := BFLY_IO.list_butterfly_paths()
+	var tex := load(String(paths[0])) as Texture2D
+	var crop := BFLY_IO.detect_bbox(String(paths[0]))
+	var last_r := -1.0
+	for bs in [0.5, 1.0, 1.5, 2.0]:
+		var b = _new_butterfly()
+		b.setup(tex, crop, _rng(1), {"size_m": 0.22, "body_scale": bs})
+		var mesh: ArrayMesh = b.build_unit_quad()
+		assert_eq(mesh.get_surface_count(), 2, "body_scale=%.1f 时应有身体表面" % bs)
+		var bv: PackedVector3Array = mesh.surface_get_arrays(1)[Mesh.ARRAY_VERTEX]
+		var rad := 0.0
+		for v in bv:
+			rad = maxf(rad, maxf(absf(v.x), absf(v.z)))
+		assert_true(rad > last_r,
+				"身体半径必须随 body_scale 单调增大（%.1f 时 %.4f，上一个 %.4f）" % [bs, rad, last_r])
+		last_r = rad
+		# 1.0 时半径应约为翼展的 12.5%（单位方块里翼展半宽 ≈ 0.5）
+		if absf(bs - 1.0) < 1e-6:
+			var frac := rad / 0.5
+			assert_true(absf(frac - 0.125) < 0.02,
+					"body_scale=1.0 时身体半径应约为翼展的 12.5%%，实际 %.1f%%" % (frac * 100.0))
+	# body_scale=0 -> 没有身体表面
+	var b0 = _new_butterfly()
+	b0.setup(tex, crop, _rng(1), {"size_m": 0.22, "body_scale": 0.0})
+	var m0: ArrayMesh = b0.build_unit_quad()
+	assert_eq(m0.get_surface_count(), 1, "body_scale=0 时不应有身体表面（退化为单片翅）")
+	print("[蝴蝶测试] body_scale：半径单调 0.5->2.0（末端 %.4f = 翼展 %.1f%%）；0 时不建身体面"
+			% [last_r, last_r / 0.5 * 100.0])
+
+
+## ★★ 蝴蝶必须对「合批」免疫（`meta["batch"] = false`）★★
+## 用户实测反馈："合批勾上会导致蝴蝶呈现冻结的白片形式"。根因：
+##   本仓库 `scripts/world/prop_merge.gd` 会把带 `meta["allow_batch"]` 的节点**整棵子树**里
+##   所有 MeshInstance3D 合并成一个静态 ArrayMesh 并 `queue_free()` 原件 ——
+##   蝴蝶的 `visual` 正好在后代里，于是逐只材质/逐帧顶点全丢，整群压成一块静止网格。
+##   它的契约里留了逃生口：子件 `meta["batch"] = false` 即排除。
+##   这条测试先钉住"meta 打了"，再**真的调一次 prop_merge.apply()** 验证蝴蝶活着。
+func test_butterflies_immune_to_prop_merge_batching() -> void:
+	var paths := BFLY_IO.list_butterfly_paths()
+	var tex := load(String(paths[0])) as Texture2D
+	var sw = SWARM.new()
+	track(sw)
+	sw.set_sprite_textures([tex])
+	sw.count = 4
+	sw.region_size = Vector3(4, 2, 4)
+	sw.rebuild()
+	assert_eq(sw.live_count(), 4, "应先建出 4 只")
+	print("[蝴蝶测试] build 之后：get_child_count=", sw.get_child_count(),
+			" live=", sw.live_count())
+	var b0: Node3D = sw.get_child(0)
+	var vis: MeshInstance3D = b0.visual
+	assert_ne(vis, null, "蝴蝶应有 visual 子节点")
+	assert_true(vis.has_meta("batch") and bool(vis.get_meta("batch")) == false,
+			"visual 必须带 meta batch=false（否则会被 prop_merge 合批成冻结白片）")
+	# 真跑一次合批：造一个 allow_batch 根 + 6 件陪衬（满足 MIN_PARTS=4）
+	# ⚠ 用运行时 load() 而不是顶部 const preload：`prop_merge.gd` -> 本插件脚本，
+	#   而本测试又 preload 了插件脚本 —— 顶部再 preload 会形成**循环依赖**（实测 parse error）。
+	var prop_merge: GDScript = load("res://scripts/world/prop_merge.gd") as GDScript
+	assert_ne(prop_merge, null, "prop_merge.gd 应能加载")
+	if prop_merge == null:
+		return
+	var root := Node3D.new()
+	track(root)
+	# ⚠ 必须真的挂进场景树：prop_merge 要 `holder.get_parent()` 才能把合并网格挂上去
+	#   （树外的 holder 会走"放弃"分支，返回 parts=0 —— 实测过）。
+	#   测试基类没有 get_root()，所以照 setup() 的做法走 Engine.get_main_loop()。
+	var loop := Engine.get_main_loop()
+	if loop is SceneTree:
+		(loop as SceneTree).root.add_child(root)
+	root.set_meta("allow_batch", true)
+	root.add_child(sw)
+	for i in range(6):
+		var mi := MeshInstance3D.new()
+		mi.name = "Prop_%d" % i
+		mi.mesh = BoxMesh.new()
+		mi.material_override = StandardMaterial3D.new()
+		mi.position = Vector3(i, 0, 0)
+		root.add_child(mi)
+	# 不需要把 root 挂进场景树：prop_merge 只用 parent.add_child + queue_free，
+	# 树外同样成立（实测它能正常合成 1 组）。
+	# 记录合批前那 4 只的身份，合批后逐个核对"还是同一批节点"
+	var before_ids: Array = []
+	for c in sw.get_children():
+		before_ids.append(c.get_instance_id())
+	var r: Dictionary = prop_merge.call("apply", root)
+	var after_ids: Array = []
+	for c in sw.get_children():
+		after_ids.append(c.get_instance_id())
+	var survived := 0
+	for i in before_ids:
+		if after_ids.has(i):
+			survived += 1
+	print("[蝴蝶测试] 合批前后：子节点 %d -> %d，原节点存活 %d/%d"
+			% [before_ids.size(), after_ids.size(), survived, before_ids.size()])
+	assert_true(int(r.get("groups", 0)) >= 1,
+			"陪衬网格应被合批（证明合批真的执行了，而不是被跳过）：%s" % str(r))
+	assert_true(int(r.get("parts", 0)) > 0,
+			"应真的合掉了几件陪衬：%s" % str(r))
+	# ★ 核心断言：蝴蝶一只都不能少，而且不能是"被搬走/被重建"的替身
+	assert_eq(sw.live_count(), 4, "合批后蝴蝶仍应为 4 只")
+	assert_eq(survived, before_ids.size(),
+			"合批后原有蝴蝶节点必须**全部存活**（实测 %d/%d 个实例 id 仍在）—— 说明没被搬走或释放"
+			% [survived, before_ids.size()])
+	assert_false(vis.is_queued_for_deletion(), "蝴蝶 visual 不应被 queue_free")
+	var st: Dictionary = sw.stats()
+	assert_eq(int(st.get("live", 0)), 4, "合批后 stats().live 仍应为 4")
+	print("[蝴蝶测试] 合批免疫：prop_merge 合了 %d 组/%d 件，蝴蝶 4 只（含 visual）全部存活"
+			% [int(r.get("groups", 0)), int(r.get("parts", 0))])
+
+
 ## ★ 批量加素材 API（用户在检查器里点的就是这些）：
 ##   add_sprites_from_paths / add_all_sprites_from_folder / add_random_sprites /
 ##   clear_sprites / sprite_summary。

@@ -2167,13 +2167,13 @@ brush_field = SubResource("Resource_0loja")
 metadata/_custom_type_script = "uid://8puj086uohoa"
 
 [node name="ButterflySwarm" type="Node3D" parent="." unique_id=1643124523]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -11.577174, 0, -22.4955)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -13.2, -2.7337873, -21)
 script = ExtResource("55_ro3en")
 sprites = Array[Texture2D]([ExtResource("56_od4ux"), ExtResource("57_xhfw6"), ExtResource("58_1epgm"), ExtResource("59_152kg"), ExtResource("60_r4e17"), ExtResource("61_y57op"), ExtResource("62_mlv25"), ExtResource("63_a82wo"), ExtResource("64_xljpf"), ExtResource("65_j4bwh"), ExtResource("66_ksmap"), ExtResource("67_ygd8o"), ExtResource("68_2s0kr"), ExtResource("69_xaipn"), ExtResource("70_ndrjj"), ExtResource("71_ih3m7"), ExtResource("72_11yus"), ExtResource("73_b6ruc"), ExtResource("74_155or"), ExtResource("75_vtx2l")])
-count = 100
-region_size = Vector3(20, 2, 20)
-region_offset = Vector3(0, 1.6991926, 0)
+count = 40
+region_size = Vector3(12, 1, 12)
+region_offset = Vector3(0, 4.878399, 0)
 autofit_region = true
-dihedral_min_deg = 52.0
-body_scale = 3.0
+dihedral_min_deg = 8.0
+size_m = 0.43999999999999995
 metadata/_custom_type_script = "uid://dpokenp6o4tvf"

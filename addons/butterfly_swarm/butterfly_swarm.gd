@@ -184,9 +184,15 @@ func scene_root() -> Window:
 	set(v):
 		wing_bend_y = v
 		_request_rebuild()
-## 身体粗细（倍率）。1.0 = 默认（约翼展的 12%）；0 = 不画身体（回到纸片蝶）。
+## 身体粗细（倍率）。1.0 = 默认；0 = 不画身体（回到纸片蝶）。
 ## ★ 身体是**真的有体积的实体**（椭圆截面），是"蝴蝶有没有质量"的关键。
-@export_range(0.0, 3.0, 0.05) var body_scale := 1.0:
+##
+## ★★ 实测：身体半径 = body_scale × 翼展的 12.5% ★★
+##   0.5 -> 6.7% ｜ 1.0 -> 12.5% ｜ 2.0 -> 24.9% ｜ **3.0 -> 37.3%**
+##   所以上限收到 **2.0**：3.0 时身体粗到几乎与翅根同宽，**会把翅膀埋进身体里**，
+##   看起来像"body_scale 没生效"（用户实测就踩在这：场景里存着 3.0）。
+##   真实蝴蝶的身体大约只有翼展的 5~12%。
+@export_range(0.0, 2.0, 0.05) var body_scale := 1.0:
 	set(v):
 		body_scale = v
 		_request_rebuild()
@@ -1174,8 +1180,11 @@ func _get_configuration_warnings() -> PackedStringArray:
 	if count > 60:
 		out.append("count = %d 偏多：远看会糊成一片，且每只约 1000 个顶点（%d 只 ≈ %.0f 万顶点）。建议 8~40。"
 				% [count, count, float(count) * 1000.0 / 10000.0])
-	if body_scale > 1.4 or body_scale < 0.35:
-		out.append("body_scale = %.2f 偏离常态（0.35~1.4 比较像蝴蝶）：过粗会像虫子/蜜蜂。" % body_scale)
+	if body_scale > 1.6 or body_scale < 0.35:
+		var pct := body_scale * 12.5
+		out.append("body_scale = %.2f 偏大：实测身体半径 = body_scale × 翼展的 12.5%%，现在约 %.1f%%。"
+				% [body_scale, pct]
+				+ "超过 ~25% 就会把翅根埋进身体、看起来像「参数没生效」。建议 0.6~1.6。")
 	if dihedral_min_deg > 30.0:
 		out.append("dihedral_min_deg = %.0f° 偏大：蝴蝶会一直夹着翅膀，看不出张合。建议最小角 0~15°。"
 				% dihedral_min_deg)
@@ -1184,10 +1193,11 @@ func _get_configuration_warnings() -> PackedStringArray:
 	#   否则盒子的下半部分在地里 —— 蝴蝶有一半时间在地下，玩家只看到零星几只。
 	#   这条警告就是给这个坐标系误会准备的（用户实测踩过：offset.y=0.5 + size.y=6）。
 	if not autofit_region and region_offset.y < region_size.y * 0.5 - 0.05:
-		out.append("区域有 %.1f 米埋在地下：region_offset.y(%.2f) 小于 region_size.y/2(%.1f)。\
-region_offset 是**以节点原点为中心**的本地偏移（不是离地高度），请把它调到 ≥ %.1f，或打开 autofit_region。"
-				% [region_size.y * 0.5 - region_offset.y, region_offset.y, region_size.y * 0.5,
-				region_size.y * 0.5])
+		var buried := region_size.y * 0.5 - region_offset.y
+		out.append("区域有 %.1f 米埋在地下：region_offset.y(%.2f) 小于 region_size.y/2(%.1f)。"
+				% [buried, region_offset.y, region_size.y * 0.5]
+				+ "region_offset 是「以节点原点为中心」的本地偏移（不是离地高度），"
+				+ "请把它调到 ≥ %.1f，或打开 autofit_region。" % (region_size.y * 0.5))
 	return out
 
 

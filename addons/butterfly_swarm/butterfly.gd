@@ -167,6 +167,18 @@ func setup(tex: Texture2D, crop_rect: Rect2i, r: RandomNumberGenerator, tuning: 
 	mat.shader = sh
 	visual.material_override = mat
 	visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# ★★ 禁止被「合批」吃掉（用户实测踩过：勾上合批后蝴蝶变成冻结的白片）★★
+	#   本仓库主场景的 `scripts/world/prop_merge.gd` 会把带 `meta["allow_batch"] = true`
+	#   的节点的**整棵子树里所有 MeshInstance3D** 合并成一个静态 ArrayMesh，
+	#   然后 `queue_free()` 掉原节点（见它第 173 行收件、273 行释放）。
+	#   蝴蝶的翅膀正好是它的后代 —— 一旦被合批：
+	#     · 逐只的 ShaderMaterial（扑翼相位/张翼角）失效 -> 全群一个静态姿态
+	#     · 顶点被烘焙进世界空间且不再更新 -> **冻结**
+	#     · 合并后材质分组错乱 -> **白片**
+	#   而 prop_merge 的契约里就有逃生口：子件 `meta["batch"] = false` 即排除（它第 173 行）。
+	#   所以这里显式打上这个 meta：**蝴蝶永远不参与合批**。
+	#   （蝴蝶是运行时逐帧改顶点/材质的动态物体，合批在语义上本来就不适用。）
+	visual.set_meta("batch", false)
 	add_child(visual)
 	_apply_material()
 	_update_visual_scale()
