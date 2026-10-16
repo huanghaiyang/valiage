@@ -152,6 +152,10 @@ const PARTICLE_DRAW_SHADER_LEGACY := "res://assets/shaders/fog_mist_particle_dra
 ## 粒子最小屏幕尺寸（像素）：太远/太小的粒子会被撑到至少这么大，避免远处雾团闪烁消失。
 ## 0 = 关闭（旧行为）。
 @export_range(0.0, 8.0, 0.1) var particle_min_pixel_size: float = 1.0
+## 粒子**最大**屏幕尺寸（像素）：贴近相机的粒子会被缩到不超过这么大，
+## 避免一颗粒子（雾团尺寸可达十几米）糊满整个屏幕。0 = 关闭（旧行为）；
+## 建议 160~320（按分辨率给，约屏高的 1/4~1/3）。只改尺寸、不改单位面积不透明度。
+@export_range(0.0, 2000.0, 1.0) var particle_max_pixel_size: float = 0.0
 ## 粒子寿命（秒）：烟团越大越该长一些，否则会看到"一茬一茬"刷新
 @export_range(1.0, 40.0, 0.5) var particle_lifetime: float = 11.0
 
@@ -893,6 +897,7 @@ func _apply_particle_params() -> void:
 		_particles_material.set_shader_parameter("emissive_clamp", emissive_clamp_color())
 		# ★ 最小屏幕尺寸（像素）：视口尺寸每帧写进去（窗口大小会变）
 		_particles_material.set_shader_parameter("min_pixel_size", particle_min_pixel_size)
+		_particles_material.set_shader_parameter("max_pixel_size", particle_max_pixel_size)
 		if is_inside_tree():
 			_particles_material.set_shader_parameter("viewport_size_px",
 					Vector2(get_viewport().get_visible_rect().size))
@@ -901,6 +906,11 @@ func _apply_particle_params() -> void:
 	if _particles != null:
 		var process_material := _particles.process_material as ShaderMaterial
 		if process_material != null:
+			# ★ 3D 方格约束（粒子只允许在"雾体长方体"内运动）要用到这两个尺寸：
+			#   必须**每帧**同步 —— 否则改了域尺寸/雾带高度之后，粒子会被夹到旧方格里
+			#   （表现为"粒子还是跑到雾体外面"）。
+			process_material.set_shader_parameter("domain_size", domain_size)
+			process_material.set_shader_parameter("box_height", box_height)
 			# 跟风速率是**响应速度**，不乘风系数（避免二次缩放）；调小它能显著减少抖动
 			process_material.set_shader_parameter("flow_gain", particle_flow_follow)
 			# ★ 流场强度：0 = 粒子完全无视流体速度场（"风都关 0 了还在飞快抖动"的根治开关）

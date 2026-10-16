@@ -79,6 +79,12 @@ func _run() -> void:
 	var want := Vector2(get_viewport().get_visible_rect().size)
 	_ck("② 视口尺寸 → 绘制材质 viewport_size_px", vp is Vector2 and (vp as Vector2).x > 0.0,
 			"uniform=%s ｜ 视口=%s" % [str(vp), str(want)])
+	# ★ 最大屏幕尺寸：贴近相机的粒子不要糊满屏（0 = 关闭）
+	field.set("particle_max_pixel_size", 240.0)
+	field.call("_apply_particle_params")
+	var max_px = draw_material.get_shader_parameter("max_pixel_size")
+	_ck("② 粒子最大像素 → 绘制材质 max_pixel_size", is_equal_approx(float(max_px), 240.0),
+			"uniform=%s（属性=240）" % str(max_px))
 
 	# ---------- ③ 底图/阈值/开关 → process 材质的雾内判据 ----------
 	var brush_script: GDScript = load("res://scripts/fx/fog_brush_field.gd")
@@ -119,4 +125,18 @@ func _run() -> void:
 	enabled = process_material.get_shader_parameter("mask_enabled")
 	_ck("③ 空底图 → mask_enabled = 0（不能用白图冒充处处有雾）", int(enabled) == 0,
 			"mask_enabled=%s" % str(enabled))
+
+	# ---------- ④ 3D 方格约束要用到的两个尺寸必须每帧同步 ----------
+	# ★ 这条是"粒子没有限制在雾气 3D 空间方格范围内"的回归哨兵：
+	#   方格尺寸要是旧值，粒子就会被夹到错误的方格里（或干脆夹不住而跑出雾体）。
+	field.set("domain_size", Vector2(64.0, 48.0))
+	field.set("box_height", 3.5)
+	field.call("_apply_particle_params")
+	var proc_domain = process_material.get_shader_parameter("domain_size")
+	var proc_box = process_material.get_shader_parameter("box_height")
+	_ck("④ domain_size → process 材质（3D 方格水平范围）",
+			proc_domain is Vector2 and (proc_domain as Vector2).is_equal_approx(Vector2(64.0, 48.0)),
+			"uniform=%s（属性=(64,48)）" % str(proc_domain))
+	_ck("④ box_height → process 材质（3D 方格垂直范围）",
+			is_equal_approx(float(proc_box), 3.5), "uniform=%s（属性=3.5）" % str(proc_box))
 	root.queue_free()

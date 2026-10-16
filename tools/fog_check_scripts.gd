@@ -171,7 +171,8 @@ func _check_dock(path: String) -> void:
 	#   否则"在面板/检查器里找不到粒子开关"会重演。
 	var fog_script := ResourceLoader.load("res://scripts/fx/fog_field.gd") as GDScript
 	var inspector_knobs := ["particles_enabled", "particle_count_follows_quality",
-			"particle_min_pixel_size", "particle_inside_fog_only", "particle_mask_min"]
+			"particle_min_pixel_size", "particle_max_pixel_size", "particle_inside_fog_only",
+			"particle_mask_min"]
 	var exposed: Array[String] = []
 	if fog_script != null:
 		for prop in fog_script.get_script_property_list():

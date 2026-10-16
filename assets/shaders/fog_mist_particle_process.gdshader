@@ -112,6 +112,32 @@ bool inside_fog(vec3 pos) {
 	return fog_mask_at(pos) >= mask_min;
 }
 
+/** 是否在**雾气的 3D 方格**内：水平在 domain_size 之内、垂直在 [0, box_height] 雾带之内。
+ *  ★★ 为什么必须单独判这个：以前只按底图判，而且 uv 是**clamp 过**的 ——
+ *     箱子外面的点会采到边缘值 ⇒"箱子外也算有雾"，粒子被流场推出雾体后回不来
+ *     （用户实测反馈："粒子没有限制在雾气 3D 空间方格范围之内"）。 */
+bool inside_fog_box(vec3 pos) {
+	vec2 uv = pos.xz / domain_size + vec2(0.5);
+	return uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0
+			&& pos.y >= 0.0 && pos.y <= box_height;
+}
+
+/** 在雾体内 = 3D 方格之内，且（绑了底图时）该处真的有雾。 */
+bool in_fog(vec3 pos) {
+	return inside_fog_box(pos) && inside_fog(pos);
+}
+
+/** 把跑出 3D 方格的粒子**夹回雾带内**。返回 xyzw：xyz = 夹回后的位置，w = 1 表示动了。
+ *  ★ 用"夹回"而不是"重掷"：位置连续、不会看到粒子突然瞬移；再配合速度清零，
+ *    粒子贴着边界时也不会一直"磨墙"。 */
+vec4 clamp_into_fog_box(vec3 pos) {
+	vec3 lo = vec3(-domain_size.x * 0.5, 0.0, -domain_size.y * 0.5);
+	vec3 hi = vec3(domain_size.x * 0.5, box_height, domain_size.y * 0.5);
+	vec3 c = clamp(pos, lo, hi);
+	float moved = (c.x != pos.x || c.y != pos.y || c.z != pos.z) ? 1.0 : 0.0;
+	return vec4(c, moved);
+}
+
 /** 在雾带里掷一个候选位置（第 i 次尝试用不同的哈希种子，高度以 ry 为基准微调）。 */
 vec3 roll_spot(float base, float i, float ry) {
 	float seed = base + i * 7.13;
@@ -130,18 +156,16 @@ void start() {
 
 	// ★ 只在雾内生成：最多试 respawn_attempts 次；全失败就标记"局外"（CUSTOM.z = 1），
 	//   process() 会继续找位置 —— 于是绝不会在没雾的地方冒出一团烟。
+	//   in_fog() 同时要求"在 3D 方格内"和"底图上有雾"。
 	vec3 spawn = roll_spot(base, 0.0, ry);
-	if (mask_enabled != 0 && spawn_inside_only != 0) {
-		bool found = false;
+	if (spawn_inside_only != 0) {
+		bool found = in_fog(spawn);
 		for (int i = 0; i < 16; i++) {
-			if (i >= respawn_attempts) {
+			if (found || i >= respawn_attempts) {
 				break;
 			}
 			spawn = roll_spot(base, float(i), ry);
-			if (inside_fog(spawn)) {
-				found = true;
-				break;
-			}
+			found = in_fog(spawn);
 		}
 		CUSTOM.z = found ? 0.0 : 1.0;
 	} else {
@@ -171,23 +195,38 @@ void process() {
 		TRANSFORM[3].xyz = pos;
 		CUSTOM.x = 0.0;                   // 年龄重置：回收后的粒子重新走一遍生命曲线
 	}
+	// ★ 3D 方格约束（**始终生效**，与底图开关无关）：粒子被流场推出雾气所在的长方体
+	//   （水平 domain_size、垂直 [0, box_height]）时**夹回**方格内，并抹掉朝外的速度分量。
+	//   ⇒ 粒子永远只在雾体那个 3D 方格里运动，不会飘到箱子外面去。
+	vec4 boxed = clamp_into_fog_box(pos);
+	if (boxed.w > 0.5) {
+		pos = boxed.xyz;
+		TRANSFORM[3].xyz = pos;
+		// 朝外的速度清零：否则粒子会一直贴着边界"磨墙"
+		if (pos.x <= -domain_size.x * 0.5 + 0.001 || pos.x >= domain_size.x * 0.5 - 0.001) {
+			VELOCITY.x = 0.0;
+		}
+		if (pos.z <= -domain_size.y * 0.5 + 0.001 || pos.z >= domain_size.y * 0.5 - 0.001) {
+			VELOCITY.z = 0.0;
+		}
+		if (pos.y <= 0.001 || pos.y >= box_height - 0.001) {
+			VELOCITY.y = 0.0;
+		}
+	}
 	vec2 uv = clamp(pos.xz / domain_size + vec2(0.5), vec2(0.0), vec2(1.0));
 
-	// ★ 漂出雾气范围 ⇒ 找一个雾内的新位置把它拉回来（而不是让它留在没雾的地方）。
-	//   CUSTOM.z: 1 = 当前处在雾外（这一帧就被拉回；找不到位置时保持标记，下一帧继续找）。
-	if (mask_enabled != 0 && spawn_inside_only != 0 && !inside_fog(pos)) {
+	// ★ 夹回方格后，如果水平位置仍然"没有雾"（漂到了没画雾的一侧），
+	//   就找一个真正有雾的位置把它放回去。CUSTOM.z: 1 = 当前处在雾外。
+	if (spawn_inside_only != 0 && mask_enabled != 0 && !inside_fog(pos)) {
 		float base = float(INDEX) * 0.6180339887 + CUSTOM.x;   // 用年龄当种子，逐帧尝试不同位置
 		bool found = false;
 		vec3 spot = pos;
 		for (int i = 0; i < 16; i++) {
-			if (i >= respawn_attempts) {
+			if (found || i >= respawn_attempts) {
 				break;
 			}
 			spot = roll_spot(base, float(i), 0.5);
-			if (inside_fog(spot)) {
-				found = true;
-				break;
-			}
+			found = in_fog(spot);
 		}
 		if (found) {
 			TRANSFORM[3].xyz = spot;
