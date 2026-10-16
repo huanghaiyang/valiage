@@ -215,6 +215,64 @@ func scene_root() -> Window:
 		rim_dark = v
 		_request_rebuild()
 
+# ==================== ★ 飞行行为（移动生态学：CRW / Lévy / ARS）====================
+# ★★ 为什么这些要**提到节点上**而不是只留在 tuning 资源里 ★★
+#   用户诉求原话："暴露参数到检查器面板"。
+#   以前这十来个参数只存在于 `ButterflyTuning`（一个可选 Resource），
+#   选中蝴蝶群节点时**根本看不到** —— 想调"别直飞"都不知道该调哪儿。
+#   现在它们在节点上成组出现，并且 `tuning_dict()` 里**群组值覆盖资源的同名键**
+#   （与 size_m / flap_hz 等既有参数同一套规则），所以两条路都通：
+#     · 直接在节点上调（改一下就见效果，编辑器里立刻重建）
+#     · 或把一套手感存成 .tres 挂到 `tuning`
+# 模型出处（本插件按论文自行实现，未复制外部源码）见 butterfly_tuning.gd 顶部。
+# ★ 这些参数**只影响运动**，不需要重建网格 -> setter 只刷新检查器警告，不 rebuild。
+
+# ★★ 分组名里**绝对不能出现 `/`**（实测踩过，用户截图确认）★★
+#   Godot 把 `@export_group("A/B")` 里的 `/` 当成**子分组分隔符**：
+#   写成 "飞行行为 Flight (CRW/Lévy/ARS)" 会被拆成三层标题
+#     `飞行行为 Flight (CRW` -> `Lévy` -> `ARS)`
+#   （检查器里就是三个错位的小标题）。所以这里改用中点 `·` 与空格。
+@export_group("飞行行为 Flight · CRW Lévy ARS")
+## CRW 核心：方向持续性。1.0 = 永远直线（"直飞"的病就是它太大）；0 = 无头苍蝇。
+## 默认 0.72：小转角为主 + 偶尔一次大拐弯，像真蝴蝶。
+@export_range(0.0, 0.99, 0.01) var heading_persistence := 0.72
+## 小转角尺度（度）：越小越直。
+@export_range(1.0, 90.0, 1.0) var turn_scale_deg := 25.0
+## 大转角概率：每次决策有多大概率来一次"猛拐"（重尾）。
+@export_range(0.0, 0.5, 0.005) var turn_heavy_p := 0.06
+## 大转角的尺度（度）：命中大转角时拐多少度。
+@export_range(10.0, 180.0, 1.0) var turn_heavy_deg := 110.0
+## Lévy 步长指数 α：1.5~2.0 是昆虫觅食的典型区间（越接近 1 越长直段）。
+@export_range(1.05, 3.0, 0.05) var levy_alpha := 1.6
+## 决策段时长（秒）：两次航向更新之间的间隔。太短会抖、太长又变直飞。
+@export_range(0.05, 3.0, 0.05) var step_time_s := 0.45
+## 侧向摆动幅度：连直飞段也在小幅左右晃（0 = 关掉这层）。
+@export_range(0.0, 3.0, 0.05) var lateral_weave := 0.55
+## 侧向摆动频率（Hz）。
+@export_range(0.2, 4.0, 0.05) var lateral_weave_hz := 1.1
+## 是否启用区域限制搜索（ARS）：附近有花/蜜源时切"原地打转"。
+@export var area_restricted_search := true
+## ARS 感知半径（米）：这个范围内有资源才进入搜索模式。
+@export_range(0.2, 20.0, 0.1) var ars_radius_m := 3.0
+## ARS 的转角尺度（度）：明显比 turn_scale_deg 大 -> 打转。
+@export_range(1.0, 120.0, 1.0) var ars_turn_scale_deg := 55.0
+## ARS 速度上限乘子（0~1）：在花丛里飞得更慢更黏。
+@export_range(0.1, 1.0, 0.01) var ars_speed_scale := 0.55
+
+@export_group("草交互 Grass (sgt)")
+## 蝴蝶把草压弯的影响半径（米）。
+@export_range(0.05, 2.0, 0.05) var grass_bend_radius := 0.42
+## 压草强度（0~3）：0 = 完全关闭与草的交互。
+@export_range(0.0, 3.0, 0.05) var grass_bend_strength := 1.0
+## 蝴蝶要低于"区域底 + 这么多米"才压草（米）。
+## ★ 默认 1.15：蝴蝶常规飞行高度约"区域底 + 1.0 m"，带子必须够到它，否则压草完全看不见。
+@export_range(0.05, 3.0, 0.05) var grass_bend_height := 1.15
+## 每帧最多推几只蝴蝶给草着色器（0 = 关闭交互）。
+## 为什么要限：着色器里每只蝴蝶都要对**每个草顶点**算一次距离，插槽越多整片草越贵。
+@export_range(0, 4, 1) var grass_bend_slots := 2
+## 调试：每帧打印蝴蝶→草的 press 计算（排查"压草没反应"）。
+@export var debug_grass_bend := false
+@export_group("")
 # ==================== 行为总开关 ====================
 ## 总开关。关掉：**只隐藏蝴蝶子节点**并停止推进（不释放节点，打开即恢复）。
 ##
@@ -344,6 +402,219 @@ func _process(delta: float) -> void:
 	_stepped_frames += 1
 	if debug_draw_region:
 		_refresh_region_gizmo()
+	# ★ 蝴蝶 ↔ 草（SimpleGrassTextured）交互：把"贴草飞的几只"推给草着色器
+	_write_grass_bend(dt)
+
+
+# ==================== 与草（SimpleGrassTextured / sgt）的交互 ====================
+# ★★ 这是"环境互动"的实现 ★★
+#   蝴蝶不是悬在真空中：贴草飞过时应当把草拂开/压伏。
+#   通道复用本仓库既有的约定（`scripts/wind.gd` 就是这么给草写风与角色倒伏的）：
+#     扫场景里用 SGT 草着色器的 ShaderMaterial -> 每帧逐材质写 uniform。
+#   为什么不用 `global uniform`：Godot 4.7 里运行时 global uniform 在**顶点阶段失效**
+#     （wind.gd 顶部有实测记录），所以只能逐材质写。
+#
+#   性能取舍：整片草共用少数几个材质，每帧写 ~8 个 uniform 很便宜；
+#   但着色器里每只蝴蝶都要算一次顶点距离 -> 所以只推**离草最近的 2 只**（可配 `_grass_slots`）。
+#   没有蝴蝶贴草时 `count = 0`，着色器整段跳过，零开销。
+
+## 草材质缓存（用 SGT 那个统一着色器的 ShaderMaterial）。
+var _grass_mats: Array[ShaderMaterial] = []
+## 扫草材质的计时器（不用每帧扫场景）。
+var _grass_scan_t := 0.0
+## 当前生效的蝴蝶插槽数（= 实际推给草的数量，调试/测试可读）。
+var _grass_slots := 0
+## ★ 资源点缓存（**本地坐标**）与它的刷新计时器。null = 当前没有可用资源点。
+## 语义：这是"区域限制搜索（ARS）"要用的蜜源位置，由 `_refresh_resource()` 每 0.5 秒更新一次。
+var _flower_pos: Variant = null
+var _flower_scan_t := 0.0
+## 调试：最近一次草材质扫描的结果说明（`_grass_mats` 为空时用它定位）。
+var _grass_dbg_note := ""
+
+
+## 扫描场景里所有"用 SGT 草着色器"的 ShaderMaterial 并缓存。
+## 参数：无（从 current_scene 起深度优先）。
+## 返回值：本帧缓存到的材质数。
+## 副作用：覆盖 `_grass_mats`。
+## 注意：**按着色器文件路径判定**（与 grass_quality.gd 的 SGT_HINT 同一做法），
+##   不按节点名/节点类型判定 —— SGT 的草就是一个 MultiMeshInstance3D，
+##   节点名可以被用户改，但着色器路径不会变。
+## 扫描场景里所有"用草着色器"的 ShaderMaterial 并缓存。
+## 参数：无（从 current_scene 起深度优先）。
+## 返回值：本帧缓存到的材质数。
+## 副作用：覆盖 `_grass_mats`。
+##
+## ★ 为什么按着色器文件路径判定（不按节点名/类型）：草的节点名用户随时能改，
+##   但着色器路径不会变（`assets/quality/grass_quality.gd` 也用这个做法）。
+##
+## ★★ 实测踩过的两个坑（都改在这里）★★
+##   ① **`MultiMeshInstance3D` 不是 `MeshInstance3D` 的子类**（两者是兄弟，共同父类是
+##      `GeometryInstance3D`）。所以 `(n as MeshInstance3D).mesh` 对 MultiMesh 会得到
+##      `null`，再取 `.mesh` 就报
+##      `Invalid access to property or key 'mesh' on a base object of type 'Nil'`，
+##      **整次扫描在第一个草节点上就中断** -> `_grass_mats` 恒为 0、蝴蝶压草完全失效。
+##      （本仓库 `scripts/quality/prop_texture_quality.gd` 里也记录了同一类坑。）
+##      正确做法：用共同父类拿 `material_override`，再**按实际类型**分别取 mesh。
+##   ② 主场景里真正渲染的草用的是 `assets/shaders/grass_wind.gdshader`（实测 274 个材质），
+##      不是 SGT 自带着色器（只有 6 个节点）—— 所以 hints 必须**两个都认**。
+func _scan_grass() -> int:
+	_grass_mats.clear()
+	var st := scene_tree()
+	if st == null:
+		_grass_dbg_note = "scene_tree 为空"
+		return 0
+	var root := st.current_scene if st.current_scene != null else scene_root()
+	if root == null:
+		_grass_dbg_note = "root 为空"
+		return 0
+	var stack: Array = [root]
+	var seen := {}
+	var looked := 0
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n == null:
+			continue
+		# ★ 共同父类 GeometryInstance3D：MultiMeshInstance3D 与 MeshInstance3D 都是它的子类
+		if n is GeometryInstance3D:
+			var gi := n as GeometryInstance3D
+			var cands: Array = [gi.material_override]
+			# 按实际类型取 mesh（**不能**直接 `as MeshInstance3D`，见上面坑 ①）
+			var mesh: Mesh = null
+			if n is MeshInstance3D:
+				mesh = (n as MeshInstance3D).mesh
+			elif n is MultiMeshInstance3D:
+				var mm := (n as MultiMeshInstance3D).multimesh
+				if mm != null:
+					mesh = mm.mesh
+			if mesh != null:
+				for s in range(mesh.get_surface_count()):
+					var sm := mesh.surface_get_material(s)
+					if sm != null:
+						cands.append(sm)
+			for c in cands:
+				if c == null:
+					continue
+				looked += 1
+				if c is ShaderMaterial:
+					var smat := c as ShaderMaterial
+					var sh: Shader = smat.shader
+					if sh == null:
+						continue
+					var sp := String(sh.resource_path)
+					var is_grass := false
+					for hint in GRASS_SHADER_HINTS:
+						if sp.contains(String(hint)):
+							is_grass = true
+							break
+					if is_grass:
+						var id := smat.get_instance_id()
+						if not seen.has(id):
+							seen[id] = true
+							_grass_mats.append(smat)
+		for ch in n.get_children():
+			stack.append(ch)
+	_grass_dbg_note = "看了 %d 个材质槽，命中 %d" % [looked, _grass_mats.size()]
+	return _grass_mats.size()
+
+
+## 每帧把"最贴近草的几只蝴蝶"写给草着色器。
+## 参数 delta：用于节流扫描。
+## 返回值：无。
+## 副作用：写 `_grass_mats` 里每个材质的 `sgt_butterfly_*`；更新 `_grass_slots`。
+## 注意：`enabled = false` 时也会被调用（在 _process 里更早的地方 return 之前不会到），
+##   但我们只在有蝴蝶时写 -> 关掉时 `count=0`，草恢复原状（符合"关掉就干净"）。
+func _write_grass_bend(delta: float) -> void:
+	_grass_scan_t -= delta
+	if _grass_mats.is_empty() or _grass_scan_t <= 0.0:
+		# 5 秒扫一次：草的材质集合基本不变（用户加草/删草时最迟 5 秒生效）
+		_grass_scan_t = 5.0
+		_scan_grass()
+	var slots := int(_num_grass_slots())
+	if _grass_mats.is_empty() or slots <= 0 or _butterflies.is_empty():
+		_grass_slots = 0
+		_push_grass_slots([], slots)
+		return
+	# 挑"最贴近草的那几只"：判据 = 蝴蝶本地 y 相对区域底的高度（越小越贴地）
+	var floor_y := _bounds().position.y
+	var cands: Array = []
+	for b in _butterflies:
+		if b == null or not is_instance_valid(b):
+			continue
+		var n3 := b as Node3D
+		if not n3.visible:
+			continue
+		cands.append([n3.position.y - floor_y, n3])
+	cands.sort_custom(func(a, c): return float(a[0]) < float(c[0]))
+	var picked: Array = []
+	for i in range(mini(slots, cands.size())):
+		picked.append(cands[i][1])
+	_grass_slots = picked.size()
+	_push_grass_slots(picked, slots)
+
+
+## 把选中的蝴蝶写进草材质。空数组 = 全部关掉（count=0）。
+## 参数 list：Array[Node3D]（蝴蝶，**本地坐标**）；slots：插槽上限。
+## 返回值：无。
+func _push_grass_slots(list: Array, slots: int) -> void:
+	if _grass_mats.is_empty():
+		return
+	var radius := _tuning_num("grass_bend_radius", 0.42)
+	var bend := _tuning_num("grass_bend_strength", 1.0)
+	# ★ 高度带默认 1.15 m：蝴蝶常规飞行高度约"区域底 + 1.0 m"，
+	#   带子必须够到它，否则 press 恒为 0、交互完全看不见（实测踩过：0.6 时 press 全 0）。
+	var band := maxf(0.05, _tuning_num("grass_bend_height", 1.15))
+	var floor_y := _bounds().position.y
+	# 组装最多 2 组（着色器只有 2 个插槽；slots>2 也只推前 2）
+	var pos := [Vector3(1.0e9, 1.0e9, 1.0e9), Vector3(1.0e9, 1.0e9, 1.0e9)]
+	var vel := [0.0, 0.0]
+	var press := [0.0, 0.0]
+	var n := mini(mini(list.size(), slots), 2)
+	for i in range(n):
+		var b: Node3D = list[i]
+		# ★ 取世界坐标要带**树外兜底**：Node3D.global_position 依赖祖先链，
+		#   节点还没进树时它恒等于 (0,0,0)（实测踩过：本地 y=2.30 却报世界 y=0.00，
+		#   于是 press 算成"贴地"、整片草被压平）。
+		#   树外时用"节点全局变换 + 本地 position"手工折算（与 Butterfly._sync_transform 的兜底同一思路）。
+		var wp: Vector3 = b.global_position
+		if not b.is_inside_tree():
+			wp = global_transform * b.position
+		pos[i] = wp
+		var v: Vector3 = b.get("velocity") if b.get("velocity") is Vector3 else Vector3.ZERO
+		vel[i] = clampf(v.length() / maxf(0.1, _tuning_num("speed_max", 2.2)), 0.0, 1.0)
+		# press：贴得越低越大。`root_wy` = 这个草实例所在高度的世界 y（近似取群组的
+		# 世界 y + 区域底），h = 蝴蝶高出它的米数。
+		var root_wy := global_position.y + floor_y
+		var h := maxf(0.0, wp.y - root_wy)
+		press[i] = clampf(1.0 - h / band, 0.0, 1.0)
+		if press[i] <= 0.001:
+			press[i] = 0.0
+		if debug_grass_bend:
+			print("[蝴蝶/草] slot%d pos=%s h=%.3f band=%.3f press=%.3f" % [i, str(wp), h, band, press[i]])
+	for m in _grass_mats:
+		if m == null or not is_instance_valid(m):
+			continue
+		m.set_shader_parameter("sgt_butterfly_pos", pos)
+		m.set_shader_parameter("sgt_butterfly_vel", vel)
+		m.set_shader_parameter("sgt_butterfly_press", press)
+		m.set_shader_parameter("sgt_butterfly_radius", radius)
+		m.set_shader_parameter("sgt_butterfly_bend", bend)
+		m.set_shader_parameter("sgt_butterfly_count", n)
+
+
+## 读草交互的插槽数（容错：tuning 里可能是 int 而不是 float）。
+func _num_grass_slots() -> float:
+	return _tuning_num("grass_bend_slots", 2.0)
+
+
+## 从 tuning 字典读一个 float（缺失 -> 默认值）。与 Butterfly._num 同语义，
+## 但 swarm 侧只用来读"草交互"这几个参数。
+func _tuning_num(key: String, fallback: float) -> float:
+	var d := tuning_dict()
+	if d.has(key):
+		var v: Variant = d[key]
+		if v is float or v is int:
+			return float(v)
+	return fallback
 
 
 func _notification(what: int) -> void:
@@ -709,7 +980,8 @@ func _neighbor_lists() -> Array:
 
 
 ## 组装传给 Butterfly.advance 的 extra 字典（本地坐标）。
-## 内容：threat（受惊源位置）/ partner（随机配对的同伴位置）/ hover（群体腾起脉冲时的盘旋半径）。
+## 内容：threat（受惊源位置）/ partner（随机配对的同伴位置）/ hover（群体腾起脉冲时的盘旋半径）
+##       / ars_hit + ars_pos（★ 附近有没有资源，供"区域限制搜索 ARS"用）。
 ## 注意：每帧都取一次 threat 位置（很便宜），但不做 raycast、不遍历分组。
 func _build_extra() -> Dictionary:
 	var e: Dictionary = {}
@@ -727,7 +999,53 @@ func _build_extra() -> Dictionary:
 			var pb: Node3D = _butterflies[b] as Node3D
 			if pb != null and is_instance_valid(pb):
 				e["partner"] = pb.position
+	# 资源感知（ARS）：附近有花/蜜源 -> 蝴蝶切成"原地打转"的搜索模式。
+	# 这是"环境互动"的感知那一半（模型出处见 butterfly_tuning.gd 顶部）。
+	# 资源点来源见 `_refresh_resource()`；缓存 null 表示"这次没找到"。
+	if _tuning_num("area_restricted_search", 1.0) > 0.5:
+		_refresh_resource()
+		var fpos: Variant = _flower_pos
+		if fpos is Vector3:
+			e["ars_hit"] = true
+			e["ars_pos"] = fpos
 	return e
+
+
+## 节流刷新"资源点"缓存（默认 0.5 秒一次）。
+##
+## 资源点的来源（按优先级）：
+##   ① 分组 `flowers` / `flower` 里**离群组中心最近**的 Node3D —— 仓库里的花丛节点带这类分组；
+##   ② 找不到就退回**区域中心**（region_offset）当一个虚拟蜜源。
+##      ★ 为什么要有 ②：如果场景里没有任何花节点，ARS 就永远不会触发 ——
+##      用户看不到任何环境响应，等于没接。退回区域中心至少能保证
+##      "蝴蝶会在场地中央聚集打转"，行为上仍然是对的（中心本来就是最可能有资源的地方）。
+##
+## 副作用：写 `_flower_pos`（本地坐标）与 `_flower_scan_t`。
+func _refresh_resource() -> void:
+	if _flower_scan_t > 0.0:
+		return
+	_flower_scan_t = 0.5
+	var st := scene_tree()
+	if st == null:
+		_flower_pos = null
+		return
+	for gname in ["flowers", "flower"]:
+		var arr := st.get_nodes_in_group(gname)
+		if arr.is_empty():
+			continue
+		var best: Node3D = null
+		var bestd := 1.0e18
+		var mine := global_position
+		for n in arr:
+			if n is Node3D and is_instance_valid(n):
+				var d := (n as Node3D).global_position.distance_squared_to(mine)
+				if d < bestd:
+					bestd = d
+					best = n as Node3D
+		if best != null:
+			_flower_pos = to_local(best.global_position)
+			return
+	_flower_pos = region_offset
 
 
 ## 取随机源是否可用（编辑器早期/被释放时可能为 null）。
@@ -1005,6 +1323,18 @@ func tuning_dict() -> Dictionary:
 		"bank_max_deg": 35.0, "pitch_per_speed": 8.0,
 		"flutter_amount": 0.05, "spawn_height_jitter": 0.6,
 		"flocking": true, "ground_avoid": true,
+		# ---- 防瞬移（落脚点限速靠拢 + 单帧位移上限）----
+		"perch_speed": 1.2, "perch_rearm_distance": 3.0, "max_step_factor": 1.6,
+		# ---- 移动生态学（CRW / Lévy / ARS）—— 修掉"直飞" ----
+		"heading_persistence": 0.72, "turn_scale_deg": 25.0,
+		"turn_heavy_p": 0.06, "turn_heavy_deg": 110.0,
+		"levy_alpha": 1.6, "step_time_s": 0.45,
+		"ars_radius_m": 3.0, "ars_turn_scale_deg": 55.0, "ars_speed_scale": 0.55,
+		"area_restricted_search": true,
+		"lateral_weave": 0.55, "lateral_weave_hz": 1.1,
+		# ---- 与草（SimpleGrassTextured）的交互 ----
+		"grass_bend_radius": 0.42, "grass_bend_strength": 1.0,
+		"grass_bend_height": 1.15, "grass_bend_slots": 2.0,
 		# ---- 立体感（体积）----
 		"wing_camber": 0.30, "wing_thickness": 0.035, "wing_bend_y": 0.0,
 		"edge_min_facing": 0.0, "edge_min_deg": 14.0, "rim_dark": 0.55,
@@ -1013,6 +1343,25 @@ func tuning_dict() -> Dictionary:
 	# ★ 群组属性覆盖（见函数注释）
 	d["ground_avoid"] = ground_avoid
 	d["size_m"] = size_m
+	# ★ 飞行行为（移动生态学）：节点上的导出值覆盖 tuning 资源的同名键。
+	#   这样"在节点上调"和"用 .tres 统一手感"两条路都通，且**节点优先**（与 size_m 等一致）。
+	d["heading_persistence"] = heading_persistence
+	d["turn_scale_deg"] = turn_scale_deg
+	d["turn_heavy_p"] = turn_heavy_p
+	d["turn_heavy_deg"] = turn_heavy_deg
+	d["levy_alpha"] = levy_alpha
+	d["step_time_s"] = step_time_s
+	d["lateral_weave"] = lateral_weave
+	d["lateral_weave_hz"] = lateral_weave_hz
+	d["area_restricted_search"] = area_restricted_search
+	d["ars_radius_m"] = ars_radius_m
+	d["ars_turn_scale_deg"] = ars_turn_scale_deg
+	d["ars_speed_scale"] = ars_speed_scale
+	# ★ 草交互（sgt）
+	d["grass_bend_radius"] = grass_bend_radius
+	d["grass_bend_strength"] = grass_bend_strength
+	d["grass_bend_height"] = grass_bend_height
+	d["grass_bend_slots"] = float(grass_bend_slots)
 	d["dihedral_min"] = dihedral_min_deg
 	d["dihedral_max"] = dihedral_max_deg
 	d["flap_hz"] = flap_hz
@@ -1032,7 +1381,48 @@ func tuning_dict() -> Dictionary:
 				var v: Variant = tuning.get(nm)
 				if v != null:
 					d[nm] = v
+	# ★★ 但**节点上的导出值必须是最终赢家**（用户诉求："暴露参数到检查器面板"）★★
+	#   实测踩过：上面那段资源合并写在后面，会把节点上刚设的值又盖回资源里的旧值 ——
+	#   表现就是"在节点面板上调了没反应"。所以资源合并完，再按下面这份清单把节点值写回去。
+	#   ★ 这是一份**显式清单**而不是"全量覆盖"：tuning 资源仍要为它特有的几十个参数
+	#     （能量/避难/虹彩/倾斜…）提供值，只有"已经在节点上也有同名导出"的键才由节点接管。
+	#     新增一个节点级导出时，**记得把键名加到这里**（漏了就会"调了没反应"）。
+	for k in GROUP_OVERRIDE_KEYS:
+		d[k] = _group_value(String(k))
 	return d
+
+
+## 由**群组节点**接管（优先于 `tuning` 资源）的键清单。
+## 判定规则：这个键在节点上有同名 `@export`，用户能在检查器里直接调。
+## 为什么做成 const 而不是散在代码里：见 `tuning_dict()` 的注释 —— 漏加一个键，
+## 表现是"节点上改了没反应"，这种 bug 很难查，所以集中一处、便于审阅与测试。
+const GROUP_OVERRIDE_KEYS := [
+	# 外观/尺寸/扑翼（早期就提到节点上的那批）
+	"size_m", "dihedral_min", "dihedral_max", "flap_hz", "flap_hz_jitter",
+	"wing_camber", "wing_thickness", "wing_bend_y", "body_scale",
+	"edge_min_facing", "edge_min_deg", "rim_dark", "ground_avoid",
+	# 飞行行为（移动生态学 CRW / Lévy / ARS）
+	"heading_persistence", "turn_scale_deg", "turn_heavy_p", "turn_heavy_deg",
+	"levy_alpha", "step_time_s", "lateral_weave", "lateral_weave_hz",
+	"area_restricted_search", "ars_radius_m", "ars_turn_scale_deg", "ars_speed_scale",
+	# 草交互（sgt）
+	"grass_bend_radius", "grass_bend_strength", "grass_bend_height", "grass_bend_slots",
+]
+
+
+## 读一个"节点级导出"的当前值（供 `tuning_dict()` 覆盖用）。
+## 参数 key：上面的 GROUP_OVERRIDE_KEYS 里的键名。
+## 返回值：节点上该属性的值；节点没有这个属性时返回 null（调用方会保留资源值）。
+## ★ 为什么用 `get()` 而不是逐个 if：这 29 个键写 29 个分支容易漏，
+##   而 `get()` 对不存在的属性会返回 null，正好用来兜底。
+func _group_value(key: String) -> Variant:
+	var v: Variant = get(key)
+	if v == null:
+		return null
+	# `grass_bend_slots` 在节点上是 int，而读取方（Butterfly._num）只认 float/int -> 统一成 float
+	if key == "grass_bend_slots":
+		return float(int(v))
+	return v
 
 
 ## 只读快照（测试 / 调试 UI 用）。
@@ -1083,6 +1473,19 @@ func stats() -> Dictionary:
 
 ## 清单文件路径（**硬编码**，tools/analyze_butterflies.gd 与插件菜单都写它）。
 const MANIFEST_PATH := "res://addons/butterfly_swarm/sprite_manifest.json"
+## 草（SimpleGrassTextured **与**项目自制草）着色器的路径片段：用它判定"这个材质是不是草"。
+## ★ 为什么是**两个**片段（实测踩过）：
+##   · `simplegrasstextured/shaders/grass` —— SGT 插件的自带着色器（它把材质挂在
+##     `material_override` 上，只有几个节点用）；
+##   · `assets/shaders/grass_wind` —— **本项目主场景里真正渲染的那片草**
+##     （实测 274 个材质用它！）。第一版只认 SGT 自带路径，
+##     结果 `_grass_mats = 0`、蝴蝶压草完全没效果 —— 因为场景里的草根本不走 SGT 着色器。
+## ★ 为什么按路径而不是按名字/类型：草的节点名用户随时能改，但着色器路径不会变
+##   （`assets/quality/grass_quality.gd` 也用这个做法）。
+const GRASS_SHADER_HINTS := [
+	"simplegrasstextured/shaders/grass",
+	"assets/shaders/grass_wind",
+]
 
 
 ## 读清单（惰性、只读一次）。返回：sprites 数组的元素列表（每个是 Dictionary）。

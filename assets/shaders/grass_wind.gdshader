@@ -51,6 +51,19 @@ uniform float player_bend : hint_range(0.0, 2.0) = 0.75;
 uniform float player_spread : hint_range(0.0, 1.5) = 0.30;      // 左右分开力度
 uniform float player_move : hint_range(0.0, 1.0) = 0.0;         // 移动量：站着 = 0 -> 草回弹
 
+// ---- ★★ 蝴蝶拨草（本项目新增，2026-10；由 butterfly_swarm.gd 每帧写）★★
+//   为什么加在这个着色器里：**主场景里真正渲染的草就是它**（实测 274 个材质用它，
+//   而 SGT 自带着色器只有 6 个节点）。只改 SGT 的话，用户根本看不到蝴蝶压草。
+//   两个插槽 = 每帧最多两只蝴蝶（挑最贴草的），未用槽位写 1e9 = 视为无穷远。
+//   `..._count = 0` 时整段跳过（没蝴蝶贴草飞时零开销）。
+//   ⚠ 不给数组写默认值：Godot 报 `Setting default values to uniform arrays is not supported`。
+uniform vec3  sgt_butterfly_pos[2];        // 世界坐标
+uniform float sgt_butterfly_vel[2];        // 0~1 飞行快慢
+uniform float sgt_butterfly_press[2];      // 0~1 贴得多低（越高越小）
+uniform float sgt_butterfly_radius = 0.42; // 影响半径（米）
+uniform float sgt_butterfly_bend = 1.0;    // 倒伏强度（0~3）
+uniform int   sgt_butterfly_count = 0;     // 有效插槽数
+
 // ---- 燃烧（本项目新增；语义与 vegetation_wind.gdshader 一致）----
 // ★ 为什么做进**这个着色器**而不是在外面叠一层：消失要用 **scale**，
 //   而叠加层只是多画一遍，动不了原几何体（用户要求 bermuda 草也用 scale 消失）。
@@ -131,6 +144,30 @@ void vertex() {
 			vec2 push = rt * (dirsign * player_spread) - fw * (0.10 * front);
 			VERTEX.xz += push * (infl * h * (0.35 + 0.65 * front));
 			VERTEX.y -= infl * h * player_bend * (0.40 + 0.60 * front);
+		}
+	}
+
+	// ★★ 蝴蝶拨草（世界空间，与上面的角色倒伏同一套思路）
+	//   ① 径向拨开：蝴蝶从草里穿过 -> 草向四周让开
+	//   ② 沿飞行方向轻推 + 压低：掠过时草被拂倒
+	//   权重用 `(1 - d/r)²`（不用 smoothstep 门限；角色倒伏那版踩过"门限把它吃成 0"的坑）。
+	//   press 是"贴得多低"：高空飞的蝴蝶 press=0，完全不压草。
+	if (sgt_butterfly_count > 0) {
+		float br = max(0.05, sgt_butterfly_radius);
+		float bb = clamp(sgt_butterfly_bend, 0.0, 3.0);
+		for (int k = 0; k < 2; k++) {
+			if (k >= sgt_butterfly_count) { break; }
+			float press = sgt_butterfly_press[k];
+			if (press <= 0.0005) { continue; }
+			vec2 brel = VERTEX.xz - sgt_butterfly_pos[k].xz;
+			float bd = length(brel);
+			float bw = 1.0 - clamp(bd / br, 0.0, 1.0);
+			bw = bw * bw * press * clamp(sgt_butterfly_vel[k], 0.0, 1.0);
+			if (bw > 0.0005) {
+				vec2 bpush = (bd > 0.0001) ? (brel / bd) : vec2(0.0);
+				VERTEX.xz += bpush * (bw * h * 0.55 * bb);
+				VERTEX.y -= bw * h * 0.30 * bb;
+			}
 		}
 	}
 

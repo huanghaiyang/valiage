@@ -40,6 +40,80 @@
 > 那份 `sprite_manifest.json` 现在只承担一件事：**`sprites` 为空时告诉插件"素材目录里有哪些图"**。
 > 它不再参与任何一张具体贴图的裁剪计算 —— 所以它过期也不会让蝴蝶显示错。
 
+### ★ 飞行不再是"直飞"：移动生态学模型
+
+旧版蝴蝶是「随机游走 + 朝航点直飞」，看起来就是**直着飞**。现在换成了昆虫运动生态学的经典模型：
+
+| 模型 | 出处 | 效果 |
+| --- | --- | --- |
+| **方向相关随机游走（CRW）** | Kareiva & Shigesada 1983, *Oecologia* 56:234-238 | 方向和上一段强相关、小转角为主，另有 6% 概率来一次大转角 → **"一段直、忽然拐"** |
+| **Lévy flight（重尾步长）** | Turchin 1998, *Quantitative Analysis of Movement* | 长距离迁移段与短促原地搜索交替（实测步长 0.78~3.08 m） |
+| **区域限制搜索（ARS）** | 同上 | 感知半径内有花/蜜源 → **在花丛里打转**；离开就直线扩散 |
+
+相关参数**已暴露到检查器面板**（选中蝴蝶群节点 → 折叠分组「飞行行为 Flight · CRW Lévy ARS」）：
+
+| 参数 | 默认 | 作用 |
+| --- | --- | --- |
+| `heading_persistence` | 0.72 | **CRW 核心**：1.0 = 永远直线（就是"直飞"的病）；0 = 无头苍蝇 |
+| `turn_scale_deg` | 25 | 小转角的量级（越小越直） |
+| `turn_heavy_p` / `turn_heavy_deg` | 0.06 / 110 | **重尾**：有多大几率来一次大拐弯、拐多少度 |
+| `levy_alpha` | 1.6 | 步长重尾指数（1.5~2.0 是昆虫典型值） |
+| `step_time_s` | 0.45 | 多久重新决策一次航向 |
+| `lateral_weave` / `lateral_weave_hz` | 0.55 / 1.1 | 连直飞段也在小幅左右晃 |
+| `area_restricted_search` | true | 是否启用 ARS（附近有花就打转） |
+| `ars_radius_m` / `ars_turn_scale_deg` / `ars_speed_scale` | 3.0 / 55 / 0.55 | 资源感知半径 / 打转程度 / 在花丛里飞慢多少 |
+
+**实测**（主场景 20 秒）：平均转角 2.36°、大转角 10 次、**净位移只有 7.5 m**（不是一条直线冲出去）。
+
+> ⚠ 想自己验证"参数真的生效"，请**直接量 `_crw_turn()`**，不要在全量仿真里量转角 ——
+> 风拖曳每帧都在改速度方向，噪声地板约 3°，会把参数差异盖住。
+
+### ★ 防瞬移（飞行/停歇都不会"闪一下换位置"）
+
+| 参数 | 默认 | 作用 |
+| --- | --- | --- |
+| `perch_speed` | 1.2 | 停歇时朝落脚点靠拢的速度（米/秒）。**限速靠拢**，落地过程看得见 |
+| `perch_rearm_distance` | 3.0 | 落脚点离得超过这么多米就**就近重新落脚**（防"残留旧坐标"导致长途飞行） |
+| `max_step_factor` | 1.6 | 单帧位移上限的松紧（乘在 `速度上限 × dt` 上）。**任何来源**的异常位移都会被这道闸降级成"快速移动" |
+
+> 修掉的真实 bug：`BASK/DRINK` 原来每帧 `position.lerp(_perch, 0.25)`，而 `_perch` 默认是
+> **世界原点**且找不到落脚点时不更新 —— 蝴蝶每次进入停歇都会**朝原点以 ~15 m/s 跳过去**
+> （实测 5 米外单帧位移 1.25 m）。现在实测 **0.0000 m**，900 帧最大位移 0.114 m（上限 0.213 m）。
+
+> ⚠ **检查器分组名里不能有 `/`**：Godot 把 `@export_group("A/B")` 的 `/` 当**子分组分隔符**，
+> 会把 `飞行行为 Flight (CRW/Lévy/ARS)` 拆成三层错位标题。所以分组名用 `·` 与空格。
+
+### ★ 与草（sgt / SimpleGrassTextured）的交互
+
+蝴蝶贴草飞过时会把草**拨开 + 压伏**，草在蝴蝶靠近时明显动一下。
+
+检查器分组「草交互 Grass (sgt)」：
+
+| 参数 | 默认 | 作用 |
+| --- | --- | --- |
+| `grass_bend_radius` | 0.42 | 影响半径（米） |
+| `grass_bend_strength` | 1.0 | 压草强度（0 = 关闭交互） |
+| `grass_bend_height` | 1.15 | 蝴蝶低于"区域底 + 这么多米"才压草（**高空飞不压草**） |
+| `grass_bend_slots` | 2 | 每帧最多推几只蝴蝶（0 = 关闭；着色器里每只都要算距离，别开太大） |
+| `debug_grass_bend` | false | 每帧打印 press 计算（排查"压草没反应"） |
+
+> **参数优先级**：节点上的导出值**优先于** `tuning` 资源里的同名键。
+> 所以两条路都通：① 直接在节点上调（改一下就见效果）；② 用 `.tres` 统一一套手感。
+> 「哪些键由节点接管」写在 `GROUP_OVERRIDE_KEYS` 里（显式清单，便于审阅）；新增导出记得加进去。
+
+**实现要点**（改草相关代码前请先看）：
+- 走的是本仓库既有约定：**扫草材质 → 每帧逐材质写 uniform**（和 `scripts/wind.gd` 给草写风/角色倒伏完全一样）。
+  不用 `global uniform` —— Godot 4.7 里运行时 global uniform 在**顶点阶段失效**（实测过）。
+- **两个着色器都接了**：`assets/shaders/grass_wind.gdshader`（主场景里真正那片草，274 个材质槽）
+  与 SGT 自带着色器（6 个节点）。
+- uniform：`sgt_butterfly_pos[2]` / `_vel[2]` / `_press[2]` / `_radius` / `_bend` / `_count`。
+  `_count = 0` 时着色器整段跳过 → 没有蝴蝶贴草时**零开销**。
+- ⚠ `MultiMeshInstance3D` **不是** `MeshInstance3D` 的子类（兄弟类，共同父类 `GeometryInstance3D`）。
+  扫描时必须用共同父类取 `material_override`、再按实际类型取 mesh，否则报
+  `Invalid access to property or key 'mesh' on a base object of type 'Nil'` 并**静默中断整次扫描**。
+- ⚠ Godot **不支持 uniform 数组的默认值**（`Setting default values to uniform arrays is not supported`），
+  所以数组初值一律不写、由 GDScript 每帧全部写入。
+
 ### ★ 批量加素材（不用一张张点「添加元素」）
 
 `Sprites` 是 `Array[Texture2D]`，Godot 默认 UI 只有一个「添加元素」按钮、**每次只能加一张** ——

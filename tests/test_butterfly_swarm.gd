@@ -906,6 +906,321 @@ func test_butterflies_immune_to_prop_merge_batching() -> void:
 			% [int(r.get("groups", 0)), int(r.get("parts", 0))])
 
 
+## ★★ 移动生态学模型（CRW / Lévy / ARS）—— 修掉"蝴蝶都是直飞的" ★★
+##
+## 量测方式很关键：**不能在全量仿真里量转角**。实测过 —— 风拖曳每帧都在改速度方向，
+## 噪声地板约 3°，把参数差异整个盖住（persistence 0.72→0.99 时平均转角反而从 3.25°
+## 变到 4.08°，看起来像"参数失效"）。所以这里**直接量 `_crw_turn()`**：
+## 那才是模型的签名，不受风/噪声/边界影响。
+func test_crw_turn_model_responds_to_tuning() -> void:
+	var paths := BFLY_IO.list_butterfly_paths()
+	var tex := load(String(paths[0])) as Texture2D
+	var crop := BFLY_IO.detect_bbox(String(paths[0]))
+	var t_def := _measure_crw_turn(tex, crop, {"size_m": 0.22, "flap_hz": 0.0})
+	var t_straight := _measure_crw_turn(tex, crop, {"size_m": 0.22, "flap_hz": 0.0,
+			"heading_persistence": 0.99, "turn_scale_deg": 1.0, "turn_heavy_p": 0.0})
+	var t_wild := _measure_crw_turn(tex, crop, {"size_m": 0.22, "flap_hz": 0.0,
+			"heading_persistence": 0.0, "turn_scale_deg": 80.0, "turn_heavy_p": 0.4})
+	assert_true(t_straight < t_def,
+			"persistence↑/turn_scale↓ 应让转角更小（%.2f° < %.2f°）" % [t_straight, t_def])
+	assert_true(t_wild > t_def * 1.5,
+			"persistence↓/turn_scale↑ 应让转角显著变大（%.2f° > 1.5×%.2f°）" % [t_wild, t_def])
+	assert_true(t_def > 1.0 and t_def < 60.0,
+			"默认参数的转角应在「像蝴蝶」的区间（实测 %.2f°，期望 1~60°）" % t_def)
+	# Lévy 步长：重尾 -> 必须有**长步**（>= 3 倍短步），否则不是重尾分布
+	var b = _new_butterfly()
+	b.setup(tex, crop, _rng(5), {"size_m": 0.22, "levy_alpha": 1.6})
+	var mn := 1.0e9
+	var mx := -1.0e9
+	for i in range(500):
+		var s: float = b._levy_step()
+		mn = minf(mn, s)
+		mx = maxf(mx, s)
+	assert_true(mx > mn * 2.5,
+			"Lévy 步长应是重尾分布（最长 %.3f 应远大于最短 %.3f）—— 比例接近 1 就不是重尾" % [mx, mn])
+	b.free()
+	print("[蝴蝶测试] CRW 转角：默认 %.1f° ｜ 调直 %.1f° ｜ 调乱 %.1f° ｜ Lévy 步长 %.3f~%.3f m"
+			% [t_def, t_straight, t_wild, mn, mx])
+
+
+## 量测 `_crw_turn()` 的平均转角（度）：反复调它，统计相邻航向夹角。
+func _measure_crw_turn(tex: Texture2D, crop: Rect2i, over: Dictionary) -> float:
+	var b: Node3D = BFLY.new()
+	var r := RandomNumberGenerator.new()
+	r.seed = 21
+	b.setup(tex, crop, r, over)
+	var prev := Vector3.ZERO
+	var sum := 0.0
+	var n := 0
+	for i in range(3000):
+		b.set("_crw_heading", prev)
+		var h: Vector3 = b.call("_crw_turn")
+		if prev.length_squared() > 0.5:
+			sum += rad_to_deg(prev.angle_to(h))
+			n += 1
+		prev = h
+	b.free()
+	return sum / maxf(1.0, float(n))
+
+
+## ★★ 蝴蝶 ↔ 草（SimpleGrassTextured / sgt）交互：真的把 uniform 写进草材质 ★★
+##
+## 用户诉求"实现与 sgt 的交互"的验收点：
+##   ① 能认出场里的 sgt 草材质（按着色器路径判定）；
+##   ② 每帧把"最贴草的蝴蝶"写进 sgt_butterfly_* 六个 uniform；
+##   ③ 蝴蝶飞到压草带之上时 press 归零（草自己恢复，不需要额外清理）；
+##   ④ 插槽数 = 0 时把 count 写回 0（整段顶点计算跳过，零开销）。
+func test_grass_interaction_writes_sgt_uniforms() -> void:
+	var paths := BFLY_IO.list_butterfly_paths()
+	var tex := load(String(paths[0])) as Texture2D
+	var sw = SWARM.new()
+	track(sw)
+	sw.set_sprite_textures([tex])
+	sw.count = 2
+	sw.region_size = Vector3(4, 2, 4)
+	sw.rebuild()
+	# 造一个真用 SGT 草着色器的材质（这样 _scan_grass 才认得出）
+	var gm := ShaderMaterial.new()
+	gm.shader = load("res://addons/simplegrasstextured/shaders/grass_linear.gdshader") as Shader
+	assert_ne(gm.shader, null, "SGT 草着色器应能加载")
+	var mi := MeshInstance3D.new()
+	mi.mesh = BoxMesh.new()
+	mi.material_override = gm
+	var host := Node3D.new()
+	track(host)
+	var loop := Engine.get_main_loop()
+	if loop is SceneTree:
+		(loop as SceneTree).root.add_child(host)
+	host.add_child(mi)
+	host.add_child(sw)
+	assert_gt(sw._scan_grass(), 0, "应扫到至少 1 个 sgt 草材质")
+	# ★★ 回归：草**绝大多数是 `MultiMeshInstance3D`**，而它**不是** `MeshInstance3D` 的子类
+	#   （两者是兄弟，共同父类是 GeometryInstance3D）。
+	#   早期实现写 `(gi as MeshInstance3D).mesh`，对 MultiMesh 得到 null 再取 .mesh 就报
+	#   `Invalid access to property or key 'mesh' on a base object of type 'Nil'`，
+	#   于是**整次扫描在第一个草节点上中断**、`_grass_mats` 恒为 0、压草完全失效。
+	#   这条断言就是钉住"MultiMesh 也必须能被扫到"。
+	var mm_mesh := BoxMesh.new()
+	mm_mesh.surface_set_material(0, gm)
+	var mmi := MultiMeshInstance3D.new()
+	mmi.name = "MultiMeshGrass"
+	var mmesh := MultiMesh.new()
+	mmesh.transform_format = MultiMesh.TRANSFORM_3D
+	mmesh.mesh = mm_mesh
+	mmesh.instance_count = 2
+	mmi.multimesh = mmesh
+	host.add_child(mmi)
+	var n_scan: int = sw._scan_grass()
+	assert_gt(n_scan, 0, "含 MultiMeshInstance3D 的场景也必须能扫到草材质（实测 %d）" % n_scan)
+	host.remove_child(mmi)
+	mmi.free()
+	sw._scan_grass()
+	# 蝴蝶放在"区域底之上 0.2 m"（在 1.15 m 的压草带内）
+	var floor_y: float = sw._bounds().position.y
+	for c in sw.get_children():
+		if c.get_script() == BFLY:
+			var p: Vector3 = (c as Node3D).position
+			p.y = floor_y + 0.2
+			(c as Node3D).position = p
+	sw.set("debug_grass_bend", false)
+	sw._write_grass_bend(0.02)
+	assert_gt(int(gm.get_shader_parameter("sgt_butterfly_count")), 0,
+			"应把至少 1 只蝴蝶推给草（count > 0）")
+	var press: Array = gm.get_shader_parameter("sgt_butterfly_press")
+	assert_true(press is Array and float(press[0]) > 0.0,
+			"贴地蝴蝶的 press 应 > 0（实测 %s）" % str(press))
+	var pos: Array = gm.get_shader_parameter("sgt_butterfly_pos")
+	assert_true(pos is Array and float((pos[0] as Vector3).length()) < 1.0e6,
+			"应写入真实世界坐标而不是哨兵值（实测 %s）" % str(pos[0]))
+	# 抬到压草带之上 -> press 归零
+	for c2 in sw.get_children():
+		if c2.get_script() == BFLY:
+			var p2: Vector3 = (c2 as Node3D).position
+			p2.y = floor_y + 1.8
+			(c2 as Node3D).position = p2
+	sw._write_grass_bend(0.02)
+	var press2: Array = gm.get_shader_parameter("sgt_butterfly_press")
+	assert_true(float(press2[0]) <= 0.001,
+			"高出压草带的蝴蝶不该压草（press 应 0，实测 %s）" % str(press2))
+	# 插槽 0 -> count 归零
+	gm.set_shader_parameter("sgt_butterfly_count", 9)
+	sw._push_grass_slots([], 0)
+	assert_eq(int(gm.get_shader_parameter("sgt_butterfly_count")), 0,
+			"插槽数为 0 时应把 count 写回 0（草着色器整段跳过）")
+	print("[蝴蝶测试] 草交互：扫到材质 %d 个 ｜ 贴地 press=%.3f ｜ 抬高后 press=%.3f ｜ 关掉 count=0"
+			% [sw._grass_mats.size(), float(press[0]), float(press2[0])])
+
+
+## ★★ 飞行行为 / 草交互参数必须**暴露到检查器面板**，且节点值必须**优先于 tuning 资源** ★★
+##
+## 用户诉求原话："暴露参数到检查器面板"。以前这十几个参数只存在于 `ButterflyTuning`
+## （一个可选 Resource），选中蝴蝶群节点时**根本看不到** —— 想调"别直飞"都不知道调哪儿。
+## 这条测试守两件事：
+##   ① 这 17 个键在节点上是 `@export`（检查器可见）且落在正确的折叠分组里；
+##   ② `tuning_dict()` 里**节点值赢**（实测踩过：资源合并写在后面，把节点刚设的值又盖回去，
+##      表现就是"在面板上调了没反应"）。
+func test_behavior_exports_visible_and_override_tuning() -> void:
+	var want := [
+		"heading_persistence", "turn_scale_deg", "turn_heavy_p", "turn_heavy_deg",
+		"levy_alpha", "step_time_s", "lateral_weave", "lateral_weave_hz",
+		"area_restricted_search", "ars_radius_m", "ars_turn_scale_deg", "ars_speed_scale",
+		"grass_bend_radius", "grass_bend_strength", "grass_bend_height", "grass_bend_slots",
+		"debug_grass_bend",
+	]
+	var sw = SWARM.new()
+	track(sw)
+	var groups: Array = []
+	var found := {}
+	var in_group := {}
+	for p in sw.get_property_list():
+		var usage := int(p.get("usage", 0))
+		var nm := String(p.get("name", ""))
+		if usage & PROPERTY_USAGE_GROUP:
+			groups.append(nm)
+			continue
+		if not (usage & PROPERTY_USAGE_SCRIPT_VARIABLE) or not (usage & PROPERTY_USAGE_EDITOR):
+			continue
+		if want.has(nm):
+			found[nm] = true
+			in_group[nm] = groups[groups.size() - 1] if not groups.is_empty() else ""
+	var miss: Array = []
+	for w in want:
+		if not found.has(w):
+			miss.append(w)
+	assert_eq(miss, [], "这些参数必须都暴露到检查器（缺 %s）" % str(miss))
+	assert_true(groups.has("飞行行为 Flight · CRW Lévy ARS"), "应有分组「飞行行为」")
+	assert_true(groups.has("草交互 Grass (sgt)"), "应有分组「草交互」")
+	for k in ["heading_persistence", "levy_alpha", "ars_radius_m"]:
+		assert_eq(String(in_group.get(k, "")), "飞行行为 Flight · CRW Lévy ARS",
+				"%s 应落在「飞行行为」组（实际 %s）" % [k, in_group.get(k, "")])
+	for k in ["grass_bend_radius", "grass_bend_height", "grass_bend_slots"]:
+		assert_eq(String(in_group.get(k, "")), "草交互 Grass (sgt)",
+				"%s 应落在「草交互」组（实际 %s）" % [k, in_group.get(k, "")])
+
+	# ---- 覆盖语义：节点值赢 ----
+	var tscript: GDScript = load("res://addons/butterfly_swarm/butterfly_tuning.gd") as GDScript
+	assert_ne(tscript, null, "ButterflyTuning 脚本应能加载")
+	var res: Resource = tscript.new()
+	res.set("heading_persistence", 0.11)
+	res.set("levy_alpha", 2.9)
+	res.set("grass_bend_height", 0.22)
+	sw.tuning = res
+	var d: Dictionary = sw.tuning_dict()
+	assert_true(absf(float(d.get("heading_persistence", -1)) - 0.72) < 1e-6,
+			"节点值应覆盖资源（期望 0.72，实际 %.2f）" % float(d.get("heading_persistence", -1)))
+	assert_true(absf(float(d.get("levy_alpha", -1)) - 1.6) < 1e-6,
+			"levy_alpha 应为节点值 1.6（实际 %.2f）" % float(d.get("levy_alpha", -1)))
+	assert_true(absf(float(d.get("grass_bend_height", -1)) - 1.15) < 1e-6,
+			"grass_bend_height 应为节点值 1.15（实际 %.2f）" % float(d.get("grass_bend_height", -1)))
+	# 改了节点值 -> 立刻反映（这才是"面板上调了有反应"）
+	sw.heading_persistence = 0.30
+	var d2: Dictionary = sw.tuning_dict()
+	assert_true(absf(float(d2.get("heading_persistence", -1)) - 0.30) < 1e-6,
+			"改节点导出值后应立刻反映（期望 0.30，实际 %.2f）" % float(d2.get("heading_persistence", -1)))
+	# 反过来：资源仍要能提供**它特有**的键（没在节点上导出的）
+	res.set("wander_jitter", 4.25)
+	var d3: Dictionary = sw.tuning_dict()
+	assert_true(absf(float(d3.get("wander_jitter", -1)) - 4.25) < 1e-6,
+			"资源特有的键仍应生效（wander_jitter 期望 4.25，实际 %.2f）" % float(d3.get("wander_jitter", -1)))
+	print("[蝴蝶测试] 参数暴露：%d 个键在检查器可见（分组「飞行行为」+「草交互」）｜ 节点值优先于资源 ✓"
+			% want.size())
+
+
+## ★★ 禁止"飞行时瞬移" ★★
+##
+## 用户反馈原话："禁止蝴蝶飞行时瞬移"。查到一个**真实的瞬移源**：
+##   BASK/DRINK 状态每帧 `position = position.lerp(_perch, 0.25)`，
+##   而 `_perch` 的默认值是**世界原点 (0,0,0)**，`_find_perch()` 找不到落脚点时也不会更新它 ——
+##   于是蝴蝶每次进入 BASK 都会**朝原点以 ~15 m/s 跳过去**（每帧把剩余距离砍掉 1/4，
+##   实测在 5 米外时单帧位移 ≈ 1.25 m，视觉上就是"闪一下换位置"）。
+## 修法：① 状态机进 BASK 时先把 `_perch` 兜底成当前位置；
+##      ② 靠拢改成**限速**（perch_speed，默认 1.2 m/s）；
+##      ③ 落脚点离得太远（> perch_rearm_distance）就就近重置；
+##      ④ 积分后统一加一道**单帧位移上限**，把任何来源的异常位移降级为"快速移动"。
+func test_no_teleport_during_flight() -> void:
+	var paths := BFLY_IO.list_butterfly_paths()
+	var tex := load(String(paths[0])) as Texture2D
+	var crop := BFLY_IO.detect_bbox(String(paths[0]))
+	var bounds := AABB(Vector3(-8, 0.4, -8), Vector3(16, 3, 16))
+	var wind := {"dir": Vector2(1, 0), "strength": 0.2, "gust": 0.15,
+			"turbulence": 0.3, "speed": 1.3}
+
+	# ① BASK 且落脚点仍是默认原点 -> 不许朝原点跳
+	var b = _new_butterfly()
+	b.setup(tex, crop, _rng(3), {"size_m": 0.22, "flap_hz": 8.0})
+	b.spawn(bounds)
+	b.position = Vector3(5.0, 2.0, 0.0)      # 离原点 5 米
+	b._perch = Vector3.ZERO                  # 旧实现的"默认/无效落脚点"
+	b.state = BFLY.State.BASK
+	var p0: Vector3 = b.position
+	b._sync_transform(1.0 / 60.0)
+	var jump := p0.distance_to(b.position)
+	assert_true(jump < 0.05,
+			"落脚点无效时不该朝原点跳（实测单帧位移 %.4f m；旧实现约 1.25 m）" % jump)
+
+	# ② 落脚点残留很远 -> 就近重置，而不是飞过去
+	var b2 = _new_butterfly()
+	b2.setup(tex, crop, _rng(5), {"size_m": 0.22, "flap_hz": 8.0})
+	b2.spawn(bounds)
+	b2.position = Vector3(6.0, 2.0, 6.0)
+	b2._perch = Vector3(-6.0, 2.0, -6.0)
+	b2.state = BFLY.State.BASK
+	var p1: Vector3 = b2.position
+	b2._sync_transform(1.0 / 60.0)
+	assert_true(p1.distance_to(b2.position) < 0.05,
+			"落脚点残留 17 m 外时应就近重置（实测单帧位移 %.4f m）"
+			% p1.distance_to(b2.position))
+
+	# ③ 正常 + 极端参数各跑 900 帧：单帧位移必须不超上限
+	var max_step := 0.0
+	var cap := 0.0
+	for over in [{}, {"speed_max": 8.0, "accel": 40.0, "wind_drag": 1.0,
+			"heading_persistence": 0.0}]:
+		var bb = _new_butterfly()
+		var o: Dictionary = (over as Dictionary).duplicate()
+		o["size_m"] = 0.22
+		o["flap_hz"] = 8.0
+		bb.setup(tex, crop, _rng(11), o)
+		bb.spawn(bounds)
+		var dt := 1.0 / 60.0
+		var ms := 0.0
+		var cp := 0.0
+		for i in range(900):
+			var q0: Vector3 = bb.position
+			bb.advance(dt, bounds, wind, {}, [], {})
+			ms = maxf(ms, q0.distance_to(bb.position))
+			cp = maxf(cp, bb._speed_cap({}) * dt * 1.6)
+		assert_true(ms <= cp + 1e-4,
+				"单帧位移不得超上限（实测 %.4f <= %.4f，参数 %s）" % [ms, cp, str(o)])
+		max_step = maxf(max_step, ms)
+		cap = maxf(cap, cp)
+		bb.free()
+	b.free()
+	b2.free()
+	print("[蝴蝶测试] 防瞬移：BASK 单帧位移 %.4f m（旧实现 ~1.25 m）｜ 900 帧最大 %.4f m（上限 %.4f m）"
+			% [jump, max_step, cap])
+
+
+## ★ 检查器分组名里**不能有 `/`**：Godot 把它当子分组分隔符，
+## 会把 "飞行行为 Flight (CRW/Lévy/ARS)" 拆成三层错位标题
+## （用户截图确认：`飞行行为 Flight (CRW` / `Lévy` / `ARS)`）。
+func test_export_group_names_have_no_slash() -> void:
+	var sw = SWARM.new()
+	track(sw)
+	var groups: Array = []
+	for p in sw.get_property_list():
+		if int(p.get("usage", 0)) & PROPERTY_USAGE_GROUP:
+			groups.append(String(p.get("name", "")))
+	var bad: Array = []
+	for g in groups:
+		if String(g).contains("/"):
+			bad.append(g)
+	assert_eq(bad, [], "分组名不得含 `/`（会被拆成子分组）：%s" % str(bad))
+	assert_true(groups.has("飞行行为 Flight · CRW Lévy ARS"), "飞行行为分组名应完整")
+	assert_true(groups.has("草交互 Grass (sgt)"), "草交互分组名应完整")
+	print("[蝴蝶测试] 分组名检查：%d 个分组，均不含 `/`" % groups.size())
+
+
 ## ★ 批量加素材 API（用户在检查器里点的就是这些）：
 ##   add_sprites_from_paths / add_all_sprites_from_folder / add_random_sprites /
 ##   clear_sprites / sprite_summary。

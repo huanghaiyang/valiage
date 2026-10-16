@@ -78,6 +78,26 @@ global uniform sampler2D sgt_motion_texture : repeat_disable, filter_nearest, hi
 uniform vec3 sgt_wind_direction = vec3(1.0, 0.0, 0.0);   // 改逐材质：Godot 4.7 运行时 global uniform 顶点阶段失效
 uniform float sgt_wind_strength = 0.15;
 uniform float sgt_wind_turbulence = 1.0;
+
+// ============================================================
+// ★★ 蝴蝶拨草（Butterfly ↔ Grass 交互）★★
+//   本项目定制（2026-10），与上面的 sgt_player_* 同一套思路：
+//     · 逐材质 uniform（Godot 4.7 的 global uniform 在顶点阶段失效，实测过）
+//     · 世界坐标 + `w = (1 - d/r)²` 权重（与角色拨草一致，避免门限把它吃成 0）
+//   两个"插槽"= 每帧最多两只蝴蝶压草（取离草最近的两只，见 butterfly_swarm.gd 的
+//   `_write_grass_bend()`）。为什么限 2 个：着色器里每只都要算一次距离，
+//   而整片草是同一个材质 —— 插槽越多，整片草的顶点开销越大。
+//   `..._count` 为零时下面那段整个不执行（没有蝴蝶贴草飞时零开销）。
+// ============================================================
+// ⚠ Godot **不支持给 uniform 数组写默认值**（实测报
+//   `SHADER ERROR: Setting default values to uniform arrays is not supported.`），
+//   所以这几个数组不给初值；由 butterfly_swarm.gd 每帧全部写入（含未使用的插槽）。
+uniform vec3  sgt_butterfly_pos[2];           // 世界坐标（未用槽位写 1e9 = 视为无穷远）
+uniform float sgt_butterfly_vel[2];           // 0~1：飞行快慢（越快拂得越开）
+uniform float sgt_butterfly_press[2];         // 0~1：**贴得多低**（越高越小）
+uniform float sgt_butterfly_radius = 0.42;    // 影响半径（米）
+uniform float sgt_butterfly_bend = 1.0;       // 倒伏强度（0~3）
+uniform int   sgt_butterfly_count = 0;        // 有效插槽数（0 = 不计算）
 uniform vec3 sgt_wind_movement = vec3(0.0, 0.0, 0.0);
 uniform sampler2D sgt_wind_pattern : source_color, repeat_enable, filter_linear, hint_default_white;
 
@@ -208,6 +228,34 @@ void vertex() {
 		}
 	}
 	v_normal_grass = (MODELVIEW_MATRIX * vec4(0.0, 1.0, 0.0, 1.0)).xyz - NODE_POSITION_VIEW;
+
+	// ★★ 2026-10 蝴蝶拨草（Butterfly ↔ Grass 交互）
+	//   与上面的角色拨草同一个模式：`w = (1 - d/r)²`，世界坐标直接算。
+	//   `..._press` 是"贴得多低"（0~1）：蝴蝶在 3 米高空飞时 press=0 -> 完全不压草；
+	//   越贴近 NODE_POSITION_WORLD.y（该草实例的根）press 越大 -> 压得越实。
+	//   再乘 `..._vel`（飞行快慢）：掠过时拂开的幅度更大，慢悠悠落草时更柔。
+	//   两个插槽都做同一套计算（count 控制有效个数，为 0 时整段跳过）。
+	if (sgt_butterfly_count > 0) {
+		float br = max(0.05, sgt_butterfly_radius);
+		float bb = clamp(sgt_butterfly_bend, 0.0, 3.0);
+		for (int k = 0; k < 2; k++) {
+			if (k >= sgt_butterfly_count) { break; }
+			float press = sgt_butterfly_press[k];
+			if (press <= 0.0005) { continue; }
+			vec3 bdp = VERTEX - sgt_butterfly_pos[k];
+			bdp.y = 0.0;
+			float bd = length(bdp);
+			float bw = clamp(1.0 - bd / br, 0.0, 1.0);
+			bw = bw * bw * press * sgt_butterfly_vel[k];
+			if (bw > 0.0005) {
+				// ① 径向拨开（蝴蝶从草里穿过 -> 草向四周让开）
+				vec2 bpush = (bd > 0.0001) ? (bdp.xz / bd) : vec2(0.0);
+				VERTEX.xz += bpush * (bw * 0.10 * bb);
+				// ② 压低：越靠得正上方/贴得越近，草越是被压伏
+				VERTEX.y -= (VERTEX.y - NODE_POSITION_WORLD.y) * bw * 0.28 * bb;
+			}
+		}
+	}
 
 	// ★ 逐实例燃烧：INSTANCE_CUSTOM 只在**顶点阶段**可用，所以在这里算好、用 varying 传下去。
 	//   噪声取实例的世界位置 -> 每个实例的斑点位置不同且固定（不会游走）。

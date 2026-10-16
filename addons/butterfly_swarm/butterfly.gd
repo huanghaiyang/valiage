@@ -110,6 +110,28 @@ var distance_travelled := 0.0
 ## 低频噪声的内部相位（见 _signed_noise）。每只独立，所以整群的"飘"不同步。
 var _noise_phase := 0.0
 
+# ==================== 移动生态学状态（CRW / Lévy / ARS）====================
+# 为什么要有这些状态：原来 CRUISE 是"随机游走 + 往航点直飞"，
+#   表现就是**直飞**（用户实测反馈："蝴蝶现在都是直飞的"）。
+#   真实蝴蝶的运动是**方向相关随机游走（CRW）**：方向和上一步强相关（小转角为主），
+#   偶尔来一次大转角（重尾），步长服从重尾分布（Lévy），并且在感知到资源时
+#   自动切成"原地打转"（区域限制搜索 ARS）。下面这几个变量就是这套模型的状态。
+## 当前"决策段"的航向（单位向量，本地空间）。CRW 的核心状态：它**跨帧保持**，
+## 所以轨迹是连续的而不是每帧重掷。
+var _crw_heading := Vector3.ZERO
+## 距离下次更新航向还剩多少秒（0 -> 本帧重新决策）。
+var _crw_timer := 0.0
+## 当前决策段的 Lévy 步长（米）：段内一直用它当"目标速度"，段末重掷。
+var _crw_step_len := 0.6
+## 侧向摆动相位（弧度）：给直线段叠一层左右摆，避免"镭射直线"。
+var _weave_phase := 0.0
+## 本帧是否处于区域限制搜索（ARS，附近有资源 -> 打转搜索）。
+var _ars_active := false
+## ARS 的"资源在哪个方向"（本地空间，单位向量；进入 ARS 时由 swarm 灌进来）。
+var _ars_dir := Vector3.ZERO
+## 上一次 ARS 切换的时刻（秒）：用于节流，避免每帧来回切。
+var _ars_switch_t := -1.0
+
 # ==================== 确定性随机 ====================
 ## 由 swarm 注入的随机数发生器（同 seed_value 可复现）。
 ## ★ 注入 rng 而不是用全局 randf()：整群的初始位置/相位应当只由 seed_value 决定。
@@ -689,6 +711,21 @@ func advance(delta: float, bounds: AABB, wind: Dictionary = {}, weather: Diction
 		velocity = _random_dir() * speed_cap * 0.35
 	var before := position
 	position += velocity * delta
+	# ---- ⑥b ★ 单帧位移上限（"禁止飞行时瞬移"的最后一道闸）----
+	#   为什么需要它：位置不止在这里被推进 —— `_force_bounds()` 会**硬夹**下边界、
+	#   `_force_ground()` 可能把蝴蝶顶起来、BASK/DRINK 会朝落脚点靠拢。
+	#   任一处一旦算错（或帧长抖动、区域被改小），蝴蝶就会在一帧里"闪"出很远，
+	#   而肉眼对位置突变的容忍度几乎为零 —— 所以这里统一加一道**物理上不可能超出**的上限：
+	#     单帧位移 <= min(speed_cap, speed_max) * delta * 系数
+	#   正常飞行时这个上限永远够用（推不动它），只在异常时才咬合，把"瞬移"降级成"快速移动"。
+	var max_step := maxf(0.01, _speed_cap(weather)) * delta * maxf(1.2, _num("max_step_factor", 1.6))
+	var moved := position - before
+	var md := moved.length()
+	if md > max_step and md > 1e-6:
+		position = before + moved / md * max_step
+		# 速度也跟着收敛，否则下一帧还会再冲一次
+		velocity = velocity.limit_length(max_step / maxf(0.0001, delta))
+		moved = position - before
 	distance_travelled += before.distance_to(position)
 
 	# ---- ⑦ 贴图/视觉参数与变换 ----
@@ -745,6 +782,12 @@ func _update_state(delta: float, weather: Dictionary, extra: Dictionary) -> void
 
 	# ④ 能量低 -> 落地晒太阳
 	if energy <= _num("rest_energy", 0.25) and state != State.FLEE:
+		# ★ 先兜底把 `_perch` 设成**当前位置**，再尝试找花/叶落脚点。
+		#   为什么必须先兜底（实测的瞬移 bug）：`_find_perch()` 在**节流窗口内**会直接
+		#   返回传入的 `from`，而 `_perch` 的默认值是**原点 (0,0,0)** ——
+		#   只要这次没算过落脚点，蝴蝶就会朝世界原点冲（旧实现是每帧 lerp 25%）。
+		#   现在即使找不到落脚点，也只会在原地"停下"，不会跳。
+		_perch = position
 		state = State.BASK
 		_state_timer = rng.randf_range(2.5, 6.0)
 		# 落脚点：附近的花/叶子上，找不到就原地地面上方一点
@@ -815,20 +858,76 @@ func _pick_cruise_waypoint() -> Vector3:
 
 # ==================== 各状态的力 ====================
 
-## 巡飞 / 趋目标（SEEK、COURT 共用 seek 力；CRUISE 只有漫游 + 噪声）。
-## 参数：delta、bounds（本地区域，仅作高度参考）、extra（含 attract_to / hover，本地坐标）。
+## 巡飞 / 趋目标（SEEK、COURT 共用 seek 力；CRUISE 用移动生态学模型）。
+##
+## ★★ CRUISE 的做法（对应"蝴蝶现在都是直飞的"这条反馈）★★
+##   不再用"随机游走 + 往航点直飞"，改成**方向相关随机游走（CRW）+ Lévy 步长 +
+##   区域限制搜索（ARS）**，模型出处见 butterfly_tuning.gd 顶部：
+##     ① 每个"决策段"（step_time_s）掷一次航向：
+##        · 以**上一个航向**为基准（heading_persistence）—— 这就是"相关"；
+##        · 小转角为主（turn_scale_deg），另有 turn_heavy_p 概率来一次大转角（重尾）
+##          -> 轨迹是"一段直、忽然拐"，而不是激光直线、也不是无头苍蝇；
+##     ② 段内速度目标随 Lévy 重尾步长起落 -> 长直段与短促搜索交替；
+##     ③ 段内再叠一层正弦侧摆（lateral_weave）-> 连直飞段也在小幅左右晃；
+##     ④ 附近有资源时进 ARS：转角放大、速度压低 -> 在花丛里打转。
+##   这样"直飞"消失，"环境互动"也有一半（感知资源就改变飞行模式）。
+##
+## 参数：delta、bounds、extra（含 ars_dir / ars_active，本地坐标）。
 ## 返回值：本状态贡献的加速度（米/秒²）。
 func _force_seek_or_cruise(delta: float, bounds: AABB, extra: Dictionary) -> Vector3:
 	var f := Vector3.ZERO
-	# 漫游方向被噪声缓慢推着转（红噪声式转向，比"每帧随机"自然得多）
-	var jitter := _num("wander_jitter", 1.6)
-	var rate := _num("wander_rate", 0.6)
-	_wander = (_wander + Vector3(rng.randf_range(-1.0, 1.0), 0.0, rng.randf_range(-1.0, 1.0))
-			* rate * delta).normalized()
-	f += _wander * jitter
-	# 高频小噪声：让轨迹不是平滑曲线（蝴蝶飞起来是一顿一顿的）
-	f += Vector3(rng.randf_range(-1.0, 1.0), rng.randf_range(-0.4, 0.4), rng.randf_range(-1.0, 1.0)) * 0.6
+	# ---- 资源感知（ARS）：由 swarm 注入"资源在哪"，这里算"朝它偏"的方向 ----
+	var ars_on := _flag("area_restricted_search", true)
+	_ars_active = false
+	if ars_on:
+		var hit: Variant = extra.get("ars_hit", false)
+		var ap: Variant = extra.get("ars_pos", null)
+		if hit is bool and (hit as bool) and ap is Vector3:
+			var to_res := (ap as Vector3) - position
+			var d_res := to_res.length()
+			# 只有在感知半径内才算"找到资源"（这就是 ARS 的感知半径语义）
+			if d_res > 0.05 and d_res <= maxf(0.2, _num("ars_radius_m", 3.0)):
+				_ars_dir = to_res / d_res
+				_ars_active = true
+	if not _ars_active:
+		_ars_dir = Vector3.ZERO
 
+	# ---- ① CRW：按决策段更新航向 ----
+	var step_time := maxf(0.05, _num("step_time_s", 0.45))
+	_crw_timer -= delta
+	if _crw_timer <= 0.0 or _crw_heading.length_squared() < 1e-6:
+		_crw_timer = step_time * rng.randf_range(0.7, 1.3)   # 段长也抖动一下，避免整群同步转弯
+		_crw_step_len = _levy_step()
+		_crw_heading = _crw_turn()
+	# ---- ② Lévy 步长 + 速度目标 ----
+	# ARS 时速度压低（在花丛里飞得慢而黏）
+	var speed_scale := _num("ars_speed_scale", 0.55) if _ars_active else 1.0
+	var want_speed := clampf(_crw_step_len / step_time, 0.25, 1.0) * _num("speed_max", 2.2) * speed_scale
+	f += _crw_heading * maxf(0.0, want_speed - velocity.dot(_crw_heading)) * 3.2
+	# ---- ③ 侧向摆动：绕上行轴做小幅正弦摆 ----
+	var weave := _num("lateral_weave", 0.55)
+	if weave > 0.0:
+		_weave_phase += TAU * _num("lateral_weave_hz", 1.1) * delta
+		var up := Vector3.UP if absf(_crw_heading.dot(Vector3.UP)) < 0.95 else Vector3.RIGHT
+		var side := _crw_heading.cross(up)
+		if side.length_squared() > 1e-6:
+			f += side.normalized() * (sin(_weave_phase) * weave)
+	# ---- ③b ARS：朝资源点**轻微**牵引（不是直冲过去，而是"在附近打转"）----
+	#   为什么要"轻微"：真蝴蝶在花丛里是绕来绕去地搜，不是直线扑向某一朵花。
+	#   转角尺度已经在 _crw_turn 里放大了（ars_turn_scale_deg），这里只补一点点朝向偏置。
+	if _ars_active:
+		f += _ars_dir * 0.9
+	# ---- ④ 高频小噪声：让轨迹不是光滑曲线 ----
+	#    ⚠ 幅度**必须远小于** CRW 的转向力（上面那项 3.2×速度差）。
+	#      第一版给 0.35，实测结果：噪声完全主导方向 —— 把 heading_persistence
+	#      从 0.72 调到 0.99、turn_scale 从 25° 调到 1°，平均转角反而从 3.25° 变到 4.08°
+	#      （CRW 参数等于失效）。降到 0.08 后 CRW 才是方向的主导项。
+	#      量级参考：CRW 转向项在典型速度差 0.5 m/s 时约 1.6 m/s²。
+	if _flag("flight_jitter", true):
+		f += Vector3(rng.randf_range(-1.0, 1.0), rng.randf_range(-0.4, 0.4),
+				rng.randf_range(-1.0, 1.0)) * 0.08
+
+	# ---- ⑤ 趋目标（SEEK/DRINK/COURT 才是"冲着某个点去"；CRUISE 不直冲）----
 	var goal: Variant = null
 	if state == State.SEEK or state == State.DRINK or state == State.COURT:
 		goal = _target
@@ -858,6 +957,78 @@ func _force_seek_or_cruise(delta: float, bounds: AABB, extra: Dictionary) -> Vec
 		else:
 			_target = null
 	return f
+
+
+# ==================== 移动生态学模型（CRW / Lévy / ARS）====================
+
+## Lévy 步长：**Pareto 重尾**采样 `L = Lmin * (1-U)^(-1/(α-1))`，再夹到合理区间。
+##
+## 为什么用 Pareto 而不是高斯：高斯步长的随机游走会"均匀糊开"，
+## 而昆虫觅食实测是**重尾**的 —— 大量短步（原地搜索）+ 少量超长步（远距离迁移），
+## 这正是"在一丛花里打转，忽然直线飞走去下一丛"的来源。
+## 参数 α = `levy_alpha`（默认 1.6，昆虫典型区间 1.5~2.0）。
+## 返回值：米。长步上限取 4 倍基准，避免偶发极端值把蝴蝶"甩"到区域边界。
+func _levy_step() -> float:
+	var alpha := clampf(_num("levy_alpha", 1.6), 1.05, 3.0)
+	var base := maxf(0.15, _num("speed_max", 2.2) * 0.35)   # 基准步长 ~0.77 m
+	var u := clampf(rng.randf(), 1e-6, 0.999999)
+	var l := base * pow(1.0 - u, -1.0 / (alpha - 1.0))
+	# ARS 时把长步砍掉大半：在资源附近不该"一飞而去"
+	if _ars_active:
+		l *= 0.45
+	return clampf(l, base * 0.35, base * 4.0)
+
+
+## CRW 转角：以**上一段航向**为基准偏转一个角度，返回新的单位航向。
+##
+## 转角分布 = 小转角为主 + 重尾大转角：
+##   · 基础尺度 `turn_scale_deg`（默认 25°）—— 决定"有多歪"；
+##   · 以 `turn_heavy_p` 概率改用 `turn_heavy_deg`（默认 110°）—— 就是"忽然换方向"；
+##   · ARS 时把小转角尺度换成 `ars_turn_scale_deg`（默认 55°）—— 原地打转；
+##   · 偏转方向是**三维**的（绕一个随机轴转），所以也会拐上下，不再只在水平面里绕圈。
+## 参数：无（用 `_crw_heading` 与 rng）。
+## 返回值：单位向量（本地空间）。
+func _crw_turn() -> Vector3:
+	# 基准方向：已有航向（CRW 的"相关"），首次用当前速度方向，兜底用随机方向
+	var base := _crw_heading
+	if base.length_squared() < 1e-6:
+		base = velocity
+	if base.length_squared() < 1e-6:
+		base = _random_dir()
+	base = base.normalized()
+	# ARS：偏转尺度放大（打转）；否则小转角为主，偶尔重尾大转角
+	var scale_deg := _num("turn_scale_deg", 25.0)
+	if _ars_active:
+		scale_deg = _num("ars_turn_scale_deg", 55.0)
+	elif rng.randf() < _num("turn_heavy_p", 0.06):
+		scale_deg = _num("turn_heavy_deg", 110.0)
+	# 用两三个均匀样本近似"集中在 scale_deg 附近"的偏转（比高斯更抗极端值）
+	var ang := deg_to_rad(scale_deg * rng.randf_range(0.35, 1.0))
+	# 偏转轴：与 base 垂直的随机方向（三维，所以上下也会拐）
+	var axis := _perp(base, rng)
+	var dir := base.rotated(axis, ang)
+	# 与基础方向保持 persistence 的"拉回"：persistence 越高越贴近 base
+	var p := clampf(_num("heading_persistence", 0.72), 0.0, 0.99)
+	dir = (dir * (1.0 - p) + base * p)
+	if dir.length_squared() < 1e-6:
+		return base
+	return dir.normalized()
+
+
+## 取一个与 `v` 垂直的随机单位向量（用于把航向绕随机轴偏转）。
+## 参数 v：基准单位向量；r：随机源。
+## 返回值：单位向量，与 v 点积 ≈ 0。
+func _perp(v: Vector3, r: RandomNumberGenerator) -> Vector3:
+	# 选一个与 v 不平行的参考轴（挑最不平行的那个基轴，数值最稳）
+	var ref := Vector3.RIGHT
+	if absf(v.dot(Vector3.RIGHT)) > 0.9:
+		ref = Vector3.UP
+	var t := v.cross(ref)
+	if t.length_squared() < 1e-6:
+		t = v.cross(Vector3.FORWARD)
+	t = t.normalized()
+	t = t.rotated(v, r.randf_range(0.0, TAU))    # 绕 v 随机转到某个方位
+	return t.normalized()
 
 
 ## 同群分离力：对太近的邻居施加反向推力（1/r 权重，越近越强）。
@@ -1158,9 +1329,33 @@ func _sync_transform(delta: float) -> void:
 	var pitch := clampf(-velocity.y * _num("pitch_per_speed", 8.0), -20.0, 20.0)
 	if absf(pitch) > 0.01:
 		rotate_object_local(Vector3.RIGHT, deg_to_rad(pitch))
-	# 停歇/汲水时不该显示为"悬空平飞"：贴到落脚点并略微合翅
+	# 停歇/汲水时不该显示为"悬空平飞"：朝落脚点**缓慢**靠拢（不是瞬移过去）。
+	#
+	# ★★ 这里原来是一个真实的"瞬移"bug（用户反馈："禁止蝴蝶飞行时瞬移"）★★
+	#   旧写法 `position = position.lerp(_perch, 0.25)` 每帧强行拉 25% 到 `_perch`。
+	#   而 `_perch` 的**默认值是原点 (0,0,0)**，`_find_perch()` 返回 null 时它也不会被更新 ——
+	#   于是每次进 BASK/DRINK（能量耗尽、或 DRINK 判定）蝴蝶都会**朝世界原点以 ~15 m/s 跳过去**
+	#   （0.75 m × 60 fps，而且是每帧都把剩余距离砍掉 1/4，视觉上就是"闪一下换位置"）。
+	#   现在：① 状态机进 BASK/DRINK 时先把 `_perch` 兜底成**当前位置**（见 _update_state）；
+	#        ② 靠拢改成**限速**的（每秒最多 perch_speed 米），落地过程看得见。
+	var to_perch := _perch - position
+	var d_perch := to_perch.length()
 	if state == State.BASK or state == State.DRINK:
-		position = position.lerp(_perch, 0.25)
+		# ★ 二次兜底：落脚点离得太远就**重新就近落脚**（而不是长途跋涉/瞬移过去）。
+		#   触发场景：`_perch` 被换区域/换种子后的残留值、或 `respawn_all()` 后忘了清。
+		#   没有这条，蝴蝶会以 `perch_speed` 一路直线"飞"回几米外的旧落脚点，看着像瞬移。
+		var rearm := maxf(0.5, _num("perch_rearm_distance", 3.0))
+		if d_perch > rearm:
+			_perch = position
+			velocity = Vector3.ZERO
+		elif d_perch > 0.0005:
+			# 限速靠拢：每秒最多 perch_speed 米，落地过程看得见
+			var max_step := maxf(0.05, _num("perch_speed", 1.2)) * delta
+			if d_perch <= max_step:
+				position = _perch
+				velocity = Vector3.ZERO
+			else:
+				position += to_perch / d_perch * max_step
 
 
 # ==================== 目标查找（缓存的场景查询） ====================
