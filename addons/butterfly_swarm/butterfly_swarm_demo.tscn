@@ -1,0 +1,93 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://addons/butterfly_swarm/butterfly_swarm.gd" id="1_3al7j"]
+[ext_resource type="Texture2D" path="res://assets/textures/活体/蝴蝶/蝴蝶-01.png" id="2_ugp8y"]
+[ext_resource type="Texture2D" path="res://assets/textures/活体/蝴蝶/蝴蝶-02.png" id="3_llyuv"]
+[ext_resource type="Texture2D" path="res://assets/textures/活体/蝴蝶/蝴蝶-03.png" id="4_tuooq"]
+[ext_resource type="Texture2D" path="res://assets/textures/活体/蝴蝶/蝴蝶-04.png" id="5_5urii"]
+[ext_resource type="Texture2D" path="res://assets/textures/活体/蝴蝶/蝴蝶-05.png" id="6_crdmn"]
+[ext_resource type="Texture2D" path="res://assets/textures/活体/蝴蝶/蝴蝶-06.png" id="7_2f5q3"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_4w5pb"]
+sky_top_color = Color(0.35, 0.55, 0.92, 1)
+sky_horizon_color = Color(0.86, 0.9, 0.86, 1)
+ground_bottom_color = Color(0.3, 0.38, 0.24, 1)
+ground_horizon_color = Color(0.7, 0.74, 0.62, 1)
+
+[sub_resource type="Sky" id="Sky_7ri77"]
+sky_material = SubResource("ProceduralSkyMaterial_4w5pb")
+
+[sub_resource type="Environment" id="Environment_6ulpo"]
+background_mode = 2
+sky = SubResource("Sky_7ri77")
+ambient_light_source = 3
+ambient_light_energy = 0.9
+tonemap_mode = 2
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_m88gj"]
+albedo_color = Color(0.36, 0.52, 0.26, 1)
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_s1d4t"]
+size = Vector2(40, 40)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_k4une"]
+albedo_color = Color(1, 0.62, 0.3, 1)
+roughness = 0.85
+emission_enabled = true
+emission = Color(0.45, 0.22, 0.06, 1)
+emission_energy_multiplier = 0.6
+
+[sub_resource type="SphereMesh" id="SphereMesh_idux4"]
+radius = 0.13
+height = 0.26
+radial_segments = 10
+rings = 6
+
+[sub_resource type="MultiMesh" id="MultiMesh_7cj3d"]
+transform_format = 1
+instance_count = 26
+mesh = SubResource("SphereMesh_idux4")
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_o80kf"]
+shading_mode = 0
+vertex_color_use_as_albedo = true
+
+[sub_resource type="ImmediateMesh" id="ImmediateMesh_jvybc"]
+
+[node name="ButterflySwarmDemo" type="Node3D" unique_id=716718915]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1944551696]
+environment = SubResource("Environment_6ulpo")
+
+[node name="Sun" type="DirectionalLight3D" parent="." unique_id=1082801481]
+transform = Transform3D(0.8290376, -0.3741731, 0.4155613, 0, 0.7431448, 0.6691306, -0.5591929, -0.55473447, 0.616095, 0, 0, 0)
+light_energy = 1.25
+shadow_enabled = true
+
+[node name="Ground" type="MeshInstance3D" parent="." unique_id=251290961]
+material_override = SubResource("StandardMaterial3D_m88gj")
+mesh = SubResource("PlaneMesh_s1d4t")
+
+[node name="Flowers" type="Node3D" parent="." unique_id=1067861631]
+
+[node name="FlowerHeads" type="MultiMeshInstance3D" parent="Flowers" unique_id=1611465926]
+material_override = SubResource("StandardMaterial3D_k4une")
+multimesh = SubResource("MultiMesh_7cj3d")
+
+[node name="Stems" type="MeshInstance3D" parent="Flowers" unique_id=685591670]
+material_override = SubResource("StandardMaterial3D_o80kf")
+mesh = SubResource("ImmediateMesh_jvybc")
+
+[node name="ButterflySwarm" type="Node3D" parent="." unique_id=1583631040]
+script = ExtResource("1_3al7j")
+sprites = Array[Texture2D]([ExtResource("2_ugp8y"), ExtResource("3_llyuv"), ExtResource("4_tuooq"), ExtResource("5_5urii"), ExtResource("6_crdmn"), ExtResource("7_2f5q3")])
+count = 10
+region_size = Vector3(7, 2.6, 7)
+size_m = 0.45
+seed_value = 20261016
+wind_influence = 1.3
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1276504229]
+transform = Transform3D(0.7547096, -0.18083438, 0.6306444, 0, 0.9612617, 0.27563736, -0.656059, -0.20802616, 0.7254734, 5.6, 3, 6.4)
+current = true
+fov = 55.0
