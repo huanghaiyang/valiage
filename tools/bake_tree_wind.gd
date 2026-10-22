@@ -32,7 +32,8 @@ const LEAF_NODES := ["Leaves", "Flowers"]
 ## CUSTOM0/CUSTOM1 都用 RGBA_FLOAT（每顶点 4 个 float）
 ##   flags = (RGBA_FLOAT << CUSTOM0_SHIFT) | (RGBA_FLOAT << CUSTOM1_SHIFT)
 const CUSTOM_FLAGS: int = (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT) \
-		| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM1_SHIFT)
+		| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM1_SHIFT) \
+		| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM2_SHIFT)
 
 ## 位置分格大小（米）：用于把 Godot 重排后的顶点匹配回 GLB 顶点。
 ## ★ 为什么不是"量化到 1e-4 直接做 key"：Godot 4.7 导入时会**压缩顶点属性**
@@ -42,6 +43,12 @@ const CUSTOM_FLAGS: int = (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUS
 const CELL := 0.002
 ## 匹配容差（米）：超过就记账成 mismatch
 const MATCH_EPS := 0.003
+## 叶片"宿主枝条"查找的分格（米）。叶片的 aOrigin 就贴在枝条上，
+## 用它去找最近的树皮顶点 -> 拿到该枝条的 aPhase / aWind / nodeId，
+## 写进 CUSTOM2，让叶片做**刚性摆动**时与枝条同相位、同节奏（局部抖动仍用叶子自己的相位）。
+const HOST_CELL := 0.5
+## 宿主查找的最大距离（米）：超过就当没找到（回退成用叶子自己的相位）
+const HOST_MAX_DIST := 0.35
 
 var _glb_path := DEFAULT_GLB
 var _scene_path := DEFAULT_SCENE
@@ -87,6 +94,10 @@ func _bake_all(glb: Dictionary) -> void:
 		root.free()
 		return
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(_out_dir))
+	# ★ 先建"树皮顶点索引"：叶子/花朵的 aOrigin 贴在枝条上，
+	#   用它查最近的树皮顶点 → 得到宿主枝条的 aPhase/aWind/nodeId（写进 CUSTOM2）。
+	var host := _build_host_index(glb)
+	_log("宿主枝条索引：%d 个树皮顶点" % host.get("count", 0))
 	var node_names: Array = glb["nodes_with_mesh"].keys()
 	var ok := 0
 	for nm in node_names:
@@ -94,7 +105,7 @@ func _bake_all(glb: Dictionary) -> void:
 		if mi == null:
 			_log("跳过 %s：场景里没有同名 MeshInstance3D" % nm)
 			continue
-		if _bake_one(glb, String(nm), mi):
+		if _bake_one(glb, String(nm), mi, host):
 			ok += 1
 	_log("烘焙完成：%d/%d 个节点" % [ok, node_names.size()])
 	root.free()
@@ -111,7 +122,7 @@ func _find_mesh_instance(root: Node, wanted: String) -> MeshInstance3D:
 	return null
 
 
-func _bake_one(glb: Dictionary, node_name: String, mi: MeshInstance3D) -> bool:
+func _bake_one(glb: Dictionary, node_name: String, mi: MeshInstance3D, host: Dictionary = {}) -> bool:
 	var mesh: Mesh = mi.mesh
 	if mesh == null or not (mesh is ArrayMesh):
 		_log("跳过 %s：网格不是 ArrayMesh" % node_name)
@@ -146,6 +157,8 @@ func _bake_one(glb: Dictionary, node_name: String, mi: MeshInstance3D) -> bool:
 	var total_v := 0
 	var mismatched := 0
 	var max_err := 0.0
+	var host_miss := 0
+	var host_cache := {}
 	for s in range(surface_count):
 		var arr: Array = am_src.surface_get_arrays(s)
 		if arr.is_empty() or arr[Mesh.ARRAY_VERTEX] == null:
@@ -155,8 +168,10 @@ func _bake_one(glb: Dictionary, node_name: String, mi: MeshInstance3D) -> bool:
 		total_v += n
 		var c0 := PackedFloat32Array()
 		var c1 := PackedFloat32Array()
+		var c2 := PackedFloat32Array()
 		c0.resize(n * 4)
 		c1.resize(n * 4)
+		c2.resize(n * 4)
 		var norms: PackedVector3Array = arr[Mesh.ARRAY_NORMAL] if arr[Mesh.ARRAY_NORMAL] != null else PackedVector3Array()
 		for vi in range(n):
 			var v: Vector3 = verts[vi]
@@ -188,9 +203,26 @@ func _bake_one(glb: Dictionary, node_name: String, mi: MeshInstance3D) -> bool:
 			c1[vi * 4 + 1] = is_leaf
 			c1[vi * 4 + 2] = a_node
 			c1[vi * 4 + 3] = 1.0
+			# CUSTOM2 = (宿主枝条 phase, 宿主枝条 aWind, 宿主 nodeId, 1=有宿主)
+			#   叶子/花朵的**刚性摆动**用宿主值 → 树枝与树叶/花朵同步；
+			#   局部抖动仍然用叶子自己的 aPhase（见 shader 的 flutter 段）。
+			if is_leaf > 0.5 and not host.is_empty():
+				var h := _host_at(host, host_cache, a_origin)
+				if not h.is_empty():
+					c2[vi * 4 + 0] = h[0]
+					c2[vi * 4 + 1] = h[1]
+					c2[vi * 4 + 2] = h[2]
+					c2[vi * 4 + 3] = 1.0
+				else:
+					host_miss += 1
+					c2[vi * 4 + 0] = a_phase
+					c2[vi * 4 + 1] = a_wind
+					c2[vi * 4 + 2] = a_node
+					c2[vi * 4 + 3] = 1.0
 		var out_arr: Array = arr.duplicate(true)
 		out_arr[Mesh.ARRAY_CUSTOM0] = c0
 		out_arr[Mesh.ARRAY_CUSTOM1] = c1
+		out_arr[Mesh.ARRAY_CUSTOM2] = c2
 		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, out_arr, [], {}, CUSTOM_FLAGS)
 		out.surface_set_name(s, am_src.surface_get_name(s))
 		out.surface_set_material(s, am_src.surface_get_material(s))
@@ -199,11 +231,67 @@ func _bake_one(glb: Dictionary, node_name: String, mi: MeshInstance3D) -> bool:
 	if err != OK:
 		push_error("[bake] 保存失败 %s err=%d" % [res_path, err])
 		return false
-	_log("✓ %-16s 顶点=%6d  GLB=%6d  匹配失败=%d  max位置误差=%.6f m  -> %s" % [
-			node_name, total_v, n_g, mismatched, max_err, res_path])
+	_log("✓ %-16s 顶点=%6d  GLB=%6d  匹配失败=%d  宿主未找到=%d  max位置误差=%.6f m  -> %s" % [
+			node_name, total_v, n_g, mismatched, host_miss, max_err, res_path])
 	if mismatched > 0:
 		push_warning("[bake] %s 有 %d 个顶点没匹配上（已用兜底值）" % [node_name, mismatched])
 	return true
+
+## 建"树皮顶点索引"：把所有**非叶片**节点的 (position, phase, aWind, nodeId) 收集起来。
+## 为什么用 GLB 原始数据而不是导入网格：叶片查找要对齐到 GLB 的 aOrigin（同一坐标空间），
+## 且 GLB 里属性值零误差。
+func _build_host_index(glb: Dictionary) -> Dictionary:
+	var cells := {}
+	var count := 0
+	for nm in (glb["prims"] as Dictionary).keys():
+		if LEAF_NODES.has(String(nm)):
+			continue
+		var prim: Dictionary = glb["prims"][nm]
+		var pos: PackedVector3Array = prim["pos"]
+		var ph: PackedFloat32Array = prim["phase"]
+		var wd: PackedFloat32Array = prim["wind"]
+		var ni: PackedFloat32Array = prim["nodeid"]
+		var n := mini(pos.size(), mini(ph.size(), mini(wd.size(), ni.size())))
+		for i in range(n):
+			var key := _host_cell(pos[i])
+			if not cells.has(key):
+				cells[key] = []
+			(cells[key] as Array).append([pos[i], ph[i], wd[i], ni[i]])
+			count += 1
+	return {"cells": cells, "count": count}
+
+
+static func _host_cell(p: Vector3) -> String:
+	return "%d_%d_%d" % [int(floor(p.x / HOST_CELL)), int(floor(p.y / HOST_CELL)), int(floor(p.z / HOST_CELL))]
+
+
+## 在宿主索引里找离 origin 最近的树皮顶点，返回 [phase, aWind, nodeId]；找不到返回 []。
+## cache：同一个 aOrigin 会被一整片叶子的多个顶点重复查询（每片叶 8 个顶点），
+##   用 origin 做 key 缓存，80640 个花朵顶点实际只有 ~1 万个 origin。
+func _host_at(host: Dictionary, cache: Dictionary, origin: Vector3) -> Array:
+	var ck := _host_cell(origin)
+	if cache.has(ck):
+		return cache[ck]
+	var cells: Dictionary = host["cells"]
+	var best := []
+	var best_d2 := HOST_MAX_DIST * HOST_MAX_DIST
+	var cx := int(floor(origin.x / HOST_CELL))
+	var cy := int(floor(origin.y / HOST_CELL))
+	var cz := int(floor(origin.z / HOST_CELL))
+	for dx in [-1, 0, 1]:
+		for dy in [-1, 0, 1]:
+			for dz in [-1, 0, 1]:
+				var key := "%d_%d_%d" % [cx + dx, cy + dy, cz + dz]
+				if not cells.has(key):
+					continue
+				for rec in cells[key]:
+					var d2: float = origin.distance_squared_to(rec[0])
+					if d2 < best_d2:
+						best_d2 = d2
+						best = [rec[1], rec[2], rec[3]]
+	cache[ck] = best
+	return best
+
 
 ## 在"分格位置索引"里找 Godot 顶点对应的 GLB 顶点下标；找不到返回 -1。
 ## 搜索本格 + 26 个邻格，取最近的一个；距离 > MATCH_EPS 视为没匹配上。
@@ -411,3 +499,4 @@ func _maxf(a: PackedFloat32Array) -> float:
 
 func _log(s: String) -> void:
 	print("[bake] " + s)
+

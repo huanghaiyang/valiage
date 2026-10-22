@@ -25,10 +25,14 @@ const BARK_SHADER := "res://assets/shaders/tree_burn_keep_ds.gdshader"
 const LEAF_SHADER := "res://assets/shaders/tree_leaves_burn_ds.gdshader"
 const CANOPY_SCRIPT := "res://scripts/world/canopy_chunk_cull.gd"
 const CUSTOM_FLAGS: int = (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT) \
-		| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM1_SHIFT)
+		| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM1_SHIFT) \
+		| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM2_SHIFT)
 ## 位置分格（米）：Godot 导入会压缩顶点属性（~5e-4 m 误差），不能用精确 key 匹配
 const CELL := 0.002
 const MATCH_EPS := 0.003
+## 叶片"宿主枝条"查找的分格（米）与最大距离
+const HOST_CELL := 0.5
+const HOST_MAX_DIST := 0.35
 
 var _glb := ""
 var _name := ""
@@ -38,6 +42,9 @@ var _leaf_nodes_arg := ""
 var _collision := "none"
 var _force := false
 var _dry := false
+## 树皮顶点索引 + 宿主查找缓存（每次 run 重建）
+var _host := {}
+var _host_cache := {}
 ## 可选日志回调（编辑器插件用来把进度打到面板）
 var _log_fn := Callable()
 
@@ -110,6 +117,11 @@ func _run() -> Dictionary:
 
 	# ---- 1) GLB 原始数据（自定义属性只在二进制里）----
 	var glb := _parse_glb(_glb)
+	# 叶子/花朵的刚性摆动要跟枝条同步：先建"树皮顶点索引"（用 aOrigin 查最近树皮顶点）
+	_host = _build_host_index(glb) if not glb.is_empty() else {}
+	_host_cache = {}
+	if not _host.is_empty():
+		_log("宿主枝条索引：%d 个树皮顶点" % int(_host.get("count", 0)))
 	if glb.is_empty():
 		return {"ok": false, "message": "GLB 解析失败：%s" % _glb}
 
@@ -211,8 +223,10 @@ func _bake_mesh(glb: Dictionary, mi: MeshInstance3D) -> Dictionary:
 			tris_total += (arr[Mesh.ARRAY_INDEX] as PackedInt32Array).size() / 3
 		var c0 := PackedFloat32Array()
 		var c1 := PackedFloat32Array()
+		var c2 := PackedFloat32Array()
 		c0.resize(n * 4)
 		c1.resize(n * 4)
+		c2.resize(n * 4)
 		for vi in range(n):
 			var v: Vector3 = verts[vi]
 			if v.y > top:
@@ -239,9 +253,24 @@ func _bake_mesh(glb: Dictionary, mi: MeshInstance3D) -> Dictionary:
 			c1[vi * 4 + 1] = 1.0 if is_leaf else 0.0
 			c1[vi * 4 + 2] = a_node
 			c1[vi * 4 + 3] = 1.0
+			# CUSTOM2 = (宿主枝条 phase, 宿主枝条 aWind, 宿主 nodeId, 1=有宿主)
+			#   刚性摆动用宿主值 → 叶片/花朵与枝条同步；局部抖动仍用叶子自己的 aPhase。
+			if is_leaf and not _host.is_empty():
+				var h := _host_at(_host, _host_cache, a_origin)
+				if not h.is_empty():
+					c2[vi * 4 + 0] = h[0]
+					c2[vi * 4 + 1] = h[1]
+					c2[vi * 4 + 2] = h[2]
+					c2[vi * 4 + 3] = 1.0
+				else:
+					c2[vi * 4 + 0] = a_phase
+					c2[vi * 4 + 1] = a_wind
+					c2[vi * 4 + 2] = a_node
+					c2[vi * 4 + 3] = 1.0
 		var out_arr: Array = arr.duplicate(true)
 		out_arr[Mesh.ARRAY_CUSTOM0] = c0
 		out_arr[Mesh.ARRAY_CUSTOM1] = c1
+		out_arr[Mesh.ARRAY_CUSTOM2] = c2
 		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, out_arr, [], {}, CUSTOM_FLAGS)
 		out.surface_set_name(s, am_src.surface_get_name(s))
 	if not _dry:
@@ -331,7 +360,9 @@ func _build_materials(meshes: Array, baked: Dictionary, tree_top: float) -> Dict
 			sm.set_meta("cull_mode", 0)
 			sm.set_meta("cull_shader", "单面")
 		else:
-			sm.set_shader_parameter("wind_sway", 1.0)
+			# 刚性摆幅与树皮一致（0.8）：叶片/花朵的"额外"运动全部来自局部抖动，
+			# 这样整片叶子跟着枝条平移的量与枝条完全相同（树枝与树叶/花朵同步）。
+			sm.set_shader_parameter("wind_sway", 0.8)
 			sm.set_shader_parameter("wind_is_leaf", true)
 			sm.set_shader_parameter("wind_leaf_flutter", 0.6)
 			sm.set_shader_parameter("wind_leaf_twist", 0.5 if role == "leaves" else 0.42)
@@ -631,6 +662,62 @@ func _match(index: Dictionary, g_pos: PackedVector3Array, v: Vector3) -> int:
 	return best
 
 
+## 建"树皮顶点索引"：把所有**非叶片**节点的 (position, phase, aWind, nodeId) 收进来。
+## 用 GLB 原始数据（零误差、和 aOrigin 同一坐标空间），不用导入网格。
+func _build_host_index(glb: Dictionary) -> Dictionary:
+	var cells := {}
+	var count := 0
+	for nm in (glb.get("prims", {}) as Dictionary).keys():
+		if _is_leaf_node(String(nm)):
+			continue
+		if not (glb["prims"] as Dictionary).has(nm):
+			continue
+		var prim: Dictionary = glb["prims"][nm]
+		var pos: PackedVector3Array = prim["pos"]
+		var ph: PackedFloat32Array = prim["phase"]
+		var wd: PackedFloat32Array = prim["wind"]
+		var ni: PackedFloat32Array = prim["nodeid"]
+		var n := mini(pos.size(), mini(ph.size(), mini(wd.size(), ni.size())))
+		for i in range(n):
+			var key := _host_cell(pos[i])
+			if not cells.has(key):
+				cells[key] = []
+			(cells[key] as Array).append([pos[i], ph[i], wd[i], ni[i]])
+			count += 1
+	return {"cells": cells, "count": count}
+
+
+static func _host_cell(p: Vector3) -> String:
+	return "%d_%d_%d" % [int(floor(p.x / HOST_CELL)), int(floor(p.y / HOST_CELL)), int(floor(p.z / HOST_CELL))]
+
+
+## 在宿主索引里找离 origin 最近的树皮顶点 -> [phase, aWind, nodeId]；找不到返回 []。
+## 同一片叶子的多个顶点共用一个 aOrigin，用 cell key 缓存避免重复搜索。
+func _host_at(host: Dictionary, cache: Dictionary, origin: Vector3) -> Array:
+	var ck := _host_cell(origin)
+	if cache.has(ck):
+		return cache[ck]
+	var cells: Dictionary = host["cells"]
+	var best := []
+	var best_d2 := HOST_MAX_DIST * HOST_MAX_DIST
+	var cx := int(floor(origin.x / HOST_CELL))
+	var cy := int(floor(origin.y / HOST_CELL))
+	var cz := int(floor(origin.z / HOST_CELL))
+	for dx in [-1, 0, 1]:
+		for dy in [-1, 0, 1]:
+			for dz in [-1, 0, 1]:
+				var key := "%d_%d_%d" % [cx + dx, cy + dy, cz + dz]
+				if not cells.has(key):
+					continue
+				for rec in cells[key]:
+					var d2: float = origin.distance_squared_to(rec[0])
+					if d2 < best_d2:
+						best_d2 = d2
+						best = [rec[1], rec[2], rec[3]]
+	cache[ck] = best
+	return best
+
+
 static func _cell_key(p: Vector3) -> String:
 	return "%d_%d_%d" % [int(floor(p.x / CELL)), int(floor(p.y / CELL)), int(floor(p.z / CELL))]
 
@@ -662,9 +749,3 @@ func _log(s: String) -> void:
 	if _log_fn.is_valid():
 		_log_fn.call(s)
 	print("[ft] " + s)
-
-
-
-
-
-

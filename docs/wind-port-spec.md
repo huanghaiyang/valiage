@@ -192,6 +192,7 @@ vec3 tree_wind_offset(vec3 pos, vec4 c0, vec4 c1, vec3 world_pos, float base_y,
 | 树风参数可在 Inspector 调 | ✅ | 节点上 `tree_*` 一组 export；材质上 `wind_sway / wind_is_leaf / wind_leaf_flutter / wind_leaf_twist / wind_force 默认值` |
 | 真实 main.tscn 写入链路 | ✅ | `tests/wind_integration_probe.gd`（headless 加载 main.tscn）：`WindSystem` 在 `/root/Main/WindSystem`，`tree_mats=3`，三个树材质 `wind_force=0.0840`（=0.03+0.18×0.30）、`wind_strength=0.18`、`wind_speed=1.30`、风向随时间变化 |
 | 一条命令导入新树 | ✅ | `tools/import_fasttree.ps1`（包装 `tools/fasttree_import.gd`）：GLB → 烘焙 .res + 3 个树着色器材质 + 可拖入场景的 tscn（含 CanopyCull / 可选碰撞）。用法见 `docs/fasttree-glb-import.md`；编辑器入口：FileSystem 右键 `.glb` →「fast-tree 一键烘烤…」（`addons/fasttree_import/`，仅对 .glb 出现） | 
+| 树枝 ↔ 树叶/花朵同步（2026-10-22 用户反馈追加） | ✅ | 叶/花顶点烘焙时追加 `CUSTOM2=(宿主枝 phase, 宿主枝 aWind, 宿主 nodeId, 1)`：用叶生点 `aOrigin` 在 0.35m 内找最近树皮顶点；shader 里**刚性摆动**用宿主值、**局部抖动**用自身相位；叶/花材质刚性摆幅改为 0.8（与树皮一致）。`tests/wind_leaf_branch_sync.gd` 12/12 PASS：叶/花 95.1%/94.4% 顶点宿主相位=附近枝条相位，同相位配对刚性位移最大差 0.0216 m |
 | 独立验证 | ✅ | `docs/wind-port-verification.md`：38/38 PASS（与 JS 源逐值一致 14 项、轨迹 7 项、烘焙 11 项、视觉 6 项） |
 | 抖动去同步化（2026-10-22 用户反馈追加） | ✅ | 源实现所有元素同一个抖动频率 → 观感机械。新增 `wind_variation / wind_sway_variation` + 材质级 `wind_flutter_rate`：每片叶/每朵花按烘焙相位得到独立频率与幅度（叶 1.10 / 花 0.72 基础频率）。`tests/wind_freq_diversity.gd`：10/10 PASS（variation=0 时回到源实现；叶片频率跨度 0.605–1.594，花/叶均值比 0.658，元素内频率一致 0/不一致） |
 | 其它树（非 fast-tree 导出） | ⚠ 保持旧观感 | 没有 `_AWIND/_APHASE/_AORIGIN` 数据 → 走旧的高度权重回退路径（分支/叶片不丢，只是没有"逐枝柔度 + 叶柄铰链"） |

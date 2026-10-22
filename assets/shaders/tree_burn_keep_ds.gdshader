@@ -161,7 +161,7 @@ void vertex() {
 	float tree_base_y = MODEL_MATRIX[3].y;
 	float tree_flex = 0.0;
 	if (wind_enabled) {
-		VERTEX += tree_wind_offset(VERTEX, CUSTOM0, CUSTOM1, tree_world_pos, tree_base_y, 0.45, tree_flex) * alive;
+		VERTEX += tree_wind_offset(VERTEX, CUSTOM0, CUSTOM1, CUSTOM2, tree_world_pos, tree_base_y, 0.45, tree_flex) * alive;
 		// ★★★ 局部风场（龙卷风）：绕中心的切向环流，越靠中心越强
 		if (tornado_strength > 0.001) {
 			float t_base = MODEL_MATRIX[3].y;

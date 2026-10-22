@@ -97,7 +97,7 @@ vec3 tree_wind_legacy(vec3 pos, float base_y, float legacy_scale, out float out_
 //    legacy_scale 仅回退路径用（枝条 0.45 / 叶子 1.0）
 //    out_flex     输出柔软度 0..1（片元可用于透光/高光）
 // ---------------------------------------------------------------------------
-vec3 tree_wind_offset(vec3 pos, vec4 c0, vec4 c1, vec3 world_pos, float base_y, float legacy_scale, out float out_flex) {
+vec3 tree_wind_offset(vec3 pos, vec4 c0, vec4 c1, vec4 c2, vec3 world_pos, float base_y, float legacy_scale, out float out_flex) {
 	if (!wind_enabled) {
 		out_flex = 0.0;
 		return vec3(0.0);
@@ -108,58 +108,73 @@ vec3 tree_wind_offset(vec3 pos, vec4 c0, vec4 c1, vec3 world_pos, float base_y, 
 	}
 
 	// ---------------- fast-tree 精确移植 ----------------
-	float a_wind = clamp(c0.w, 0.0, 1.0);
-	float flex = pow(a_wind, wind_flex_falloff);
-	out_flex = flex;
+	// 顶点通道：
+	//   CUSTOM0 = (aOrigin.xyz, aWind)               CUSTOM1 = (aPhase, isLeaf, nodeId, baked)
+	//   CUSTOM2 = (宿主枝条 phase, 宿主枝条 aWind, 宿主 nodeId, 1=有宿主)
+	// ★ 分工（"树枝与树叶/花朵同步"的关键）：
+	//   · **刚性摆动**（整片叶子跟着枝条平移）用**宿主枝条**的 phase/flex/nodeId
+	//     -> 同一根枝条上的叶子与枝条同相位、同节奏、同幅度（不会再各摆各的）；
+	//   · **局部抖动**（绕叶柄的弯曲 + 铰链俯仰）仍用叶子自己的 aPhase/nodeId
+	//     -> 每片叶/每朵花保留自己的抖动节奏（不会整片同频）。
+	float own_wind = clamp(c0.w, 0.0, 1.0);
+	float own_phase = c1.x;
 	vec3 a_origin = c0.xyz;
-	float a_phase = c1.x;
+
+	float host_phase = own_phase;
+	float host_wind = own_wind;
+	float host_node = c1.z;
+	if (wind_is_leaf && c2.w > 0.5) {
+		host_phase = c2.x;
+		host_wind = clamp(c2.y, 0.0, 1.0);
+		host_node = c2.z;
+	}
 
 	vec2 windDir = normalize(wind_direction + vec2(1e-5, 1e-6));
 	vec2 windPerp = vec2(-windDir.y, windDir.x);
-	float phase = a_phase + dot(world_pos.xz, windDir) * wind_spatial_scale + wind_seed * 0.017;
-	float tw = TIME * wind_speed;
-	// ★★ 频率去同步化（核心）：
-	//   fast-tree 源实现里所有元素共用一个频率（只靠 aPhase 错开**相位**），
-	//   落到几千片叶/花 + 枝条果实上就是"整片同频振动"，观感机械。
-	//   这里让每个元素（每叶/每花/每枝，由烘焙 aPhase + nodeId 唯一决定）拿到一个
-	//   稳定的频率/幅度微差。wind_variation = wind_sway_variation = 0 时逐位等于源实现。
-	float h1 = fract(sin(a_phase * 12.9898 + c1.z * 78.233 + 0.13) * 43758.5453);
-	float h2 = fract(sin(a_phase * 39.3467 + c1.z * 11.1357 + 0.71) * 24634.6345);
 	float freq = max(0.05, wind_frequency * wind_freq_scale);
-	// 刚性主波：只让**次级项**（0.28 权重那一条）的频率随元素变化。
-	//   主项保持全局同频 -> 叶片不会相对枝条缓慢漂移（drift），但每根枝/每片叶的节奏不同。
-	float sway_rate = 1.0 + wind_sway_variation * (h1 * 2.0 - 1.0);
-	// 局部抖动（叶片弯曲/俯仰）：绕 aOrigin 的局部运动，频率和幅度都可以大胆变化，
-	//   不会造成叶片相对枝条的位移漂移。
-	float flutter_rate = max(0.2, 1.0 + wind_variation * (h1 * 2.0 - 1.0));
-	float flutter_amp = 1.0 + wind_variation * (h2 * 2.0 - 1.0) * 0.8;
+	float tw = TIME * wind_speed;
+
+	// 刚性柔度：叶片取宿主枝条的（= 附着点的枝条柔度）→ 位移与枝条一致
+	float flex_rigid = pow(clamp(host_wind, 0.0, 1.0), wind_flex_falloff);
+	// 片元用的 flex 仍取顶点自身（透光/高光用）
+	out_flex = pow(own_wind, wind_flex_falloff);
+
+	// 刚性相位：宿主相位 + 世界 xz 错开（同一阵风扫过整棵树）
+	float phase_r = host_phase + dot(world_pos.xz, windDir) * wind_spatial_scale + wind_seed * 0.017;
+
+	// ★ 刚性段的频率微差也用**宿主**的 hash：叶子与枝条取同一个 hash -> 节奏完全一致
+	float h1r = fract(sin(host_phase * 12.9898 + host_node * 78.233 + 0.13) * 43758.5453);
+	float sway_rate = 1.0 + wind_sway_variation * (h1r * 2.0 - 1.0);
 
 	// 顺风主波 + 高频次波
-	float wave = sin(tw + phase) * 0.72 + sin(tw * 2.17 * freq * sway_rate + phase * 1.7) * 0.28;
+	float wave = sin(tw + phase_r) * 0.72 + sin(tw * 2.17 * freq * sway_rate + phase_r * 1.7) * 0.28;
 	float osc = wave * 0.5 + 0.5;                       // 0..1
 	// 阵风：压低摆动区间的低谷（wind_gust 越大，起伏越强）
 	float gust = 1.0 - wind_gust * 0.6 *
-			(1.0 - (sin(tw * wind_gust_speed + phase * 0.21) * 0.5 + 0.5));
+			(1.0 - (sin(tw * wind_gust_speed + phase_r * 0.21) * 0.5 + 0.5));
 	// 风只"推"不"拉"：位移恒偏下风向；bias 只抬低谷，不削峰值
 	float along = osc * gust + wind_bias * 0.35;
-	float turb = sin(tw * 3.1 * freq + phase * 4.3);
+	float turb = sin(tw * 3.1 * freq + phase_r * 4.3);
 	vec2 sway = windDir * along + windPerp * turb * wind_turbulence;
 
 	vec3 treePos = pos;
-	float amount = wind_force * wind_sway * flex;
+	float amount = wind_force * wind_sway * flex_rigid;
 	treePos.xz += sway * amount;
 
 	if (wind_is_leaf) {
-		// 叶片：叶柄固定不动，只做"弯曲 + 铰链式俯仰"
-		//  1) 弯曲方向固定且以水平分量为主（下风向占绝对主导）-> 方向一眼可辨
-		//  2) 俯仰绕固定的水平轴（垂直于风向），小角度来回 -> 物理上就是叶片迎风翻动
-		//  + 每片叶自己的频率/幅度微差（flutter_rate / flutter_amp），避免整片同频抖动
+		// 局部抖动用叶子**自己的** phase/nodeId（它是绕 aOrigin 的局部运动，不影响刚性同步）
+		float h1f = fract(sin(own_phase * 12.9898 + c1.z * 78.233 + 0.13) * 43758.5453);
+		float h2f = fract(sin(own_phase * 39.3467 + c1.z * 11.1357 + 0.71) * 24634.6345);
+		float flutter_rate = max(0.2, 1.0 + wind_variation * (h1f * 2.0 - 1.0));
+		float flutter_amp = 1.0 + wind_variation * (h2f * 2.0 - 1.0) * 0.8;
+		float phase_f = own_phase + dot(world_pos.xz, windDir) * wind_spatial_scale + wind_seed * 0.017;
+
 		vec3 rel = treePos - a_origin;
 		float stemDist = length(rel);
 		float fr = max(0.2, wind_flutter_rate * flutter_rate);
-		float flap = sin(tw * 4.1 * freq * fr + phase * 6.3);
-		float surge = sin(tw * 1.35 * fr * (0.9 + 0.2 * h2) + phase * 2.1);
-		float leafAmp = wind_leaf_flutter * wind_force * 1.8 * (0.35 + a_wind) * flutter_amp;
+		float flap = sin(tw * 4.1 * freq * fr + phase_f * 6.3);
+		float surge = sin(tw * 1.35 * fr * (0.9 + 0.2 * h2f) + phase_f * 2.1);
+		float leafAmp = wind_leaf_flutter * wind_force * 1.8 * (0.35 + own_wind) * flutter_amp;
 		vec3 bendDir = normalize(vec3(windDir.x, -0.3, windDir.y));
 		rel += bendDir * stemDist * leafAmp * (0.5 + 0.35 * flap + 0.15 * surge);
 		float pitch = flap * wind_leaf_twist * 0.5 * (0.35 + wind_force * 2.0);

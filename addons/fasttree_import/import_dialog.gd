@@ -55,6 +55,7 @@ func _setup(glbs: PackedStringArray) -> void:
 	intro.text = "会把选中的 .glb 烘烤成：\n" \
 			+ "  · 烘焙网格（含 CUSTOM0/1 风摆数据）→ assets/models/树/<名字>/wind/\n" \
 			+ "  · 树着色器材质（bark / leaves / flowers）→ scenes/树/<名字>/\n" \
+			+ "      （叶/花绑定最近的枝条做刚性同步，局部抖动各自独立）\n" \
 			+ "  · 可直接拖进场景的 .tscn（含树冠分块剔除）→ scenes/树/<名字>/"
 	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(intro)
@@ -220,6 +221,3 @@ func _show_summary(results: Array) -> void:
 	if base != null:
 		base.add_child(dlg)
 	dlg.popup_centered()
-
-
-

@@ -168,7 +168,7 @@ void vertex() {
 	float tree_base_y = MODEL_MATRIX[3].y;
 	float tree_flex = 0.0;
 	if (wind_enabled) {
-		VERTEX += tree_wind_offset(VERTEX, CUSTOM0, CUSTOM1, tree_world_pos, tree_base_y, 1.0, tree_flex) * alive;
+		VERTEX += tree_wind_offset(VERTEX, CUSTOM0, CUSTOM1, CUSTOM2, tree_world_pos, tree_base_y, 1.0, tree_flex) * alive;
 		// ★★★ 局部风场（龙卷风 ✓ 进阶需求）：把风改成**绕中心的切向环流** ✓
 		//   越靠中心越强（k² 衰减 ✓）、带一点向内吸（0.25 ✓）、方向由 tornado_swirl 决定 ✓
 		if (tornado_strength > 0.001) {
