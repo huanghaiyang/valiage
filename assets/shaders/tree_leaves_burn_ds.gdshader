@@ -6,6 +6,35 @@ global uniform vec3 tornado_pos;         // 龙卷风中心（世界坐标 ✓�
 global uniform float tornado_radius;     // 影响半径（米 ✓）
 global uniform float tornado_strength;   // 局部风速强度（0 = 无 ✓）
 global uniform float tornado_swirl;      // 环流方向：+1 逆时针 / -1 顺时针 ✓
+
+// ============================================================================
+//  ★ 屏幕空间"视觉挖洞"（角色被树叶/花挡住时，在角色周围挖个洞）✓
+//    与 scripts/camera_rig.gd + scripts/shaders/occlusion_hole.gdshader **同一套全局 uniform**：
+//      camera_rig 每帧用 RenderingServer.global_shader_parameter_set 广播这 4 个值 ✓
+//    与木质 shader(tree_burn_keep_ds) 的实现**逐字一致** ✓ 观感统一 ✓
+//
+//  ★ 为什么不用 ALPHA 做洞：本 shader 的 ALPHA 已被"烧尽淡出"占用 ✓
+//    而且写 ALPHA 的材质会进透明队列（本 shader 本来就是 blend_mix ✓ 无妨），
+//    但洞用 **Bayer 抖动 + discard** 出形更省、且能正确参与 depth_prepass_alpha 的深度 ✓
+// ============================================================================
+global uniform vec2 occ_player_uv;      // 角色屏幕 UV（洞中心，取胸口高度）
+global uniform float occ_radius;        // 洞半径（UV 单位）
+global uniform float occ_softness;      // 洞边缘过渡宽度
+global uniform float occ_hole_alpha;    // 洞内"看起来"的不透明度（0=全挖空, 1=不挖）
+
+// 4x4 Bayer 抖动矩阵：把"半透明"量化成网格状稀疏像素
+// （与 occlusion_hole.gdshader / tree_burn_keep_ds.gdshader 完全相同 ✓）
+float bayer4(vec2 p) {
+	int x = int(mod(p.x, 4.0));
+	int y = int(mod(p.y, 4.0));
+	int idx = y * 4 + x;
+	float m[16] = float[16](
+		0.0,  8.0,  2.0, 10.0,
+		12.0, 4.0, 14.0,  6.0,
+		3.0, 11.0,  1.0,  9.0,
+		15.0, 7.0, 13.0,  5.0);
+	return m[idx] / 16.0;
+}
 // 【树叶专用】从下往上烧 ✓ → 烧到就消失 ✓
 //
 // ★ 与花草用的 burn_foliage.gdshader **完全独立** ✓（花草逻辑一行未改 ✓）
@@ -296,4 +325,16 @@ void fragment() {
 	}
 	ALBEDO = col;
 	ALPHA = a;
+
+	// ---- 屏幕空间挖洞：角色被树叶/花挡住时，在角色周围挖个洞 ✓ ----
+	// 算法与 scripts/shaders/occlusion_hole.gdshader、tree_burn_keep_ds.gdshader 完全一致 ✓
+	// occ_hole_alpha >= 1.0 时整段等于空操作 → 完全不挖 ✓
+	float occ_d = distance(SCREEN_UV, occ_player_uv);
+	float occ_k = smoothstep(occ_radius - occ_softness, occ_radius + occ_softness, occ_d);
+	float occ_a = mix(occ_hole_alpha, 1.0, occ_k);
+	if (occ_a < 1.0) {
+		if (bayer4(FRAGCOORD.xy) > occ_a) {
+			discard;
+		}
+	}
 }

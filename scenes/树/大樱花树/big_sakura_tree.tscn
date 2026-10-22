@@ -1,7 +1,7 @@
 [gd_scene format=3 uid="uid://ca8gxy1of5elf"]
 
 [ext_resource type="PackedScene" uid="uid://24urpoem1e86" path="res://assets/models/树/大樱花树.glb" id="1_glb"]
-[ext_resource type="Material" path="res://scenes/树/大樱花树/_blend_mat_big_sakura_bark.tres" id="2_bark"]
+[ext_resource type="Material" uid="uid://bfavvvjykbq4o" path="res://scenes/树/大樱花树/_blend_mat_big_sakura_bark.tres" id="2_bark"]
 [ext_resource type="Material" path="res://scenes/树/大樱花树/_blend_mat_big_sakura_leaves.tres" id="3_leaf"]
 [ext_resource type="Material" path="res://scenes/树/大樱花树/_blend_mat_big_sakura_flowers.tres" id="4_flower"]
 [ext_resource type="Script" uid="uid://ocpr7iw51c8m" path="res://scripts/world/canopy_chunk_cull.gd" id="5_cull"]

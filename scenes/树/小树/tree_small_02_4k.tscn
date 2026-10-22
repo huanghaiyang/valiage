@@ -56,7 +56,7 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.1446259, 0.024031999, -0.7
 mesh = SubResource("ArrayMesh_ad1r2")
 
 [node name="StaticBody3D" type="StaticBody3D" parent="tree_small_02_LOD1" unique_id=796595130]
-collision_layer = 8
+collision_layer = 4
 collision_mask = 0
 
 [node name="CollisionShape3D4" type="CollisionShape3D" parent="tree_small_02_LOD1/StaticBody3D" unique_id=1727185798]

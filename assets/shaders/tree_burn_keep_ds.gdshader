@@ -4,6 +4,40 @@ global uniform vec3 tornado_pos;
 global uniform float tornado_radius;
 global uniform float tornado_strength;
 global uniform float tornado_swirl;
+
+// ============================================================================
+//  ★ 屏幕空间"视觉挖洞"（角色被树挡住时，在角色周围挖一个洞）
+//    与 scripts/camera_rig.gd + scripts/shaders/occlusion_hole.gdshader **同一套全局 uniform**：
+//      camera_rig 每帧用 RenderingServer.global_shader_parameter_set 广播这 4 个值 ✓
+//
+//  为什么必须自己做：camera_rig 的挖洞是**替换材质**实现的，
+//    而 `_build_hole_materials()` 对 `not (src is StandardMaterial3D)` 直接
+//    `out[i] = null` 跳过（自定义 ShaderMaterial 拿不到贴图）✗
+//    → 树皮用自定义 shader，**永远拿不到挖洞** ✓ 所以只能在本 shader 里实现。
+//
+//  ★ 关键：**绝不写 ALPHA**（沿用 occlusion_hole.gdshader 的结论 ✓）
+//    写 ALPHA → 材质被判成"有 alpha" → 进透明队列 → 按物体距离排序
+//    → 草/花瓣会盖到树干上（"草从树干里透出来"）✗ 这正是之前那个 bug 的根因 ✓
+//    这里改用 **Bayer 4x4 抖动 + discard** 出形状：材质仍是不透明队列 ✓ 不会有排序穿透 ✓
+// ============================================================================
+global uniform vec2 occ_player_uv;      // 角色屏幕 UV（洞中心，取胸口高度）
+global uniform float occ_radius;        // 洞半径（UV 单位）
+global uniform float occ_softness;      // 洞边缘过渡宽度
+global uniform float occ_hole_alpha;    // 洞内"看起来"的不透明度（0=全挖空, 1=不挖）
+
+// 4x4 Bayer 抖动矩阵：把"半透明"量化成网格状稀疏像素
+// （discard 出形 → 材质保持不透明队列 ✓ 才能继续参与深度/遮挡 ✓）
+float bayer4(vec2 p) {
+	int x = int(mod(p.x, 4.0));
+	int y = int(mod(p.y, 4.0));
+	int idx = y * 4 + x;
+	float m[16] = float[16](
+		0.0,  8.0,  2.0, 10.0,
+		12.0, 4.0, 14.0,  6.0,
+		3.0, 11.0,  1.0,  9.0,
+		15.0, 7.0, 13.0,  5.0);
+	return m[idx] / 16.0;
+}
 // 【树干 / 枝 专用】燃烧但**烧完不消失** ✓ —— 保留焦黑效果 ✓
 //
 // 与 assets/shaders/burn_foliage.gdshader 的关系：
@@ -266,8 +300,13 @@ void fragment() {
 	}
 
 	if (overlay_mode) {
+		// ★★★ 本分支**同样不写 ALPHA** ✓✓（2026-10-22 最终定案 ✓）
+		//   只要 shader 里**任何一处**写了 `ALPHA`，Godot 就把整份材质判成"有 alpha"✗
+		//   → 材质被丢进**透明队列** → 按物体距离排序 ✗
+		//   → 草/花瓣这些透明对象会**按排序盖到树干上** ✓
+		//   → 观感：草从树干里透出来（细密点阵）✗ 且**随相机视角排序变化**✓（用户实测 ✓）
+		//   需要"叠加层半透明"的场合，请另开一份带 blend 的 shader，别污染这一份 ✓
 		ALBEDO = mix(char_color, ember_color, clamp(ember, 0.0, 1.0));
-		ALPHA = clamp(burned * 0.92 + ember * 0.55, 0.0, 1.0) * shape;   // ★ 不随 ash 淡出 ✓
 	} else {
 		ALBEDO = col;
 		// ★★★ 这里**绝对不能写 ALPHA** ✓✓（用户亲测确认 ✓）
@@ -279,5 +318,19 @@ void fragment() {
 		//   为什么之前测不出来：静态单机位只渲染树皮、后面没有东西盖上来 → 看不出差异 ✗
 		//   ★ 兜底：render_mode 已同时改成 `depth_draw_always` ✓
 		//     即使哪天又被判成透明，也强制写深度 → 不会再穿透 ✓
+	}
+
+	// ---- 屏幕空间挖洞：角色被树干/枝挡住时，在角色周围挖个洞 ✓ ----
+	// 算法与 scripts/shaders/occlusion_hole.gdshader **完全一致**（全项目观感统一 ✓）：
+	//   洞内 → occ_hole_alpha，洞外 → 1.0，中间 smoothstep 过渡；
+	//   再用 Bayer 抖动 + discard 出形状（**不写 ALPHA** ✓ 材质留在不透明队列 ✓）。
+	// occ_hole_alpha >= 1.0 时整段等于空操作 → 完全不挖 ✓
+	float occ_d = distance(SCREEN_UV, occ_player_uv);
+	float occ_k = smoothstep(occ_radius - occ_softness, occ_radius + occ_softness, occ_d);
+	float occ_a = mix(occ_hole_alpha, 1.0, occ_k);
+	if (occ_a < 1.0) {
+		if (bayer4(FRAGCOORD.xy) > occ_a) {
+			discard;
+		}
 	}
 }

@@ -1,4 +1,4 @@
-[gd_resource type="ShaderMaterial" format=3]
+[gd_resource type="ShaderMaterial" format=3 uid="uid://bfavvvjykbq4o"]
 
 [ext_resource type="Shader" uid="uid://khpjg3le5et" path="res://assets/shaders/tree_burn_keep_ds.gdshader" id="1_shdr"]
 [ext_resource type="Texture2D" uid="uid://cxsbsa6u5ftmo" path="res://assets/models/树/大樱花树_bark_diff.png" id="2_diff"]
@@ -51,6 +51,7 @@ shader_parameter/normal_strength = 0.25
 shader_parameter/rough_tex = ExtResource("4_rough")
 shader_parameter/has_rough = true
 shader_parameter/rough_channel = 0
+shader_parameter/radial_normal = 0.0
 metadata/burn_mode = "wood"
 metadata/burn_height = 27.2
 metadata/cull_mode = 0
