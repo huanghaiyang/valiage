@@ -275,6 +275,8 @@ var _occ_last_player := Vector3.ZERO
 var _occ_last_camera := Vector3.ZERO
 ## 是否**至少**完成过一轮重扫。false 时不做早退判断（第一轮必须跑，否则永远不挖洞）。
 var _occ_ever_scanned := false
+## 挖孔全局量是否已复位成"不挖"（避免 _clear_occ_globals() 每帧重复写）
+var _occ_globals_cleared := false
 ## 位移阈值（米）：小于它就认为"没动，不必重扫"。想更灵敏就调小（如 0.02）。
 @export var occlusion_move_epsilon := 0.05
 var ui_override := false     # UI（动作菜单等）占用时让出鼠标/键盘控制
@@ -380,7 +382,12 @@ func _unhandled_input(event: InputEvent) -> void:
 func _update_occlusion_fade(delta: float) -> void:
 	if not occlusion_fade or camera == null or player == null:
 		_clear_all_holes()
+		# ★ 关掉遮挡（或相机/角色还没绑定/已解绑）时，必须把**全局量**也复位成"不挖"。
+		#   只清 override 材质是不够的：树的洞是着色器自己按全局量画的，
+		#   不复位就会"洞停在最后一次的屏幕位置"（换场景/换绑相机后尤其明显）。
+		_clear_occ_globals()
 		return
+	_occ_globals_cleared = false
 	# --- 角色在屏幕上的位置与半径 ---
 	var vp := get_viewport().get_visible_rect().size
 	if vp.y < 1.0:
@@ -720,6 +727,19 @@ func _remove_hole(mi: MeshInstance3D) -> void:
 ## 调用时机：_update_occlusion_fade() 开头 —— 总开关关掉、或 camera/player 引用缺失时。
 ## 副作用：把每个网格的 override 材质清回 null（恢复原材质），并丢弃全部缓存；
 ##         下次重新开启遮挡淡化会重新烘材质（可接受，因为这是"配置/装配"级事件）。
+## 把"挖孔全局量"复位成**不挖**（occ_hole_alpha = 1.0、半径 0）。
+## 调用时机：_update_occlusion_fade() 的"关掉遮挡 / 相机或角色缺失"分支。
+## 为什么需要：全局量是渲染器级的；只卸 override 材质（_clear_all_holes）不复位全局量的话，
+##   关掉遮挡或换绑相机后，树着色器里的洞会**固定在最后一次的屏幕位置**。
+## 只写一次（_occ_globals_cleared 守护），重新开启遮挡时该标志会被清掉。
+func _clear_occ_globals() -> void:
+	if _occ_globals_cleared:
+		return
+	_occ_globals_cleared = true
+	RenderingServer.global_shader_parameter_set("occ_radius", 0.0)
+	RenderingServer.global_shader_parameter_set("occ_hole_alpha", 1.0)
+
+
 func _clear_all_holes() -> void:
 	for gi in _occ_holes.keys():
 		if is_instance_valid(gi):

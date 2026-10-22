@@ -24,6 +24,9 @@ global uniform vec2 occ_player_uv;      // 角色屏幕 UV（洞中心，取胸�
 global uniform float occ_radius;        // 洞半径（UV 单位）
 global uniform float occ_softness;      // 洞边缘过渡宽度
 global uniform float occ_hole_alpha;    // 洞内"看起来"的不透明度（0=全挖空, 1=不挖）
+// ★ 默认值约定（project.godot 的 [shader_globals]）：occ_hole_alpha = 1.0（= 不挖）
+//   → 编辑器 / 任何没有 camera_rig 驱动的场景里**不会**出现"固定在屏幕中心的假洞"；
+//   运行期由 scripts/camera_rig.gd 每物理帧写真实 uv/半径/透明度（关掉遮挡时会复位成不挖）。
 
 // 4x4 Bayer 抖动矩阵：把"半透明"量化成网格状稀疏像素
 // （discard 出形 → 材质保持不透明队列 ✓ 才能继续参与深度/遮挡 ✓）
@@ -325,3 +328,4 @@ void fragment() {
 		}
 	}
 }
+
