@@ -9,6 +9,7 @@
 [ext_resource type="Script" uid="uid://cwdumdckdptxp" path="res://scripts/camera_rig.gd" id="7_camera_rig"]
 [ext_resource type="Script" uid="uid://cqeuv1staxdps" path="res://scripts/ui/game_ui.gd" id="8_ui"]
 [ext_resource type="Script" uid="uid://cxpmrb7he55xh" path="res://scripts/ui/minimap.gd" id="9_minimap"]
+[ext_resource type="Script" uid="uid://clirnj1a6752e" path="res://scripts/wind.gd" id="9_windsys"]
 [ext_resource type="Script" uid="uid://scie1w7vnhq0" path="res://scripts/world/features/spawn_point.gd" id="10_spawn"]
 [ext_resource type="Script" uid="uid://bat1f5j1msndx" path="res://scripts/world/features/terrain_platform.gd" id="11_platform"]
 [ext_resource type="Texture2D" uid="uid://b46r88ixa2w13" path="res://assets/textures/岩石杂草/textures/file_ph-assets_Textures_jpg_4k_rocky_terrain_03_rocky_terrain_03_diff_4k.jpg" id="12_ty1g6"]
@@ -170,7 +171,7 @@ uv_scale = 0.2
 mesh_list = Array[Terrain3DMeshAsset]([SubResource("Terrain3DMeshAsset_jbj1t")])
 texture_list = Array[Terrain3DTextureAsset]([SubResource("Terrain3DTextureAsset_bjg73")])
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_j4bwh"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_ksmap"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -212,9 +213,9 @@ shader_parameter/sgt_occl_vp_pixel = Vector2(1280, 720)
 shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
 shader_parameter/sgt_wind_strength = 0.15
 shader_parameter/sgt_wind_turbulence = 1.0
-shader_parameter/sgt_butterfly_pos = [Vector3(-17.558395, 1.9915235, -16.476952), Vector3(-7.1707277, 1.9915826, -26.145771)]
-shader_parameter/sgt_butterfly_vel = [0.14121543277393686, 0.40476509115912696]
-shader_parameter/sgt_butterfly_press = [0.6983374720034392, 0.69828606]
+shader_parameter/sgt_butterfly_pos = [Vector3(-7.1246653, 1.9921558, -25.59389), Vector3(-19.256657, 1.9921672, -16.903316)]
+shader_parameter/sgt_butterfly_vel = [0.4016665166074579, 0.08457700637253847]
+shader_parameter/sgt_butterfly_press = [0.6977876580279806, 0.6977777066438093]
 shader_parameter/sgt_butterfly_radius = 0.42
 shader_parameter/sgt_butterfly_bend = 1.0
 shader_parameter/sgt_butterfly_count = 2
@@ -224,7 +225,7 @@ shader_parameter/burn_ember_color = Color(1, 0.32, 0.05, 1)
 shader_parameter/burn_ember_gain = 0.5
 metadata/SimpleGrassTexturedMaterial = "2.1.0"
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_ksmap"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_ygd8o"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -266,9 +267,9 @@ shader_parameter/sgt_occl_vp_pixel = Vector2(1280, 720)
 shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
 shader_parameter/sgt_wind_strength = 0.15
 shader_parameter/sgt_wind_turbulence = 1.0
-shader_parameter/sgt_butterfly_pos = [Vector3(-17.558395, 1.9915235, -16.476952), Vector3(-7.1707277, 1.9915826, -26.145771)]
-shader_parameter/sgt_butterfly_vel = [0.14121543277393686, 0.40476509115912696]
-shader_parameter/sgt_butterfly_press = [0.6983374720034392, 0.69828606]
+shader_parameter/sgt_butterfly_pos = [Vector3(-7.1246653, 1.9921558, -25.59389), Vector3(-19.256657, 1.9921672, -16.903316)]
+shader_parameter/sgt_butterfly_vel = [0.4016665166074579, 0.08457700637253847]
+shader_parameter/sgt_butterfly_press = [0.6977876580279806, 0.6977777066438093]
 shader_parameter/sgt_butterfly_radius = 0.42
 shader_parameter/sgt_butterfly_bend = 1.0
 shader_parameter/sgt_butterfly_count = 2
@@ -278,7 +279,7 @@ shader_parameter/burn_ember_color = Color(1, 0.32, 0.05, 1)
 shader_parameter/burn_ember_gain = 0.5
 metadata/SimpleGrassTexturedMaterial = "2.1.0"
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_ygd8o"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_2s0kr"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -320,9 +321,9 @@ shader_parameter/sgt_occl_vp_pixel = Vector2(1280, 720)
 shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
 shader_parameter/sgt_wind_strength = 0.15
 shader_parameter/sgt_wind_turbulence = 1.0
-shader_parameter/sgt_butterfly_pos = [Vector3(-17.558395, 1.9915235, -16.476952), Vector3(-7.1707277, 1.9915826, -26.145771)]
-shader_parameter/sgt_butterfly_vel = [0.14121543277393686, 0.40476509115912696]
-shader_parameter/sgt_butterfly_press = [0.6983374720034392, 0.69828606]
+shader_parameter/sgt_butterfly_pos = [Vector3(-7.1246653, 1.9921558, -25.59389), Vector3(-19.256657, 1.9921672, -16.903316)]
+shader_parameter/sgt_butterfly_vel = [0.4016665166074579, 0.08457700637253847]
+shader_parameter/sgt_butterfly_press = [0.6977876580279806, 0.6977777066438093]
 shader_parameter/sgt_butterfly_radius = 0.42
 shader_parameter/sgt_butterfly_bend = 1.0
 shader_parameter/sgt_butterfly_count = 2
@@ -332,7 +333,7 @@ shader_parameter/burn_ember_color = Color(1, 0.32, 0.05, 1)
 shader_parameter/burn_ember_gain = 0.5
 metadata/SimpleGrassTexturedMaterial = "2.1.0"
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_2s0kr"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_xaipn"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -374,9 +375,9 @@ shader_parameter/sgt_occl_vp_pixel = Vector2(1280, 720)
 shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
 shader_parameter/sgt_wind_strength = 0.15
 shader_parameter/sgt_wind_turbulence = 1.0
-shader_parameter/sgt_butterfly_pos = [Vector3(-17.558395, 1.9915235, -16.476952), Vector3(-7.1707277, 1.9915826, -26.145771)]
-shader_parameter/sgt_butterfly_vel = [0.14121543277393686, 0.40476509115912696]
-shader_parameter/sgt_butterfly_press = [0.6983374720034392, 0.69828606]
+shader_parameter/sgt_butterfly_pos = [Vector3(-7.1246653, 1.9921558, -25.59389), Vector3(-19.256657, 1.9921672, -16.903316)]
+shader_parameter/sgt_butterfly_vel = [0.4016665166074579, 0.08457700637253847]
+shader_parameter/sgt_butterfly_press = [0.6977876580279806, 0.6977777066438093]
 shader_parameter/sgt_butterfly_radius = 0.42
 shader_parameter/sgt_butterfly_bend = 1.0
 shader_parameter/sgt_butterfly_count = 2
@@ -386,7 +387,7 @@ shader_parameter/burn_ember_color = Color(1, 0.32, 0.05, 1)
 shader_parameter/burn_ember_gain = 0.5
 metadata/SimpleGrassTexturedMaterial = "2.1.0"
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_xaipn"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_ndrjj"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -428,9 +429,9 @@ shader_parameter/sgt_occl_vp_pixel = Vector2(1280, 720)
 shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
 shader_parameter/sgt_wind_strength = 0.15
 shader_parameter/sgt_wind_turbulence = 1.0
-shader_parameter/sgt_butterfly_pos = [Vector3(-17.558395, 1.9915235, -16.476952), Vector3(-7.1707277, 1.9915826, -26.145771)]
-shader_parameter/sgt_butterfly_vel = [0.14121543277393686, 0.40476509115912696]
-shader_parameter/sgt_butterfly_press = [0.6983374720034392, 0.69828606]
+shader_parameter/sgt_butterfly_pos = [Vector3(-7.1246653, 1.9921558, -25.59389), Vector3(-19.256657, 1.9921672, -16.903316)]
+shader_parameter/sgt_butterfly_vel = [0.4016665166074579, 0.08457700637253847]
+shader_parameter/sgt_butterfly_press = [0.6977876580279806, 0.6977777066438093]
 shader_parameter/sgt_butterfly_radius = 0.42
 shader_parameter/sgt_butterfly_bend = 1.0
 shader_parameter/sgt_butterfly_count = 2
@@ -440,7 +441,7 @@ shader_parameter/burn_ember_color = Color(1, 0.32, 0.05, 1)
 shader_parameter/burn_ember_gain = 0.5
 metadata/SimpleGrassTexturedMaterial = "2.1.0"
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_ndrjj"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_ih3m7"]
 render_priority = 0
 shader = ExtResource("16_0ld40")
 shader_parameter/albedo = Color(1, 1, 1, 1)
@@ -482,9 +483,9 @@ shader_parameter/sgt_occl_vp_pixel = Vector2(1280, 720)
 shader_parameter/sgt_wind_direction = Vector3(1, 0, 0)
 shader_parameter/sgt_wind_strength = 0.15
 shader_parameter/sgt_wind_turbulence = 1.0
-shader_parameter/sgt_butterfly_pos = [Vector3(-17.558395, 1.9915235, -16.476952), Vector3(-7.1707277, 1.9915826, -26.145771)]
-shader_parameter/sgt_butterfly_vel = [0.14121543277393686, 0.40476509115912696]
-shader_parameter/sgt_butterfly_press = [0.6983374720034392, 0.69828606]
+shader_parameter/sgt_butterfly_pos = [Vector3(-7.1246653, 1.9921558, -25.59389), Vector3(-19.256657, 1.9921672, -16.903316)]
+shader_parameter/sgt_butterfly_vel = [0.4016665166074579, 0.08457700637253847]
+shader_parameter/sgt_butterfly_press = [0.6977876580279806, 0.6977777066438093]
 shader_parameter/sgt_butterfly_radius = 0.42
 shader_parameter/sgt_butterfly_bend = 1.0
 shader_parameter/sgt_butterfly_count = 2
@@ -502,6 +503,9 @@ image_path = "res://assets/fog/main_fog.png"
 
 [node name="Main" type="Node3D" unique_id=18193326]
 script = ExtResource("1_main")
+
+[node name="WindSystem" type="Node" parent="." unique_id=6355302]
+script = ExtResource("9_windsys")
 
 [node name="Terrain" type="Node3D" parent="." unique_id=1832025193]
 script = ExtResource("2_terrain")
@@ -2029,7 +2033,7 @@ transform = Transform3D(-9.984407, 0, 0.5582163, 0, 10, 0, -0.5582163, 0, -9.984
 transform = Transform3D(1.9725713, 0, -0.33009517, 0, 2, 0, 0.33009517, 0, 1.9725713, -9.690185, 0.6336559, -22.132734)
 
 [node name="绿草笔刷" type="MultiMeshInstance3D" parent="." unique_id=1759320175]
-material_override = SubResource("ShaderMaterial_j4bwh")
+material_override = SubResource("ShaderMaterial_ksmap")
 multimesh = ExtResource("38_cjqg0")
 script = ExtResource("19_jscy8")
 mesh_planes = 3
@@ -2054,7 +2058,7 @@ metadata/SimpleGrassTextured = "2.0.5"
 metadata/sgt_external_id = "g0_9c1a4284"
 
 [node name="紫花笔刷" type="MultiMeshInstance3D" parent="." unique_id=1471402708]
-material_override = SubResource("ShaderMaterial_ksmap")
+material_override = SubResource("ShaderMaterial_ygd8o")
 multimesh = ExtResource("41_vchkt")
 script = ExtResource("19_jscy8")
 mesh_planes = 3
@@ -2079,7 +2083,7 @@ metadata/SimpleGrassTextured = "2.0.5"
 metadata/sgt_external_id = "g1_ef636ebd"
 
 [node name="小红花笔刷" type="MultiMeshInstance3D" parent="." unique_id=1678475211]
-material_override = SubResource("ShaderMaterial_ygd8o")
+material_override = SubResource("ShaderMaterial_2s0kr")
 multimesh = ExtResource("43_vchkt")
 script = ExtResource("19_jscy8")
 mesh_planes = 3
@@ -2104,7 +2108,7 @@ metadata/SimpleGrassTextured = "2.0.5"
 metadata/sgt_external_id = "g0_bf7c89c7"
 
 [node name="小黄花笔刷" type="MultiMeshInstance3D" parent="." unique_id=612807907]
-material_override = SubResource("ShaderMaterial_2s0kr")
+material_override = SubResource("ShaderMaterial_xaipn")
 multimesh = ExtResource("48_ids8r")
 script = ExtResource("19_jscy8")
 mesh_planes = 3
@@ -2129,7 +2133,7 @@ metadata/SimpleGrassTextured = "2.0.5"
 metadata/sgt_external_id = "g0_9c19cbf5"
 
 [node name="铃兰笔刷" type="MultiMeshInstance3D" parent="." unique_id=912381575]
-material_override = SubResource("ShaderMaterial_xaipn")
+material_override = SubResource("ShaderMaterial_ndrjj")
 multimesh = ExtResource("47_nvyfr")
 script = ExtResource("19_jscy8")
 mesh_planes = 3
@@ -2154,7 +2158,7 @@ metadata/SimpleGrassTextured = "2.0.5"
 metadata/sgt_external_id = "g4_f661c7d8"
 
 [node name="蘑菇笔刷" type="MultiMeshInstance3D" parent="." unique_id=1168329582]
-material_override = SubResource("ShaderMaterial_ndrjj")
+material_override = SubResource("ShaderMaterial_ih3m7")
 multimesh = ExtResource("51_o7ddy")
 script = ExtResource("19_jscy8")
 mesh_planes = 1

@@ -27,8 +27,9 @@ extends Node3D
 #   · res://assets/textures/法术特效/龙卷风/T_FirePanningCyl45.png —— 火舌滚动贴图
 #     （黑底、亮部是火舌），焰卡与核心辉光共用它。
 #   · res://assets/textures/法术特效/Noise1_tiled.png —— 噪声扰动贴图（可平铺）。
-#   · /root/Wind（自动加载，**可选**）—— 只读 cur_dir / cur_strength / cur_turbulence /
-#     cur_speed 四个字段，用来让火焰随风倾倒。没有 Wind 时必须静默跳过、不许报错。
+#   · 风系统（**可选**，三级查找：WindSystem.get_instance() → 分组 "wind_system" → 旧 /root/Wind）
+#     —— 只读 cur_dir / cur_strength / cur_turbulence / cur_speed 四个字段，用来让火焰随风倾倒。
+#     一个都找不到时必须静默跳过、不许报错。
 #   · 外部写入的节点属性：本文件不引用任何其它业务脚本，靠 @export 参数 + grow 变量解耦。
 # 【主要对外接口】
 #   · grow: float（0..1）—— 外部每帧写入的生长/熄灭系数，0=完全熄灭。
@@ -397,23 +398,18 @@ func _make_fire_material() -> ShaderMaterial:
 var _flame_mats: Array[ShaderMaterial] = []
 
 
-## 读 Wind 自动加载的"当前风"（没有 Wind 时用兜底值，保证不报错）
+## 读风系统的"当前风"（找不到风系统就安静返回，保证不报错）
 ##
 ## 把风的四个参数（方向/强度/湍流/速度）写给 _flame_mats 里的每份焰卡材质，让火焰随风倾倒。
 ## 参数：无。返回值：无。副作用：写所有焰卡材质的 shader 参数（每帧都写，很廉价）。
 ## 调用时机：① _make_fire_material() 末尾（给新材质补一版）；② _process() 每帧开头。
 ## 注意事项：
-##   · 本函数**必须**能在没有 Wind 的情况下安静返回 —— 火焰只是不随风动，绝不 push 错误；
+##   · 本函数**必须**能在没有风系统的情况下安静返回 —— 火焰只是不随风动，绝不 push 错误；
 ##   · 用 get("字段名") 而非直接属性访问，字段缺失时得到 null 也能被 float()/类型判断消化；
 ##   · 只有 cur_dir 有类型兜底（默认 +X）；其余三项缺失时按 0 处理，相当于"无风"（推测）。
 func _apply_wind() -> void:
-	var w: Node = null
-	# 双重探测：Wind 既可能是 Engine 单例，也可能是 /root 下的自动加载节点，两种接法都兼容
-	if Engine.has_singleton("Wind"):
-		w = Engine.get_singleton("Wind")
-	if w == null:
-		w = get_node_or_null("/root/Wind")
-	# 没有 Wind（纯特效预览场景常见）就什么也不做：火焰保持静止，不报错
+	var w: Node = _find_wind()
+	# 找不到风系统（纯特效预览场景常见）就什么也不做：火焰保持静止，不报错
 	if w == null:
 		return
 	# cur_dir 缺失或类型不对时兜底为 +X 方向：保证着色器拿到的永远是合法 Vector2
@@ -426,6 +422,25 @@ func _apply_wind() -> void:
 		m.set_shader_parameter("wind_strength", float(w.get("cur_strength")))
 		m.set_shader_parameter("wind_turb", float(w.get("cur_turbulence")))
 		m.set_shader_parameter("wind_speed", float(w.get("cur_speed")))
+
+
+## 三级查找风系统节点；一个都找不到就返回 null（调用方必须静默跳过，不许报错）：
+##   1) WindSystem.get_instance() —— 场景内实例（scripts/wind.gd，class_name WindSystem）
+##   2) 分组 "wind_system" 的第一个节点 —— 兼容场景里有多份 / 静态引用还没来得及登记的情况
+##   3) 旧 autoload 路径 /root/Wind —— 去 autoload 之前的兼容回退
+func _find_wind() -> Node:
+	var inst: Node = WindSystem.get_instance()
+	if inst != null:
+		return inst
+	var t := get_tree()
+	if t != null:
+		var g: Node = t.get_first_node_in_group("wind_system")
+		if g != null:
+			return g
+	# ⚠ 必须先判在树里：不在树时绝对路径 /root/... 会报错（不是干净地返回 null）
+	if is_inside_tree():
+		return get_node_or_null("/root/Wind")
+	return null
 
 
 # ==================== 每帧动画 ====================

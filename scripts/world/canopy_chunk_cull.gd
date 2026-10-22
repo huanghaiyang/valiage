@@ -124,7 +124,11 @@ func _scan_max_disp(n: Node) -> void:
 				var gust := float(_param(sm, "wind_gust", 0.15))
 				var turb := float(_param(sm, "wind_turbulence", 0.3))
 				var d := h * sway * strength * (1.0 + gust * 2.2) * (1.0 + turb * 0.25)
-				_max_disp = maxf(_max_disp, d)
+				# ★ fast-tree 风摆移植：烘焙树用**米级** wind_force，最大位移 ≈ 2.6×force
+				#   （顺风刚性位移 ~1.36×force + 叶片弯曲 ~1.0×force + 俯仰 ~0.25×force，取上界）
+				var force := float(_param(sm, "wind_force", 0.0))
+				var d_baked := force * 2.6
+				_max_disp = maxf(_max_disp, maxf(d, d_baked))
 	for c in n.get_children():
 		_scan_max_disp(c)
 
@@ -201,7 +205,19 @@ func _chunk_mesh(mi: MeshInstance3D) -> void:
 			if new_arrays.is_empty():
 				continue
 			var m := ArrayMesh.new()
-			m.add_surface_from_arrays(primitive, new_arrays)
+			# ★ fast-tree 风摆移植：CUSTOM0/CUSTOM1（每顶点 4 个 float）必须显式声明 RGBA_FLOAT，
+			#   否则 add_surface_from_arrays 会按默认的 RGBA8_UNORM 去要 PackedByteArray
+			#   → 报 "Invalid array format for surface" → 这块没 surface → 树冠整片消失。
+			var custom_flags := 0
+			if arrays[Mesh.ARRAY_CUSTOM0] != null:
+				custom_flags |= (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT)
+			if arrays[Mesh.ARRAY_CUSTOM1] != null:
+				custom_flags |= (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM1_SHIFT)
+			if arrays[Mesh.ARRAY_CUSTOM2] != null:
+				custom_flags |= (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM2_SHIFT)
+			if arrays[Mesh.ARRAY_CUSTOM3] != null:
+				custom_flags |= (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM3_SHIFT)
+			m.add_surface_from_arrays(primitive, new_arrays, [], {}, custom_flags)
 			# ★ 材质：优先沿用节点的 material_override ✓（保证所有块**同一个实例** ✓）
 			var mat: Material = mi.material_override
 			if mat == null:

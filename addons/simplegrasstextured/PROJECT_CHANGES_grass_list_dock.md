@@ -202,31 +202,26 @@ SimpleGrassTextured 的整片草用的正是 `MultiMeshInstance3D`，于是从�
 
 > `foliage_burn.gd` 的 `WIND_PARAMS` 也补了这几个新名字，燃烧材质副本才会继续跟随人物。
 
-### 调手感：**项目设置 → Wind → sgt_player**
+### 调手感：**WindSystem 节点 → Inspector → sgt_player_***
 
-⚠ `Wind` 是**脚本型 autoload**（`project.godot` 里 `Wind="*res://scripts/wind.gd"`），
-编辑器场景树里根本没有它的节点，所以 `@export` 在 Inspector 里**永远看不到**。
+⚠ 2026-10 起 `wind.gd` **不再是 autoload**：它变成 `scenes/main.tscn` 里的场景内节点
+`Main/WindSystem`（脚本 = `scripts/wind.gd`，`class_name WindSystem`，`_ready()` 里加入分组 `wind_system`）。
+因此 `@export` 参数在 Inspector 里**看得见、改得动**，改完**立即生效**（运行中改也生效）：
 
-参数改为读写**项目设置**（`project.godot` 的 `[Wind]` 段），改完**立即生效**、不必重启编辑器：
-
-| 项目设置项 | 默认 | 作用 |
+| Inspector 参数（@export） | 默认 | 作用 |
 | --- | --- | --- |
-| `Wind/sgt_player/bend_radius_m` | `1.4` | 以玩家为圆心多大范围内动草（米） |
-| `Wind/sgt_player/radial` | `1.2` | 径向"分开"位移（米级手柄） |
-| `Wind/sgt_player/bend` | `1.0` | 沿移动方向"倒伏"位移（米级手柄；站着只剩 25%） |
-| `Wind/sgt_player/gain` | `0.10` | 位移总增益，收敛量级 |
-| `Wind/sgt_player/debug_log` | `true` | 移动时每秒一条日志（稳定后可关） |
+| `sgt_player_bend_radius` | `1.4` | 以玩家为圆心多大范围内动草（米） |
+| `sgt_player_radial` | `1.20` | 径向"分开"位移（米级手柄） |
+| `sgt_player_bend` | `1.00` | 沿移动方向"倒伏"位移（米级手柄；站着只剩 25%） |
+| `sgt_player_gain` | `0.10` | 位移总增益，收敛量级 |
+| `debug_sgt_player` | `true` | 移动时每秒一条日志（稳定后可关） |
 
 位移最终量级 = `radial/bend × gain × w(0~1)`；半径内生效、边缘平滑到 0。
-`_ready()` 的 `_ensure_project_settings()` 会自动补齐缺失项并写入 `_doc` 中文说明。
 
-> ⚠ **读取项目设置必须逐类型判断**：设置里可能是非数值，
-> 直接 `float(_sgt_setting(...))` 会每帧抛 `Nonexistent 'float' constructor`。
-> 统一走 `_sgt_num()` / `_sgt_bool()`。
-
-> ⚠ **键名必须用 ASCII**。实测中文键名（如 `Wind/SGT草人物交互/影响半径_米`）在
-> Godot 读取 `project.godot` 时会失配：`ProjectSettings.has_setting()` 返回 `false`，
-> 脚本拿不到值（自检输出 `has=false`）。中文只放在 `_doc` 前缀字段里做说明。
+> 历史机制已删除：旧的"脚本型 autoload 看不到 @export，所以参数走项目设置 `[Wind] sgt_player/*`"
+> 那套 `_ensure_project_settings()` / `_sgt_setting()` / `_sgt_num()` / `_sgt_bool()` 已整套移除，
+> `project.godot` 的 `[Wind]` 段一并删除。现在**只有** Inspector 上的 @export 一个入口，
+> 也不再需要「键名必须用 ASCII」「读设置要逐类型判断」那两条历史注意事项。
 
 > ⚠ **改完 `wind.gd` 必须重启编辑器**。Godot 不会在 `.gd` 文件变动后重载脚本缓存，
 > 连它启动的游戏进程用的也是缓存版本 —— 表现为报错行号与磁盘文件对不上

@@ -62,6 +62,9 @@ float bayer4(vec2 p) {
 //   `depth_draw_always` 无论如何都写深度 ✓ 从机制上堵死这个坑 ✓（用户实测确认 ✓）
 render_mode depth_draw_always;
 
+// ★★ fast-tree 风摆移植（逐行对照 materials.js 的 wind 段；见 docs/wind-port-spec.md）
+#include "res://assets/shaders/fast_tree_wind.gdshaderinc"
+
 
 uniform sampler2D noise_tex : hint_default_black;
 /// 原贴图（树干用 diff 图 ✓）
@@ -87,20 +90,14 @@ uniform bool overlay_mode = false;
 uniform float noise_scale : hint_range(0.1, 6.0) = 1.4;
 /// 摆动幅度（米）——树干建议 0 ✓（想要"燃烧中颤动"就调到 0.02~0.05 ✓）
 uniform float sway_amt : hint_range(0.0, 0.5) = 0.0;
-uniform float sway_freq : hint_range(0.0, 6.0) = 1.8;
+uniform float sway_freq : hint_range(0.0, 6.0) = 1.4;
 uniform float phase = 0.0;
-// ★★★ 与树叶**同步摆动**（用户要求 ✓）：用**同一套风参数** ✓
-//   由 `scripts/wind.gd` 每帧写入 ✓（风向 ✓ 风强 ✓ 阵风 ✓ 湍流 ✓ 角色倒伏 ✓）
-//   → 树枝与树叶**相位/方向完全一致** ✓（树枝幅度更小 ✓ 见 vertex 里的 0.45 系数）
-uniform vec2 wind_direction = vec2(1.0, 0.0);
-uniform float wind_strength = 0.18;
-uniform float wind_gust = 0.15;
-uniform float wind_speed = 1.4;
-uniform float wind_turbulence = 0.30;
-uniform bool wind_enabled = false;
-uniform float wind_height_ref : hint_range(0.01, 30.0) = 8.0;
-uniform float wind_height_power : hint_range(0.5, 4.0) = 1.8;
-uniform float wind_sway_scale : hint_range(0.0, 2.0) = 0.22;
+// ★★ 风场 uniform 全部搬进 assets/shaders/fast_tree_wind.gdshaderinc
+//   （fast-tree 移植：wind_direction/wind_gust/wind_turbulence/wind_speed/
+//     wind_force/wind_frequency/wind_gust_speed/wind_spatial_scale/wind_bias/
+//     wind_flex_falloff/wind_seed + 材质级 wind_sway/wind_is_leaf/
+//     wind_leaf_flutter/wind_leaf_twist + 回退路径的 wind_strength/wind_height_*/
+//     wind_sway_scale）—— 在这里重复声明会变量重定义编译失败 ✗
 uniform vec3 player_pos = vec3(0.0, -100000.0, 0.0);
 uniform vec3 player_forward = vec3(0.0, 0.0, -1.0);
 uniform float player_radius : hint_range(0.05, 3.0) = 0.55;
@@ -155,19 +152,13 @@ void vertex() {
 	// ★★★ 与树叶**同步**（用户要求 ✓）：用**同一套风**（阵风/沿线/湍流/高度加权 ✓）
 	//   相位、方向、风速与叶子**完全一致** ✓ → 两者一起摆 ✓（不再各摆各的 ✗）
 	//   树枝幅度 ×0.45 ✓（比叶子更硬 ✓ 叶子摆得最凶 ✓）；× alive（烧得越深越不摆 ✓）
+	// ★★ fast-tree 风摆移植：烘焙属性（CUSTOM0/CUSTOM1）→ 精确风场；
+	//   没有烘焙数据的网格自动走旧的高度权重路径（观感不变）
+	vec3 tree_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	float tree_base_y = MODEL_MATRIX[3].y;
+	float tree_flex = 0.0;
 	if (wind_enabled) {
-		float base_y = MODEL_MATRIX[3].y;
-		float hw = clamp((VERTEX.y - base_y) / max(0.001, wind_height_ref), 0.0, 1.0);
-		float lev = pow(hw, wind_height_power);
-		float gust = 1.0 + wind_gust * 2.2
-				* (0.5 + 0.5 * sin(TIME * wind_speed * 0.37 + VERTEX.x * 0.013 + VERTEX.z * 0.011));
-		float amp = wind_strength * gust;
-		vec2 dir = normalize(wind_direction + vec2(0.0001));
-		float along = sin(TIME * wind_speed + VERTEX.x * 0.35 + VERTEX.z * 0.28) * 0.35 + 0.65;
-		float across = cos(TIME * wind_speed * 0.83 + VERTEX.x * 0.23 - VERTEX.z * 0.31) * wind_turbulence;
-		vec2 sway = dir * along + vec2(-dir.y, dir.x) * (across * 0.25);
-		float dist = (VERTEX.y - base_y) * wind_sway_scale * amp;
-		VERTEX.xz += sway * (dist * lev) * 0.45 * alive;
+		VERTEX += tree_wind_offset(VERTEX, CUSTOM0, CUSTOM1, tree_world_pos, tree_base_y, 0.45, tree_flex) * alive;
 		// ★★★ 局部风场（龙卷风）：绕中心的切向环流，越靠中心越强
 		if (tornado_strength > 0.001) {
 			float t_base = MODEL_MATRIX[3].y;

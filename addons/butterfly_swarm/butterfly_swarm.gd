@@ -12,7 +12,8 @@ extends Node3D
 ##   ③ **AI**：每只蝴蝶一个 `Butterfly` 子节点，各自跑状态机 + Boids 转向 + 能量。
 ##   ④ **天气**：每帧读 `Weather`（autoload）的风向/风力/雨量，灌给每只蝴蝶；
 ##      风把蝴蝶整体吹偏、阵风把翅膀吹歪、大风大雨时整群转成避风行为。
-##      `Wind`（另一个 autoload）存在时优先用它已经算好的 `cur_*`，两边保持一致。
+##      `Wind`（旧版 autoload；现在的 `WindSystem` 是场景内节点，按分组 `wind_system` 找）
+##      存在时优先用它已经算好的 `cur_*`，两边保持一致。
 ##   ⑤ **编辑器预览**：本脚本是 `@tool`，改参数立刻重建，所以**不用运行**就能看到蝴蝶。
 ##
 ## ★★ 在编辑器里怎么用 ★★
@@ -31,7 +32,8 @@ extends Node3D
 ## ★ 关键依赖（改名字会静默失效）★
 ##   · res://assets/shaders/butterfly_wings.gdshader —— 折翼着色器（契约第 2 节）
 ##   · autoload `Weather`（scripts/world/weather.gd）—— 风/雨/云量
-##   · autoload `Wind`（scripts/wind.gd）—— 可选；有就用它的 cur_dir/cur_strength…
+##   · 风系统 `WindSystem`（scripts/wind.gd；**场景内节点**，加入分组 "wind_system"）——
+##     可选；有就用它的 cur_dir/cur_strength…（旧版是 autoload `Wind`，已移除）
 ##   · addons/butterfly_swarm/sprite_manifest.json —— 素材清单（可选，缺了会现场扫）
 
 # ==================== 依赖（preload，不用 global class 名） ====================
@@ -66,7 +68,7 @@ func scene_tree() -> SceneTree:
 
 
 ## 场景树根节点（autoload 都挂在它下面）。取不到返回 null。
-## 用途：`Wind` / `Weather` 这类 autoload 的查找入口。
+## 用途：`Weather` autoload 与旧版 `Wind` 节点的查找入口（现役风系统用分组 `wind_system` 找）。
 func scene_root() -> Window:
 	var t := scene_tree()
 	return t.root if t != null else null
@@ -852,14 +854,24 @@ func _apply_ground(ground_y: float) -> void:
 ## 读当前风。返回结构（**契约**，Butterfly 与测试都按它读）：
 ##   {"dir": Vector2(世界 XZ 单位向量), "strength": float, "gust": float,
 ##    "turbulence": float, "speed": float, "source": String}
-## 来源优先级：`Wind`（已有算好的 cur_*，且它才是草/植被实际用的那份）-> `Weather` -> 内置兜底。
-## 注意：`Wind` 与 `Weather` 都是 autoload；任何一个都可能不存在（例如单测里只挂一个节点），
+## 来源优先级：风系统（已有算好的 cur_*，且它才是草/植被实际用的那份）-> `Weather` -> 内置兜底。
+##   风系统按两级找：root 下的旧 `Wind` 节点（去 autoload 之前的兼容）-> 分组 `wind_system`
+##   （现役形态：scenes/main.tscn 里的 WindSystem 节点，它在 _ready 里 add_to_group）。
+##   ⚠ 这里**故意不引用**项目的 `WindSystem` class_name：本 addon 要能独立复用（理由同文件头 preload 那段）。
+## 注意：风系统与 `Weather` 都可能不存在（例如单测里只挂一个节点），
 ##   所以每一步都判空；三者都不在时给一套"微风"常量，保证蝴蝶永远有风可用（不会静止死）。
 func wind_now() -> Dictionary:
 	var rt := scene_root()
 	if rt == null:
 		return _fallback_wind("no_tree")
 	var w := rt.get_node_or_null("Wind")
+	if w == null:
+		# ★ 去 autoload 之后风系统是场景内节点：用分组名找，只认节点属性、不认 class_name
+		var t := scene_tree()
+		if t != null:
+			var gs := t.get_nodes_in_group("wind_system")
+			if not gs.is_empty():
+				w = gs[0]
 	if w != null:
 		var d: Variant = w.get("cur_dir")
 		var s: Variant = w.get("cur_strength")

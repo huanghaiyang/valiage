@@ -1,7 +1,7 @@
 # 蝴蝶飞舞（Butterfly Swarm）—— 使用说明
 
 在指定 3D 区域里随机飞舞的蝴蝶群：**多选 PNG 素材**、**按图中轴折成 V 形双翅**、**每只独立扑翼**、
-内置 **Boids + 状态机 AI**，并**接入 `Weather` / `Wind`** 让风真的把蝴蝶吹偏。
+内置 **Boids + 状态机 AI**，并**接入 `Weather` 与风系统（`WindSystem`，分组 `wind_system`）** 让风真的把蝴蝶吹偏。
 
 > 素材：`assets/textures/活体/蝴蝶/`（20 张正面蝴蝶图，**真透明底**）
 > 核心文件：`addons/butterfly_swarm/` ｜ 着色器：`assets/shaders/butterfly_wings.gdshader`
@@ -231,7 +231,8 @@ swarm.stats()                  # 只读快照：live / sprites / speed_avg / sta
 **转向力**：漫游（低频噪声）+ 趋目标 + 同群分离 + **风的拖曳** + 边界软回弹 + 避地。
 **扑翼**：二面角按 `flap_hz` 正弦摆动，**每只频率与相位都不同**（整群不会像机器人整齐扇翅）。
 
-**风怎么进来**（`ButterflySwarm.wind_now()`）：优先读 `Wind` autoload 的 `cur_*`（那才是草/植被实际用的那份）
+**风怎么进来**（`ButterflySwarm.wind_now()`）：优先读风系统的 `cur_*`（`scripts/wind.gd`；现役形态是
+场景内节点 `WindSystem`，按**分组 `wind_system`** 查找，旧版 `Wind` autoload 仅作兼容）（那才是草/植被实际用的那份）
 → 退回 `Weather` 的 `wind` / `wind_dir` / `wind_gust` / `wind_turbulence` / `wind_speed`
 → 都没有时用"微风"常量兜底（保证蝴蝶永远有风可用，不会静止死）。
 风影响三处：① 直接拖曳速度（被吹偏）② 垂直侧向抖动力（吹得歪歪扭扭）③ 顺风省力/逆风补推力。
@@ -283,7 +284,7 @@ swarm.stats()                  # 只读快照：live / sprites / speed_avg / sta
 | 蝴蝶飞出区域 | 边界的越界力必须**随超出量增长**（第一版固定力在阵风下实测外溢 0.39 m） |
 | 树内却报告"没有天气系统" | 裸用 `get_tree()` 在节点刚入树时会拿到 null；统一走 `scene_tree()` / `scene_root()` |
 | 每帧刷 `Node not inside tree` | 树外调 `advance()` 时 `look_at()` 失败；`Butterfly` 里有树外手工基回退 |
-| 换天气蝴蝶没反应 | `wind_influence` 是不是 0；或 `Weather`/`Wind` autoload 被改名 |
+| 换天气蝴蝶没反应 | `wind_influence` 是不是 0；或 `Weather` autoload / 分组 `wind_system` 被改名（旧版是 `Wind` autoload，已移除） |
 
 ---
 

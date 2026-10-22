@@ -164,7 +164,7 @@ var world: Node3D = null
 ## 副作用：
 ##   1) 把自身进程模式设为 ALWAYS。settings_menu.gd 打开设置会真的执行
 ##      get_tree().paused = true；本文件当前没有 _process/输入回调，
-##      所以这行现在更像"与其它 autoload（settings.gd / wind.gd 等）统一的约定"，
+##      所以这行现在更像"与其它 autoload（settings.gd 等）统一的约定"，
 ##      作用是保证日后若在此加入轮询逻辑，暂停期间也不会跟着停摆。
 ##      注意：暂停**不会**阻止属性赋值与信号广播，它只停 _process 一类回调。
 ##   2) 注册 tornado_* 全局着色器参数（幂等，已存在的跳过）。

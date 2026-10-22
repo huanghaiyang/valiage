@@ -28,6 +28,22 @@ func _pump(node: Node, seconds: float) -> void:
 		node.call("_process", DT)
 
 
+## 三级查找风系统节点；一个都找不到就返回 null（本自检跑合成场景，通常就是 null）。
+##   1) WindSystem.get_instance() 2) 分组 "wind_system" 3) 旧 autoload 路径 /root/Wind
+## 位置：本自检不加载 main.tscn，所以「找不到」是正常情况，调用方必须**跳过**而不是判失败。
+func _find_wind() -> Node:
+	var inst: Node = WindSystem.get_instance()
+	if inst != null:
+		return inst
+	var gs := get_nodes_in_group("wind_system")
+	if not gs.is_empty():
+		return gs[0]
+	var r := get_root()
+	if r != null:
+		return r.get_node_or_null("Wind")
+	return null
+
+
 func _process(_d: float) -> bool:
 	if _done:
 		return true
@@ -345,9 +361,13 @@ func _process(_d: float) -> bool:
 			if String(u.get("name", "")) == "wind_bend":
 				f_ok = true
 	_ck("★ 火焰着色器带天气风参数（wind_dir/wind_bend/wind_turb）", f_ok)
-	var wind_node2 := get_root().get_node_or_null("Wind")
-	_ck("★ 火焰能从 Wind 读到当前风向", wind_node2 != null and wind_node2.get("cur_dir") is Vector2,
-			"cur_dir=%s" % str(wind_node2.get("cur_dir") if wind_node2 != null else "无"))
+	# ★ 风系统可能不存在（本自检用**合成场景**跑，不加载 main.tscn）：拿不到就**跳过**，不算失败
+	var wind_node2: Node = _find_wind()
+	if wind_node2 == null:
+		print("  ⊘ 跳过：场景里没有风系统（WindSystem.get_instance / 分组 wind_system / 旧 /root/Wind 都为 null）")
+	else:
+		_ck("★ 火焰能从风系统读到当前风向", wind_node2.get("cur_dir") is Vector2,
+				"cur_dir=%s" % str(wind_node2.get("cur_dir")))
 	# ================================================================
 	# ★★★ 红线：火焰推进做的改动**不得影响火焰灼烧**（用户明确要求）
 	# ================================================================

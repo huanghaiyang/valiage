@@ -5,6 +5,14 @@
 [ext_resource type="Material" path="res://scenes/树/大樱花树/_blend_mat_big_sakura_leaves.tres" id="3_leaf"]
 [ext_resource type="Material" path="res://scenes/树/大樱花树/_blend_mat_big_sakura_flowers.tres" id="4_flower"]
 [ext_resource type="Script" uid="uid://ocpr7iw51c8m" path="res://scripts/world/canopy_chunk_cull.gd" id="5_cull"]
+[ext_resource type="ArrayMesh" path="res://assets/models/树/wind/Bark_Trunk.res" id="wind0"]
+[ext_resource type="ArrayMesh" path="res://assets/models/树/wind/Bark_Branch_L1.res" id="wind1"]
+[ext_resource type="ArrayMesh" path="res://assets/models/树/wind/Bark_Branch_L2.res" id="wind2"]
+[ext_resource type="ArrayMesh" path="res://assets/models/树/wind/Bark_Branch_L3.res" id="wind3"]
+[ext_resource type="ArrayMesh" path="res://assets/models/树/wind/Bark_Branch_L4.res" id="wind4"]
+[ext_resource type="ArrayMesh" path="res://assets/models/树/wind/Bark_Branch_L5.res" id="wind5"]
+[ext_resource type="ArrayMesh" path="res://assets/models/树/wind/Leaves.res" id="wind6"]
+[ext_resource type="ArrayMesh" path="res://assets/models/树/wind/Flowers.res" id="wind7"]
 
 [sub_resource type="ConvexPolygonShape3D" id="ConvexPolygonShape3D_mkuw8"]
 points = PackedVector3Array(1.339236, 0.19036275, 0.2039543, -0.5835943, 0.031998433, -1.2339921, -1.0195692, -0.07170534, -0.9748261, -0.7572831, 2.1556554, 0.46612498, -0.7572831, -0.07170534, 1.5148077, 0.5523775, 2.1556554, -0.7129376, 1.0769498, -0.07170534, 1.2523549, 0.6836681, 0.059328735, -1.2369968, -1.6748421, 0.059328735, 0.073292255, -0.7572831, 2.1556554, -0.45076692, 0.32744795, 1.9781009, 0.623631, 1.339236, 0.19036275, -0.7129376, -0.6262875, 0.19036275, -1.3682232, -0.36429638, 0.32139683, 1.5148077, 0.6786137, 2.0014353, 0.073292255, -0.23330083, 2.1556554, -0.84388185, -0.49529195, 2.1556554, 0.72801346, 1.2079453, 0.19036275, 1.1214106, -0.7572831, 0.19036275, 1.5148077, 0.1593908, 0.19036275, -1.3682232, -1.4125559, -0.07170534, -0.45076692, 1.1923945, 0.036808416, -0.63632965, -1.0195692, 0.19036275, -0.9748261, -1.6748421, 0.059328735, -0.05765198, 0.5665119, 2.0024211, 0.4120741, 1.339236, 0.32139683, -0.5817112, 1.0769498, 0.059328735, 1.2523549, -1.6748421, -0.07170534, 0.073292255, -1.5435514, 0.32139683, 0.2039543, 1.0769498, 0.19036275, -0.9748261, 1.339236, 0.059328735, 0.33489853, -0.49529195, 2.1556554, -0.7129376)
@@ -23,6 +31,7 @@ points = PackedVector3Array(-1.1507316, 13.819751, 0.72857785, -2.4611232, 16.43
 [node name="FastTree" parent="." index="0" unique_id=980188603 groups=["burnable"]]
 
 [node name="Bark_Trunk" parent="FastTree" index="0" unique_id=100281230]
+mesh = ExtResource("wind0")
 material_override = ExtResource("2_bark")
 
 [node name="StaticBody3D" type="StaticBody3D" parent="FastTree/Bark_Trunk" index="0" unique_id=1228133664]
@@ -42,24 +51,31 @@ shape = SubResource("ConvexPolygonShape3D_ymtuv")
 shape = SubResource("ConvexPolygonShape3D_qubvk")
 
 [node name="Bark_Branch_L1" parent="FastTree" index="1" unique_id=1112823747]
+mesh = ExtResource("wind1")
 material_override = ExtResource("2_bark")
 
 [node name="Bark_Branch_L2" parent="FastTree" index="2" unique_id=1481328537]
+mesh = ExtResource("wind2")
 material_override = ExtResource("2_bark")
 
 [node name="Bark_Branch_L3" parent="FastTree" index="3" unique_id=1422706828]
+mesh = ExtResource("wind3")
 material_override = ExtResource("2_bark")
 
 [node name="Bark_Branch_L4" parent="FastTree" index="4" unique_id=1552352465]
+mesh = ExtResource("wind4")
 material_override = ExtResource("2_bark")
 
 [node name="Bark_Branch_L5" parent="FastTree" index="5" unique_id=907888425]
+mesh = ExtResource("wind5")
 material_override = ExtResource("2_bark")
 
 [node name="Leaves" parent="FastTree" index="6" unique_id=1133699150]
+mesh = ExtResource("wind6")
 material_override = ExtResource("3_leaf")
 
 [node name="Flowers" parent="FastTree" index="7" unique_id=68357607]
+mesh = ExtResource("wind7")
 material_override = ExtResource("4_flower")
 
 [node name="CanopyCull" type="Node" parent="." index="1" unique_id=362843379]

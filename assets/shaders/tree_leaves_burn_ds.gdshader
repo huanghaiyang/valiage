@@ -49,6 +49,9 @@ float bayer4(vec2 p) {
 //   burn（0..1 斑点/前沿进度）与 ash（0..1 消失进度）✓ —— 本 shader 两个都支持 ✓
 render_mode blend_mix, cull_disabled, depth_draw_opaque,
 		depth_prepass_alpha, ambient_light_disabled, fog_disabled;
+
+// ★★ fast-tree 风摆移植（逐行对照 materials.js 的 wind 段；见 docs/wind-port-spec.md）
+#include "res://assets/shaders/fast_tree_wind.gdshaderinc"
 // ★★★ `depth_prepass_alpha` 是**必须的** ✓（2026-10-19 实测反馈 ✓）
 //   本 shader 走 blend_mix（= **透明队列** ✓ 因为 "烧完靠 alpha 淡出" 要用到混合 ✓）
 //   但透明队列**默认不写深度** ✗ → 后果两条：
@@ -117,17 +120,12 @@ uniform float edge_jitter : hint_range(0.0, 1.0) = 0.25;
 uniform float sway_amt : hint_range(0.0, 0.5) = 0.06;
 uniform float sway_freq : hint_range(0.0, 6.0) = 1.4;
 uniform float phase = 0.0;
-uniform bool wind_enabled = false;
-uniform vec2 wind_direction = vec2(1.0, 0.0);
-uniform float wind_strength = 0.18;
-uniform float wind_speed = 1.4;
-// ★★★ 参照"风对草的影响"补齐 ✓（用户要求 ✓）：与 grass_wind 同一套风场 ✓
-//   由 `scripts/wind.gd` 每帧写入 ✓（阵风 gust ✓ 湍流 turbulence ✓ 角色倒伏 player_* ✓）
-uniform float wind_gust = 0.15;
-uniform float wind_turbulence = 0.30;
-uniform float wind_height_ref : hint_range(0.01, 30.0) = 8.0;
-uniform float wind_height_power : hint_range(0.5, 4.0) = 1.8;
-uniform float wind_sway_scale : hint_range(0.0, 2.0) = 0.22;
+// ★★ 风场 uniform 全部搬进 assets/shaders/fast_tree_wind.gdshaderinc
+//   （fast-tree 移植：wind_direction/wind_gust/wind_turbulence/wind_speed/
+//     wind_force/wind_frequency/wind_gust_speed/wind_spatial_scale/wind_bias/
+//     wind_flex_falloff/wind_seed + 材质级 wind_sway/wind_is_leaf/
+//     wind_leaf_flutter/wind_leaf_twist + 回退路径的 wind_strength/wind_height_*/
+//     wind_sway_scale）—— 在这里重复声明会变量重定义编译失败 ✗
 uniform vec3 player_pos = vec3(0.0, -100000.0, 0.0);
 uniform vec3 player_forward = vec3(0.0, 0.0, -1.0);
 uniform float player_radius : hint_range(0.05, 3.0) = 0.55;
@@ -161,19 +159,13 @@ void vertex() {
 	// ★★★ 参照"风对草的影响"（与 grass_wind 同一套算法 ✓ 用户要求 ✓）
 	//   阵风 gust ✓ 沿线 along ✓ 侧向湍流 across ✓ 高度加权（wind_height_ref/power ✓）
 	//   × alive（烧得越深摆得越小 ✓）
+	// ★★ fast-tree 风摆移植：烘焙属性（CUSTOM0/CUSTOM1）→ 精确风场；
+	//   没有烘焙数据的网格自动走旧的高度权重路径（观感不变）
+	vec3 tree_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	float tree_base_y = MODEL_MATRIX[3].y;
+	float tree_flex = 0.0;
 	if (wind_enabled) {
-		float base_y = MODEL_MATRIX[3].y;
-		float h = clamp((VERTEX.y - base_y) / max(0.001, wind_height_ref), 0.0, 1.0);
-		float lev = pow(h, wind_height_power);
-		float gust = 1.0 + wind_gust * 2.2
-				* (0.5 + 0.5 * sin(TIME * wind_speed * 0.37 + VERTEX.x * 0.013 + VERTEX.z * 0.011));
-		float amp = wind_strength * gust;
-		vec2 dir = normalize(wind_direction + vec2(0.0001));
-		float along = sin(TIME * wind_speed + VERTEX.x * 0.35 + VERTEX.z * 0.28) * 0.35 + 0.65;
-		float across = cos(TIME * wind_speed * 0.83 + VERTEX.x * 0.23 - VERTEX.z * 0.31) * wind_turbulence;
-		vec2 sway = dir * along + vec2(-dir.y, dir.x) * (across * 0.25);
-		float dist = (VERTEX.y - base_y) * wind_sway_scale * amp;
-		VERTEX.xz += sway * (dist * lev) * alive;
+		VERTEX += tree_wind_offset(VERTEX, CUSTOM0, CUSTOM1, tree_world_pos, tree_base_y, 1.0, tree_flex) * alive;
 		// ★★★ 局部风场（龙卷风 ✓ 进阶需求）：把风改成**绕中心的切向环流** ✓
 		//   越靠中心越强（k² 衰减 ✓）、带一点向内吸（0.25 ✓）、方向由 tornado_swirl 决定 ✓
 		if (tornado_strength > 0.001) {

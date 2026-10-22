@@ -16,7 +16,7 @@
 | `Texture2D.get_image()` 在 BPTC/ETC2 导入下**不可信**（导入器补 2px 边 + 边缘全不透明 + 抽样 19550 点不符） | `.runtime/bfly_tex_vs_raw.gd` |
 | `PackedScene.pack()` 只序列化 `owner == root` 的节点；不设 owner 会**静默保存出空场景** | 生成 demo 场景时实测（.tscn 里只剩一行根节点，而 `ResourceSaver.save()` 返回 OK） |
 | `Mesh.ARRAY_CUSTOM0` 必须是 `PackedByteArray`；传 `PackedFloat32Array` 会让**整个 surface 建不出来**（`surface_count=0`，蝴蝶完全不可见且不报错） | `.runtime/bfly_mesh_diag.gd` 二分实测 |
-| `Weather` / `Wind` 都是 autoload，风是**独立可调维度** | `project.godot` [autoload]；`scripts/world/weather.gd` |
+| `Weather` 是 autoload；风系统是**场景内节点** `WindSystem`（分组 `wind_system`，旧版 `Wind` autoload 已移除），风是**独立可调维度** | `project.godot` [autoload]；`scripts/world/weather.gd`；`scenes/main.tscn`；`scripts/wind.gd` |
 | Godot 4.7 下 `global_shader_parameter_*` 是坏的 | `scripts/wind.gd` 头注释 L10-13，本仓库已实测 |
 | Godot 4.7 spatial shader 的顶点输出是**视图空间**，没有 `MODEL_MATRIX` | `scripts/wind.gd` 同源结论 + 着色器惯例；故折叠全部在**纹理空间/局部空间**解析算，不依赖 MODEL_MATRIX |
 
@@ -311,7 +311,7 @@ func stats() -> Dictionary                  # 测试/调试用只读快照
 * 网格：`ArrayMesh` 单位方块，`ARRAY_TEX_UV` 必须是 `(u, v)`，且 `v=0` 在**纹理上边**。
 * 每个蝴蝶 = `MeshInstance3D` + 自己的 `ShaderMaterial`（独立 `dihedral` 才能各自扑翼）。
 * 找不到 shader / 没有 sprite 时**不崩**，只 `push_warning` 并留空。
-* 风来源优先级：`Wind`（有 `cur_*`）→ `Weather`（`wind`/`wind_dir`/…）→ 内置兜底。**三者都必须有。**
+* 风来源优先级：风系统 `WindSystem`/旧 `Wind` 节点（有 `cur_*`）→ `Weather`（`wind`/`wind_dir`/…）→ 内置兜底。**三者都必须有。**
 
 ### `addons/butterfly_swarm/butterfly.gd` —— `Butterfly`（`Node3D`）
 

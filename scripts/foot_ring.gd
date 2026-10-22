@@ -21,20 +21,21 @@ extends Node
 ##      再对高度做一阶低通，抑制相邻两次重建之间的跳变。
 ##
 ## 【所属系统 / 装配方式】
-##   · 本脚本**不是 autoload**，也不挂在任何 .tscn 上：由 autoload 单例 Wind
-##     （res://scripts/wind.gd，见 project.godot 的 [autoload] 段）在 _ready 里
-##     load("res://scripts/foot_ring.gd").new() 动态实例化，再 add_child 到 Wind 节点下，
-##     节点名固定为 "FootRing"（wind.gd::_setup_foot_ring）。
-##   · Wind 侧开关 sgt_foot_ring（project.godot 的 [Wind] sgt_player/sgt_foot_ring=true）关掉后，
+##   · 本脚本**不是 autoload**，也不挂在任何 .tscn 上：由**场景内节点** WindSystem
+##     （scenes/main.tscn 里的 "Main/WindSystem"，脚本 = res://scripts/wind.gd）在 _ready 里
+##     load("res://scripts/foot_ring.gd").new() 动态实例化，再延后一帧 add_child 到
+##     WindSystem 节点下，节点名固定为 "FootRing"（wind.gd::_setup_foot_ring）。
+##   · WindSystem 侧开关 sgt_foot_ring（选中 WindSystem 节点，在 Inspector 里勾）关掉后，
 ##     本脚本根本不会被创建。
-##   · Wind 还会用 _foot_ring.get("radius") / get("color") 动态读取这里的参数（wind.gd::_ring_num / _ring_color），
-##     让"草着色器里的屏幕圈"（已废弃、默认关）与"这里的实体圈"数值保持一致。
-##     ⚠ 因此不要随意重命名 @export 变量，否则 Wind 侧读不到会**静默**退回它自己的 fallback 值。
+##   · WindSystem 还会用 _foot_ring.get("radius") / get("color") 动态读取这里的参数
+##     （wind.gd::_ring_num / _ring_color），让"草着色器里的屏幕圈"（已废弃、默认关）
+##     与"这里的实体圈"数值保持一致。
+##     ⚠ 因此不要随意重命名 @export 变量，否则 wind.gd 侧读不到会**静默**退回它自己的 fallback 值。
 ##
 ## 【关键依赖】
-##   · autoload：Wind（唯一装配入口）；本节点自身没有子节点依赖。
+##   · 装配入口：WindSystem（scripts/wind.gd，场景内节点，**不是** autoload）；本节点自身没有子节点依赖。
 ##   · 组："player" 组里的第一个 Node3D 视为角色（player.gd 在其 _ready 里 add_to_group("player")）。
-##   · 场景树：生成的网格挂到 get_tree().current_scene 下（**不是**挂在 Wind 下）。
+##   · 场景树：生成的网格挂到 get_tree().current_scene 下（**不是**挂在 WindSystem 下）。
 ##   · 物理：World3D.direct_space_state + PhysicsRayQueryParameters3D 逐点向下打射线求地面高度；
 ##     collision_mask = 0xFFFFFFFF，并排除角色自身 RID。
 ##   · 第三方插件：SimpleGrassTextured（SGT）草的 MultiMeshInstance3D 节点，
@@ -71,7 +72,7 @@ extends Node
 ##   0.30 约等于角色双肩投影的半径，比脚大一圈，既不显眼又不会被草整片盖住。
 ##   调大 -> 圈更醒目，但会伸到角色投影之外、坡地边缘处更容易采到陡面；
 ##   调小 -> 圈缩在脚下，草稍高就完全看不见（要求①下会经常处于隐藏）。
-##   ⚠ 该值即 _rebuild 里的 r_out；Wind 会通过 _ring_num("radius", ...) 读取它。
+##   ⚠ 该值即 _rebuild 里的 r_out；WindSystem 会通过 _ring_num("radius", ...) 读取它。
 @export var radius := 0.30
 ## 环带宽度（米）：从外半径向里量，内半径 r_in = maxf(0.01, radius - width)（在 _rebuild 里计算）。
 ##   默认 0.06 -> 外 0.30 / 内 0.24，细细一条，看起来像"脚下的一圈微光"。
@@ -99,7 +100,7 @@ extends Node
 ##   a（不透明度）默认只有 0.03 —— 极淡，只在被草挡住时起"我还在这"的提示作用。
 ##   调大 -> 圈更实更抢眼（0.1 以上就明显是一圈白光了）；调小 -> 几乎看不见（0 = 完全不可见）。
 ##   rgb 默认纯白：在绿色草地背景上最不容易被误认成草的一部分。
-##   ⚠ Wind 通过 _ring_color("color") 读它；着色器里的 uniform 名是 ring_color（在 _build_node 里写入）。
+##   ⚠ WindSystem 通过 _ring_color("color") 读它；着色器里的 uniform 名是 ring_color（在 _build_node 里写入）。
 @export var color := Color(1.0, 1.0, 1.0, 0.03)
 
 # ==================== 导出参数：可见性（草遮挡） ====================
@@ -196,7 +197,8 @@ var _grass_pts: Array = []
 ## 参数：无。
 ## 返回值：无。
 ## 副作用：改 process_mode；创建 MeshInstance3D + ShaderMaterial，并把网格挂到 current_scene 下。
-## 调用时机：Wind 在 _ready 里 new() + add_child 后由引擎回调（此时 current_scene 已就绪）。
+## 调用时机：WindSystem（scripts/wind.gd）在 _ready 里 new() 并**延后一帧** add_child 后由引擎回调
+##           （此时主场景已装配完，current_scene 已就绪，圈网格才挂得上去）。
 ## 注意事项：这里**不做**地形重建（留给 _process 第一帧），也不检查是否已建过节点，
 ##           所以不要手动再调一次，否则会多出一个网格节点。
 func _ready() -> void:
@@ -219,7 +221,7 @@ func _ready() -> void:
 ##           改动前先读文件头的"已知的坑"；`_mesh.visible = false` 必须在首次绘制之前，
 ##           否则第一帧可能在原点闪出一圈白环。
 func _build_node() -> void:
-	# ⚠ 场景树里会出现**两个**叫 "FootRing" 的节点：一个是挂在 Wind 下的脚本宿主
+	# ⚠ 场景树里会出现**两个**叫 "FootRing" 的节点：一个是挂在 WindSystem 下的脚本宿主
 	# （wind.gd::_setup_foot_ring 里命名），一个就是这里的网格；按名字查找时要注意区分
 	_mesh = MeshInstance3D.new()
 	_mesh.name = "FootRing"
@@ -256,8 +258,8 @@ void fragment() {
 	_mesh.material_override = _mat
 	_mesh.visible = false          # 由可见性判定决定何时显示
 	# ★ 直接挂到主场景（先 add_child 到自身再搬会报 "already has a parent"）
-	# 挂到 current_scene（主场景）而不是自身：本脚本宿主在 Wind 这个 autoload 下，
-	# 网格若挂在自身下就会跟着 Wind 的变换/生命周期走，切场景时容易残留或错位
+	# 挂到 current_scene（主场景）而不是自身：本脚本宿主是 WindSystem 的子节点（不再是 autoload），
+	# 网格若挂在自身下就会跟着 WindSystem 的变换/生命周期走，切场景时容易残留或错位
 	if get_tree() != null and get_tree().current_scene != null:
 		get_tree().current_scene.add_child(_mesh)
 	else:

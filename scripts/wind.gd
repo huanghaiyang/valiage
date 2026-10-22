@@ -1,5 +1,7 @@
+class_name WindSystem
 extends Node
-## 草的风 + 交互桥（自动加载为 Wind）。
+## 草的风 + 交互桥（**场景内实例化节点**：scenes/main.tscn 的 "Main" 下挂着一个名为 "WindSystem" 的
+## Node，脚本 = res://scripts/wind.gd；**不再是 autoload**）。
 ##
 ## 统一管理三种草：
 ##   1) 本插件导出的草      -> blend_alpha.gdshader    （uniform: wind_* / player_*）
@@ -30,9 +32,11 @@ extends Node
 ##   站着不动时 player_move = 0 -> 草自动回弹，不会出现「出生点周围一圈草一直倒着」。
 ##
 ## ★★ 系统归属与运行形态 ★★
-##   · 宿主：作为**脚本型 autoload** 注册（project.godot 的 [autoload] 段里 Wind="*res://scripts/wind.gd"），
-##     全局单例名就是 Wind；脚本树里没有对应节点。
-##     -> 后果：@export 在 Inspector 里**看不到**，真正生效的参数在项目设置 "Wind/sgt_player/*" 里。
+##   · 宿主：**场景内实例化节点** —— scenes/main.tscn 的 "Main"（Node3D）下有一个
+##     名为 "WindSystem" 的 Node（脚本 = 本文件）。project.godot 的 [autoload] 里**没有** Wind。
+##     -> 后果（也是这次改造的目的）：@export 参数在 Inspector 里**看得见、改得动**。
+##   · 取用口：静态 `WindSystem.get_instance()`；_ready() 里 add_to_group("wind_system") 登记，
+##     _exit_tree() 里注销。别的脚本取风的推荐顺序见 get_instance() 上方的注释。
 ##   · 所属系统：世界表现层（风 / 草 / 植被 / 角色与草的交互），与 scripts/world/weather.gd 配套。
 ##   · 天气来源：优先读根节点下名为 "Weather" 的节点
 ##     （wind / wind_gust / wind_turbulence / wind_speed / wind_dir），
@@ -46,7 +50,7 @@ extends Node
 ##   · res://assets/shaders/tree_leaves_burn*.gdshader / tree_burn_keep*.gdshader —— 燃烧后的树叶 / 木（见 _register）
 ##   · 节点 "/root/SimpleGrass"                             —— 可选，读它的 player_position
 ##   · 分组 "player"                                        —— 玩家查找的权威依据（见 _find_player）
-##   · 项目设置 "Wind/sgt_player/*"                         —— 见 _ensure_project_settings
+##   · 分组 "wind_system"                                   —— 本节点的取用登记（见 get_instance / _ready）
 ##
 ## ★★ 主要对外接口（别的脚本 / VFX 会用到）★★
 ##   · cur_dir / cur_strength / cur_gust / cur_turbulence / cur_speed
@@ -61,7 +65,7 @@ extends Node
 ##   · 不要改成「写全局着色器参数」：Godot 4.7 下 global_shader_parameter_* 是坏的（见上）
 ##   · 不要依赖 Weather._wind_materials：bind_world() 里有 clear()，早注册的材质会丢（见上）
 ##   · MultiMeshInstance3D **不是** MeshInstance3D 的子类，两条分支的 API 不能混用（见 _scan）
-##   · 项目设置的键名必须是 ASCII：中文键名会让 has_setting() 失配（见 SGT_SET_PREFIX 上方）
+##   · get_instance() 只在节点**在树里**时有效：_exit_tree 会清空静态引用，别缓存过时的指针
 ##   · 屏幕坐标有**两套尺寸**（视口逻辑 vs 帧缓冲真实像素），只存一套轮廓就会画到错误位置
 ##   · _scan() 每 scan_interval 秒重跑一次，任何跨帧缓存都必须先 clear()，否则会重复累积
 ##   · 高度闸门的目标值只有 0/1，必须平滑之后才能写材质，否则起跳 / 落地会「啪」地弹（见 _update_height_gate）
@@ -70,7 +74,25 @@ extends Node
 ## ★ 渲染阶段的性能约定：逐材质写 uniform 只在 _process 里做一次 / 帧；
 ##   _apply_sgt_occlusion() 例外（resize 时要能立刻重写全部材质）。
 
-# ==================== 配置参数（@export，Inspector 里看不到，见文件头） ====================
+# ==================== 单例取用口（场景实例版） ====================
+
+## 当前场景里的 WindSystem 实例：_ready() 登记、_exit_tree() 注销。
+## ⚠ 只在节点**在树里**时非空；跨场景切换后旧引用会被清掉，不要把它缓存进别的脚本的成员变量。
+static var _instance: WindSystem
+
+
+## 取当前场景的 WindSystem；场景里没有（例如纯特效预览场景）时返回 null，调用方必须判空。
+## 其它脚本读风参数时建议按这个顺序找（**任何一步失败都静默跳过，不许报错**）：
+##   1) WindSystem.get_instance()
+##   2) get_tree().get_first_node_in_group("wind_system")
+##   3) 旧路径 get_node_or_null("/root/Wind")（去 autoload 之前的兼容回退）
+static func get_instance() -> WindSystem:
+	if _instance != null and is_instance_valid(_instance):
+		return _instance
+	return null
+
+
+# ==================== 配置参数（@export，选中 WindSystem 节点即可在 Inspector 里调） ====================
 
 ## 总开关：false 时 _process 第一行就 return —— 既不扫场景也不写任何材质。
 ## ⚠ 副作用：cur_* 会**冻结**在最后一帧的值，读它们的 VFX（火焰等）会拿到不变的风。
@@ -110,10 +132,9 @@ extends Node
 ##   bend：沿移动方向"倒伏"位移（米，叶尖量级）
 ##   debug_sgt_player：每 0.5 秒把这条链的数值打到日志（确认有没有生效）
 ## ★ SGT 草的人物倒伏/分开强度
-##   ⚠ Wind 是**脚本型 autoload**（[autoload] Wind="*res://scripts/wind.gd"），
-##     编辑器场景树里没有节点 → @export 在 Inspector 里看不到。
-##     所以这些参数以**项目设置**为准：项目设置 → Wind → SGT 草人物交互，改完立即生效。
-##     （@export 仍保留，作为代码里的默认值 / 供测试直接 new 出来用）
+##   ⚠ 这些参数**只**以本节点（scenes/main.tscn 的 "WindSystem"）上的 @export 为准：
+##     选中该节点 → Inspector → 改完立即生效（运行中改也立刻生效，下一帧 _write_sgt 就用新值）。
+##     （不再走项目设置 —— 那是去掉 autoload 之前的历史机制，已整套删除）
 @export var sgt_player_bend_radius := 1.4        ## 影响半径（米）
 @export var sgt_player_radial := 1.20            ## 径向"分开"位移（米级手柄）
 @export var sgt_player_bend := 1.00              ## 沿移动方向"倒伏"位移（米级手柄）
@@ -137,6 +158,44 @@ extends Node
 @export var sgt_occlusion_color := Color(1.0, 1.0, 1.0, 0.55)   ## 半透明白（a = 不透明度）
 ## ★ 调试开关（默认关）：启动 2 秒后把玩家送到最近一株 SGT 草上，便于查看轮廓
 @export var debug_snap_to_grass := false
+
+# ★★★ fast-tree 风摆移植 · 树风参数（这根节点在场景里 → Inspector 直接可调）
+##   算法出处：D:\sgames\fast-tree\src\core\materials.js L29-135（逐行移植到
+##   assets/shaders/fast_tree_wind.gdshaderinc），量级约定见 docs/wind-port-spec.md。
+##   树梢顺风偏移 = tree_force_min + clamp(weather.wind, 0, 1) × tree_force_per_wind（米）。
+##   这是 fast-tree autoWind 的档位：strength = 0.03 + k × 0.30（k = 风强度 0..1）。
+##   fast-tree 的默认档位只有十几厘米（"树叶在动、树干基本不动"），
+##   想要更夸张的狂风就把这个值调大（它只影响树，不影响草）。
+@export_group("树风（fast-tree 移植）")
+@export var tree_wind_enabled := true
+## weather.wind（截到 0..1）→ 每 1.0 换算成多少**米**的树梢顺风偏移
+##   fast-tree autoWind：strength = 0.03 + k × 0.30 × rand(0.75..1.25)（k = 风强度 0..1）
+##   所以这里默认 0.30，再叠加下面的 tree_force_min，档位与源实现一致
+@export var tree_force_per_wind := 0.30
+## 静风基线（米）：fast-tree 的 0.03。给 0 就是"完全无风时纹丝不动"
+@export var tree_force_min := 0.03
+## 次波频率倍率（fast-tree uWindFrequency）
+@export var tree_frequency := 1.0
+## 阵风脉动速度（fast-tree uGustSpeed）
+@export var tree_gust_speed := 0.16
+## 世界 xz 相位错开（fast-tree uSpatialScale）：越大，同一次风在树冠不同位置的时间差越明显
+@export var tree_spatial_scale := 0.22
+## 顺风静态偏置（fast-tree uWindBias）：只抬高摆动低谷，风"只推不拉"
+@export var tree_bias := 0.30
+## flex 指数（fast-tree uFlexFalloff）：越大，树干越硬、越只有枝梢在动
+@export var tree_flex_falloff := 1.5
+## 每棵树的随机种子（fast-tree uSeed）；0 = 不偏移
+@export var tree_seed := 0.0
+## ★ 每元素"去同步化"（0 = 完全等于 fast-tree 源实现，>0 = 每片叶/每朵花有自己的节奏）
+##   源实现里所有元素共用一个抖动频率、只靠相位错开 —— 几千片叶/花落在同一棵树上时
+##   会呈现"整片同频振动"，观感机械。这里按烘焙相位给每个元素一个稳定的频率/幅度微差。
+##   0.4~0.6 是比较自然的档位；调到 0 就是严格的源实现（便于回归对比）。
+@export_range(0.0, 1.0) var tree_variation := 0.45
+## 刚性主波"次级项"的频率微差（影响枝条/果实的快慢差异）。
+##   ⚠ 主项保持全局同频，所以不会让叶片相对枝条缓慢漂移；但给太大（>0.5）
+##     仍可能出现"叶片与枝梢轻微错位"，建议 0.1~0.25。
+@export_range(0.0, 1.0) var tree_sway_variation := 0.15
+@export_group("")
 # ==================== 运行时状态（帧缓存 / 材质缓存） ====================
 
 ## 每帧算好的角色屏幕量（供 _write_sgt 写入材质）
@@ -174,6 +233,9 @@ var cur_speed := 1.4
 var _registered := 0
 var _scan_timer := 0.0
 var _mats_ours: Array[ShaderMaterial] = []
+## ★ fast-tree 风摆移植：树（树干/枝条/果实 + 树叶/花朵）单独一份列表。
+##   树的风场用**米级** wind_force，草用**相对** wind_strength，两者语义不同 → 必须分开写。
+var _mats_tree: Array[ShaderMaterial] = []
 var _mats_sgt: Array[ShaderMaterial] = []
 var _seen := {}
 ## ★ 玩家相关缓存
@@ -204,20 +266,22 @@ var _foot_ring: Node = null
 
 # ==================== 生命周期回调 ====================
 
-## 初始化（autoload 启动时调用一次，此时不一定有 current_scene）。
+## 初始化（场景实例进入场景树时调用一次，此时通常已有 current_scene）。
 ## 依次做 5 件事，顺序有依赖：
-##   1) process_mode = ALWAYS —— 暂停 / 时间缩放时仍继续写材质，
+##   1) 登记单例取用口：_instance = self + add_to_group("wind_system")
+##      （**必须放最前面**：同场景里别的节点的 _ready 可能紧接着就来取风）
+##   2) process_mode = ALWAYS —— 暂停 / 时间缩放时仍继续写材质，
 ##      否则暂停后草会「卡」在上一帧的风里不动（想要暂停时也静止就改成 INHERIT）
-##   2) _ensure_project_settings() —— 把 @export 默认值补进项目设置 "Wind/sgt_player/*"
 ##   3) 连接 Viewport.size_changed -> _on_viewport_size_changed
 ##      必须在这里连（而不是 _process 里）：轮廓半径依赖视口尺寸，窗口一变就要立刻重写材质
 ##   4) _setup_foot_ring() —— 在自身下 new 出 FootRing 子节点（受 sgt_foot_ring 开关控制）
 ##   5) _scan() —— 先收一次材质，否则开头 scan_interval 秒内草完全没风
-## 返回值：无。副作用：改 process_mode、写 ProjectSettings、建子节点、连信号、写材质缓存。
+## 返回值：无。副作用：写静态引用 / 加分组、改 process_mode、建子节点、连信号、写材质缓存。
 ## 注意：没有 current_scene 时 _scan() 会安全返回，之后靠 _process 的定时扫描补上。
 func _ready() -> void:
+	_instance = self
+	add_to_group("wind_system")
 	process_mode = Node.PROCESS_MODE_ALWAYS
-	_ensure_project_settings()
 	# ★ 窗口/视口尺寸一变就重算角色屏幕量并立刻写进草材质（否则轮廓会一直按旧尺寸画）
 	var vp := get_viewport()
 	if vp != null and not vp.size_changed.is_connected(_on_viewport_size_changed):
@@ -226,10 +290,22 @@ func _ready() -> void:
 	_scan()
 
 
+## 离开场景树时注销静态取用口，免得别的脚本拿到一个已释放的节点。
+## 只有「当前实例就是自己」才清空：防止同帧新旧两个实例交替时，旧的 _exit_tree 抹掉新实例的引用。
+func _exit_tree() -> void:
+	if _instance == self:
+		_instance = null
+
+
 # ==================== 脚底圈（实体环带） ====================
 
 ## ★★ 建立"角色脚底圈"：贴合地形的实体环带（照搬火焰圈选的地形贴合思路）。
 ##   圈本身是 3D 网格，不再画在草的着色器里 —— 这样才能贴合坡地/台阶。
+## ⚠ add_child 必须 **deferred**：本脚本现在是场景内节点，_ready() 会在主场景
+##   "正在装配子节点"的过程中执行，此时立刻 add_child 会报
+##   "Parent node is busy setting up children, add_child() failed" ——
+##   连带 foot_ring 自己的 _ready（里面要把圈网格挂到 current_scene）一起失败，圈就永远不出现。
+##   延后一帧执行则可以等主场景装配完成。
 func _setup_foot_ring() -> void:
 	if not sgt_foot_ring:
 		return
@@ -239,8 +315,8 @@ func _setup_foot_ring() -> void:
 		return
 	var r: Node = scr.new()
 	r.name = "FootRing"
-	add_child(r)
 	_foot_ring = r
+	add_child.call_deferred(r)
 
 
 ## 读脚底圈的参数（半径 / 颜色 / 宽度），让草的屏幕圈与实体圈用同一组数值，
@@ -382,7 +458,7 @@ func _scan() -> void:
 		print("[Wind] 高度闸门：缓存 %d 株 SGT 草（%d 个草节点）" % [
 				_sgt_grass_pts.size(), _sgt_grass_nodes.size()])
 	if found > 0:
-		print("[Wind] 新增 %d 个受风材质（累计 %d ｜ SGT %d）" % [found, _registered, _mats_sgt.size()])
+		print("[Wind] 新增 %d 个受风材质（累计 %d ｜ 树 %d ｜ SGT %d）" % [found, _registered, _mats_tree.size(), _mats_sgt.size()])
 
 
 ## ★★ 高度闸门：缓存每株 SGT 草的"位置 + 顶部世界高度"。
@@ -448,7 +524,7 @@ func _update_height_gate(delta: float, ppos: Vector3) -> void:
 ##   该计数只用于日志，不影响逻辑）。
 ## 注意：半径用 maxf(0.2, 设置值) 兜底 —— 半径为 0 会让"任何地方都算悬空"，草全都不倒。
 func _gate_target(ppos: Vector3) -> float:
-	var r := maxf(0.2, _sgt_num("bend_radius_m", sgt_player_bend_radius))
+	var r := maxf(0.2, sgt_player_bend_radius)
 	var r2 := r * r
 	var foot_y := ppos.y
 	var margin := sgt_height_margin
@@ -561,10 +637,11 @@ func _register(m: ShaderMaterial) -> int:
 	# ★★ 追加（用户反馈 ✓）：**燃烧后的树叶** 用的是 `tree_leaves_burn*.gdshader` ✗
 	#   它的路径不含 `grass_wind` ✗ → 之前**不被注册** → 叶子换成燃烧材质后就**不受风** ✓✓
 	#   （`tree_burn_keep*` 是木质 ✓ sway_amt=0 ✓ 注册也无位移 ✓ 一并纳入便于统一管理 ✓）
-	var is_ours := path.contains("grass_wind") or path.contains("blend_alpha") \
-			or path.contains("tree_leaves_burn") or path.contains("tree_burn_keep")
+	# ★ fast-tree 风摆移植：树独立成 _mats_tree（米级风场），草留在 _mats_ours（相对风场）
+	var is_grass := path.contains("grass_wind") or path.contains("blend_alpha")
+	var is_tree := path.contains("tree_leaves_burn") or path.contains("tree_burn_keep")
 	var is_sgt := path.contains("simplegrasstextured")
-	if not (is_ours or is_sgt):
+	if not (is_grass or is_tree or is_sgt):
 		return 0
 	var id := m.get_instance_id()
 	if _seen.has(id):
@@ -572,6 +649,8 @@ func _register(m: ShaderMaterial) -> int:
 	_seen[id] = true
 	if is_sgt:
 		_mats_sgt.append(m)
+	elif is_tree:
+		_mats_tree.append(m)
 	else:
 		_mats_ours.append(m)
 	_registered += 1
@@ -636,109 +715,7 @@ func _find_player() -> Node3D:
 # ==================== SGT 人物倒伏（位置 / 位移 / 高度闸门） ====================
 # ---------------------------------------------------------------- SGT 人物倒伏
 
-# ==================== 项目设置（脚本型 autoload 的参数入口） ====================
 
-## ★ 把参数注册成项目设置（脚本型 autoload 的 @export 在 Inspector 里看不到）
-##   项目设置 → Wind → sgt_player → bend_radius_m / radial / bend / gain / debug_log
-##   ⚠ 键名必须用 ASCII：中文键名在 Godot 读取 project.godot 时会失配（实测 has_setting=false）。
-##   中文说明走 Godot 原生的 `_doc` 前缀字段，在项目设置里会显示成说明文字。
-## 项目设置里所有参数的键前缀。
-## ⚠ 必须是 ASCII：中文键名在 Godot 读取 project.godot 时会失配（实测 has_setting 返回 false）。
-const SGT_SET_PREFIX := "Wind/sgt_player/"
-## 短键名 -> 中文说明 的映射表：说明会被写进 "<完整键名>_doc"，
-## Godot 项目设置界面会把该字段显示成这条参数的说明文字。
-## ⚠ 新增参数时这里要同步补一条，否则设置界面里只有数值、没有解释。
-const SGT_SET_KEYS: Dictionary = {
-	"bend_radius_m": "影响半径（米）：以玩家为圆心多大范围内动草",
-	"radial": "径向分开（米级手柄）：以玩家为圆心往外推的力度",
-	"bend": "沿移动倒伏（米级手柄）：顺着行走方向的倒伏力度（站着只剩 25%）",
-	"gain": "位移总增益：最终位移 = 手柄 × 增益 × 权重(0~1)",
-	"debug_log": "打印调试日志：移动时每秒输出一条链路日志",
-	"occlusion_outline": "角色被草遮挡时是否描一圈轮廓",
-	"occlusion_px": "轮廓宽度（像素）",
-	"occlusion_height": "角色高度（米）：用于算视空间深度",
-	"height_gate": "高度闸门：脚底高于附近草顶时不倒伏/不分开（起跳或站高处）",
-	"height_margin": "高度闸门余量（米）：脚底要高出草顶多少才算悬空",
-	"height_gate_smooth": "高度闸门平滑时间（秒）：起跳离草/落地入草的过渡，别瞬时弹回",
-	"foot_radius": "轮廓半径（米）：以角色脚底为圆心的小圈",
-}
-
-## 幂等地把 @export 默认值补写进项目设置（只写「还不存在」的键，**不覆盖**用户已经调好的值）。
-## 同时为每个键写一条 "<完整键名>_doc" 中文说明，供项目设置界面当说明文字显示。
-## 参数：无（默认值表在函数内部，取自同名 @export）。
-## 返回值：无。
-## 调用时机：_ready() 里一次。
-## 副作用：写 ProjectSettings（内存态）。**不会**自动 save()：
-##   运行期改动只影响本次运行，要在编辑器里持久化需手动保存项目设置。
-## 注意：调用方读参数走 _sgt_setting()，所以这里只负责「缺键补默认」，不做类型校验、不做范围限制。
-func _ensure_project_settings() -> void:
-	var defaults: Dictionary = {
-		"bend_radius_m": sgt_player_bend_radius,
-		"radial": sgt_player_radial,
-		"bend": sgt_player_bend,
-		"gain": sgt_player_gain,
-		"debug_log": debug_sgt_player,
-		"occlusion_outline": sgt_occlusion_outline,
-		"occlusion_px": sgt_occlusion_px,
-		"occlusion_height": sgt_occlusion_height,
-		"height_gate": sgt_height_gate,
-		"height_margin": sgt_height_margin,
-		"height_gate_smooth": sgt_height_gate_smooth,
-		"foot_radius": sgt_occlusion_foot_radius,
-	}
-	for k in defaults:
-		var key: String = SGT_SET_PREFIX + String(k)
-		if not ProjectSettings.has_setting(key):
-			ProjectSettings.set_setting(key, defaults[k])
-		var doc: String = key + "_doc"
-		if not ProjectSettings.has_setting(doc):
-			ProjectSettings.set_setting(doc, String(SGT_SET_KEYS.get(k, "")))
-
-
-## 读一条设置（传短键名，如 "radial"；没有 / 类型不对就退回 @export 默认值）
-## ★ 必须逐类型判断：ProjectSettings 里可能存着非数值，
-##   直接 float(x) 会抛 "Nonexistent 'float' constructor" 并且每帧刷屏。
-func _sgt_setting(short_key: String, fallback: Variant) -> Variant:
-	var key := SGT_SET_PREFIX + short_key
-	if not ProjectSettings.has_setting(key):
-		return fallback
-	var v: Variant = ProjectSettings.get_setting(key)
-	if v is float or v is int:
-		return v
-	if v is bool:
-		return v
-	if v is String or v is StringName:
-		var s := String(v).strip_edges()
-		if s.is_valid_float():
-			return s.to_float()
-	# 类型不认识：退回默认值，不再尝试构造函数转换
-	return fallback
-
-
-## 从设置里取一个数字（内部用，绝不做危险的构造转换）
-## 参数 short_key：短键名（如 "radial"，内部会自动拼上 SGT_SET_PREFIX）。
-## 参数 fallback：键不存在 / 类型不对时的返回值（调用方一律传对应的 @export 默认值）。
-## 返回值：float。
-## ⚠ 不要改成直接 float(v)：项目设置里可能存着非数值，转换会抛
-##   "Nonexistent 'float' constructor" 并且**每帧刷屏**（_sgt_setting 已逐类型判断，这里只做窄化）。
-func _sgt_num(short_key: String, fallback: float) -> float:
-	var v: Variant = _sgt_setting(short_key, fallback)
-	if v is float or v is int:
-		return float(v)
-	return fallback
-
-
-## 从设置里取一个开关（内部用）
-## 参数 short_key：短键名；fallback：键不存在 / 类型不对时的返回值。
-## 返回值：bool —— 存的本来就是 bool 就原样返回；存的是数值则按「非 0 即 true」处理
-##   （兼容有人把开关手填成 0 / 1）；其它类型一律退回 fallback。
-func _sgt_bool(short_key: String, fallback: bool) -> bool:
-	var v: Variant = _sgt_setting(short_key, fallback)
-	if v is bool:
-		return v
-	if v is float or v is int:
-		return float(v) != 0.0
-	return fallback
 
 
 ## ★ SGT 草的人物倒伏参数：玩家世界坐标 + 每帧水平位移
@@ -823,7 +800,7 @@ func _update_screen_metrics(p: Node3D) -> void:
 	if px_size.x < 1.0 or px_size.y < 1.0:
 		px_size = logical
 	var base := p.global_position
-	var h := maxf(0.2, _sgt_num("occlusion_height", sgt_occlusion_height))
+	var h := maxf(0.2, sgt_occlusion_height)
 	# ★ 轮廓是"角色脚底的一个小圈"：圆心 = 脚底屏幕位置。
 	#   半径用**相机参数解析计算**，不要用"投影一个世界方向上的点再量长度"：
 	#   后者会随角色朝向/坡度/相机偏航而给出不同长度（世界 +X 方向在俯视+偏航下
@@ -893,7 +870,7 @@ func _on_viewport_size_changed() -> void:
 ##   ★ 必须**每次遍历全部材质**（不像风参数那样一帧只写一次也无所谓）：
 ##     resize 时会立刻调这里，不能只更新第一个材质。
 ##
-## 参数：无（屏幕量取 _occl_* 成员，参数取项目设置）。
+## 参数：无（屏幕量取 _occl_* 成员，开关/宽度取本节点的 @export）。
 ## 返回值：无。
 ## 副作用：往 _mats_sgt 每个材质写 8 个 uniform：
 ##   sgt_player_screen / sgt_player_screen_r / sgt_player_depth /
@@ -904,9 +881,9 @@ func _on_viewport_size_changed() -> void:
 ##   · 已失效的材质用 is_instance_valid 跳过，防止访问已释放对象
 func _apply_sgt_occlusion() -> void:
 	var on := _occl_on
-	if not _sgt_bool("occlusion_outline", sgt_occlusion_outline):
+	if not sgt_occlusion_outline:
 		on = 0.0
-	var px := float(_sgt_num("occlusion_px", sgt_occlusion_px))
+	var px := sgt_occlusion_px
 	var oc := _ring_color(sgt_occlusion_color)
 	# ★ 保留 alpha：着色器用它做轮廓的不透明度（半透明白）
 	var col := Color(oc.r, oc.g, oc.b, oc.a)
@@ -1017,20 +994,39 @@ func _apply_fallback(ppos: Vector3, pmov: Vector3) -> void:
 	_write_sgt(d, fallback_wind, fallback_gust, fallback_turbulence, ppos, pmov)
 
 
-## 我们导出的草：风参数 + 角色倒伏（自己写，不依赖 Weather 的材质列表）
+## 写"我们的草 + 树"的逐材质 uniform。
 ## 参数：
-##   dir2     —— 风向（水平 Vector2，直接进 uniform）
-##   strength —— 风强度；gust —— 阵风；turb —— 湍流；speed —— 风速
+##   dir2     —— 风向（水平 Vector2）
+##   strength —— 风强度（相对量 0..1.5；树侧换算成米级 wind_force = 0.03 + k×0.30）
+##   gust / turb / speed —— 阵风 / 湍流 / 风速
 ##   ppos     —— 玩家世界坐标（写进 player_pos）
-## 写到 _mats_ours 的 uniform：wind_direction / wind_strength / wind_gust / wind_speed /
-##   wind_turbulence / player_pos / player_forward / player_radius / player_bend /
-##   player_spread / player_move
-## 副作用：只改材质，不改脚本状态；is_instance_valid 为 false 的材质会被跳过（防已释放材质报错）。
+## 副作用：写 _mats_ours（草与其它旧受风材质）与 _mats_tree（树）两组材质。
 ## 注意：
-##   · player_move 取 maxf(stand_bend, _move_amt) —— 站着也保持一个基础分开量，不走回 0
-##   · player_radius 在本函数里被写了**两次**，生效的是后一次（见下方行内注释）
+##   · 草用相对风场（wind_strength），树用米级风场（wind_force）—— 语义不同，别混写
+##   · 树还会拿到 fast-tree 移植的 8 个参数（frequency/gust_speed/spatial_scale/bias/
+##     flex_falloff/seed/force + 回退路径用的 wind_strength）
 func _write_ours(dir2: Vector2, strength: float, gust: float, turb: float, speed: float, ppos: Vector3) -> void:
-	for m in _mats_ours:
+	_write_mats(_mats_ours, dir2, strength, gust, turb, speed, ppos, false)
+	_write_mats(_mats_tree, dir2, strength, gust, turb, speed, ppos, true)
+
+
+## 真正的逐材质写入。is_tree = true 时追加 fast-tree 风场参数。
+func _write_mats(list: Array[ShaderMaterial], dir2: Vector2, strength: float, gust: float,
+		turb: float, speed: float, ppos: Vector3, is_tree: bool) -> void:
+	if list.is_empty():
+		return
+	# ★ 站着也保持分开：取「站立基础量」和「移动量」的较大者
+	var bend_amt := maxf(stand_bend, _move_amt)
+	# 站着时半径收小（只撑开贴身那一圈），走起来恢复全半径
+	var radius_now := player_radius * lerpf(stand_radius_scale, 1.0, _move_amt)
+	# ★ 树：把相对风力换算成"树梢顺风偏移（米）"
+	#   公式照 fast-tree autoWind：strength = 0.03 + k×0.30（k 截到 0..1）
+	#   —— 用"基线 + 比例"而不是纯比例，静风（weather.wind=0.18）时树冠仍有轻微呼吸，
+	#      与源实现的档位一致；想要更夸张的狂风就调大 tree_force_per_wind
+	var tree_force: float = tree_force_min + clampf(strength, 0.0, 1.0) * tree_force_per_wind
+	if not tree_wind_enabled:
+		tree_force = 0.0
+	for m in list:
 		if not is_instance_valid(m):
 			continue
 		m.set_shader_parameter("wind_direction", dir2)
@@ -1040,45 +1036,33 @@ func _write_ours(dir2: Vector2, strength: float, gust: float, turb: float, speed
 		m.set_shader_parameter("wind_turbulence", turb)
 		m.set_shader_parameter("player_pos", ppos)
 		m.set_shader_parameter("player_forward", _player_fwd)
-		m.set_shader_parameter("player_radius", player_radius)
+		m.set_shader_parameter("player_radius", radius_now)
 		m.set_shader_parameter("player_bend", player_bend)
 		m.set_shader_parameter("player_spread", player_spread)
-		# ★ 站着也保持分开：取「站立基础量」和「移动量」的较大者
-		var bend_amt := maxf(stand_bend, _move_amt)
 		m.set_shader_parameter("player_move", bend_amt)
-		# 站着时半径收小（只撑开贴身那一圈），走起来恢复全半径
-		# ★ 看起来奇怪但必要：同一个 player_radius 在上面已经写过一次，这里**再写一次覆盖它**。
-		#   set_shader_parameter 是「后写生效」，所以真正起作用的是这一次（半径随移动量缩放）；
-		#   上面那次写入被立刻覆盖，只是历史遗留，别以为两个值会叠加（推测：早期未清理的写法）。
-		m.set_shader_parameter("player_radius", player_radius * lerpf(stand_radius_scale, 1.0, _move_amt))
+		if is_tree:
+			# ★ fast-tree 移植参数（assets/shaders/fast_tree_wind.gdshaderinc）
+			m.set_shader_parameter("wind_force", tree_force)
+			m.set_shader_parameter("wind_freq_scale", tree_frequency)
+			m.set_shader_parameter("wind_variation", tree_variation)
+			m.set_shader_parameter("wind_sway_variation", tree_sway_variation)
+			m.set_shader_parameter("wind_gust_speed", tree_gust_speed)
+			m.set_shader_parameter("wind_spatial_scale", tree_spatial_scale)
+			m.set_shader_parameter("wind_bias", tree_bias)
+			m.set_shader_parameter("wind_flex_falloff", tree_flex_falloff)
+			m.set_shader_parameter("wind_seed", tree_seed)
 
 
-## SimpleGrassTextured 的草：它自己的 singleton 写的是全局（运行时失效）-> 这里补上
-##   ★ 2026-10-08：玩家倒伏/分开也走这条链（逐材质）；着色器里的 uniform 名见
-##     addons/simplegrasstextured/shaders/grass.gdshaderinc 的 sgt_player_pos / _bend / _radial
-##
-## 参数：dir2 —— 风向（内部转成 Vector3(dir2.x, 0.0, dir2.y) 后归一化，y 分量被丢弃）；
-##       strength / gust / turb —— 风强度 / 阵风 / 湍流；
-##       ppos / pmov —— 形参保留了签名统一，但**本函数内部并没有用到**（推测：早期版本用过），
-##       真正写进材质的是成员 _sgt_player_pos 与 _sgt_player_step（在 _update_sgt_player 里算好）。
-## 写出的 uniform：sgt_wind_direction / sgt_wind_strength / sgt_wind_turbulence / sgt_wind_movement /
-##   sgt_player_pos / sgt_player_mov / sgt_player_bend / sgt_player_radial /
-##   sgt_player_bend_radius / sgt_player_gain，末尾还会调 _apply_sgt_occlusion() 写轮廓。
-## 副作用：_mats_sgt 为空时**直接 return** —— 连轮廓都不会写：
-##   所以「SGT 草完全不受风 / 没有轮廓」时，第一件事是查 _mats_sgt 是不是空的（对应 _scan 收集失败）。
-##   另外 debug_log 打开且确实在移动时，每秒最多 print 一条诊断。
-## 注意：4 个项目设置查询被特意提到循环**外面**（原来每个材质每帧查 4 次）；
-##       以后加新参数请保持「循环外取、循环内写」的写法。
 func _write_sgt(dir2: Vector2, strength: float, gust: float, turb: float,
 		_ppos: Vector3, _pmov: Vector3) -> void:
 	if _mats_sgt.is_empty():
 		return
 	var dir3 := Vector3(dir2.x, 0.0, dir2.y).normalized()
-	# ★ 性能：项目设置查询提到**循环外**（原来每个材质每帧查 4 次）
-	var p_radius := _sgt_num("bend_radius_m", sgt_player_bend_radius)
-	var p_radial := _sgt_num("radial", sgt_player_radial)
-	var p_bend := _sgt_num("bend", sgt_player_bend)
-	var p_gain := _sgt_num("gain", sgt_player_gain)
+	# ★ 性能：@export 参数读取提到**循环外**（原来每个材质每帧读 4 次）
+	var p_radius := sgt_player_bend_radius
+	var p_radial := sgt_player_radial
+	var p_bend := sgt_player_bend
+	var p_gain := sgt_player_gain
 	# ★★ 高度闸门：角色脚底高于附近草顶时，倒伏与分开都归零（草平滑回正）
 	var g := _sgt_gate_s
 	# ★ 阵风是「倍数叠加」而不是加法：强度 = 基础风 × (1 + 阵风量)，所以 gust=0 时等于纯基础风
@@ -1104,7 +1088,7 @@ func _write_sgt(dir2: Vector2, strength: float, gust: float, turb: float,
 	#   写成独立函数：窗口尺寸变化时要能"立刻"重写全部材质，而不是等下一次风参数更新
 	_apply_sgt_occlusion()
 	# ★ 诊断台账（打印调试日志 打开时）：只在"确实在动"且每秒最多一次时打出来
-	if not _sgt_bool("debug_log", debug_sgt_player):
+	if not debug_sgt_player:
 		return
 	_dbg_player_t += get_process_delta_time()
 	if _dbg_player_t > 1.0:
@@ -1113,8 +1097,8 @@ func _write_sgt(dir2: Vector2, strength: float, gust: float, turb: float,
 		if step_len > 0.002:
 			print("[Wind] SGT 人物倒伏: 材质 %d 个 ｜ 玩家 %s ｜ 位移 %.3f ｜ radius=%.2f radial=%.2f bend=%.2f ｜ 高度闸门=%.1f(附近 %d 株)" % [
 					_mats_sgt.size(), str(_sgt_player_pos), step_len,
-					_sgt_num("bend_radius_m", sgt_player_bend_radius),
-					_sgt_num("radial", sgt_player_radial),
-					_sgt_num("bend", sgt_player_bend)
+					sgt_player_bend_radius,
+					sgt_player_radial,
+					sgt_player_bend
 					* lerpf(0.25, 1.0, _move_amt),
 					_sgt_gate, _sgt_gate_pts])

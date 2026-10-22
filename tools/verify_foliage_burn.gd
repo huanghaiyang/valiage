@@ -25,6 +25,22 @@ func _pump(node: Node, seconds: float) -> void:
 		node.call("_process", DT)
 
 
+## 三级查找风系统节点；一个都找不到就返回 null（本自检跑合成场景，通常就是 null）。
+##   1) WindSystem.get_instance() 2) 分组 "wind_system" 3) 旧 autoload 路径 /root/Wind
+## 位置：本自检不加载 main.tscn，所以「找不到」是正常情况，调用方必须**跳过**而不是判失败。
+func _find_wind() -> Node:
+	var inst: Node = WindSystem.get_instance()
+	if inst != null:
+		return inst
+	var gs := get_nodes_in_group("wind_system")
+	if not gs.is_empty():
+		return gs[0]
+	var r := get_root()
+	if r != null:
+		return r.get_node_or_null("Wind")
+	return null
+
+
 func _process(_d: float) -> bool:
 	if _done:
 		return true
@@ -438,13 +454,16 @@ func _process(_d: float) -> bool:
 					dw != null and absf(float(dw) - 0.77) < 0.001
 					and dd is Vector2 and absf((dd as Vector2).y - 1.0) < 0.001,
 					"副本 wind_strength=%s wind_direction=%s" % [str(dw), str(dd)])
-		# ---- ★ Wind 自动加载对外暴露"当前风"（供火焰等 VFX 读）----
-		var wind_node := get_root().get_node_or_null("Wind")
-		_ck("★ Wind 暴露 cur_dir/cur_strength（火焰据此随风）",
-				wind_node != null and wind_node.get("cur_dir") is Vector2
-				and wind_node.get("cur_strength") != null,
-				"cur_dir=%s cur_strength=%s" % [str(wind_node.get("cur_dir") if wind_node != null else "无"),
-						str(wind_node.get("cur_strength") if wind_node != null else "无")])
+		# ---- ★ 风系统对外暴露"当前风"（供火焰等 VFX 读）----
+		# 风系统可能不存在（本自检跑合成场景，不加载 main.tscn）：拿不到就**跳过**，不算失败
+		var wind_node: Node = _find_wind()
+		if wind_node == null:
+			print("  ⊘ 跳过：场景里没有风系统（WindSystem.get_instance / 分组 wind_system / 旧 /root/Wind 都为 null）")
+		else:
+			_ck("★ 风系统暴露 cur_dir/cur_strength（火焰据此随风）",
+					wind_node.get("cur_dir") is Vector2 and wind_node.get("cur_strength") != null,
+					"cur_dir=%s cur_strength=%s" % [str(wind_node.get("cur_dir")),
+							str(wind_node.get("cur_strength"))])
 
 	# ---- ★ 内建 burn 路线：不透明植被走这条路（不叠层、不碰透明度问题）----
 	var veg_sh := load("res://assets/shaders/vegetation_wind.gdshader") as Shader

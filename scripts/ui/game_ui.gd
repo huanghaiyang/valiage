@@ -23,7 +23,7 @@
 #       Game        —— Game.Tool 枚举、Game.current_tool、Game.biomass / Game.stone、
 #                      Game.tool_changed / biomass_changed / stone_changed、Game.get_tool_name()
 #       StaffSystem —— 法杖注册表 / 解锁 / 装备（本文件一律用 sys.call("…") 动态调用）
-#       Weather     —— Weather.wind / Wind.wind_dir / Weather.weather_name()
+#       Weather     —— Weather.wind / Weather.wind_dir / Weather.weather_name()
 #   · 外部信号（全部在 setup() 里连接）：
 #       Game.tool_changed            → _on_tool_changed（按钮高亮 + tooltip）
 #       Game.biomass_changed         → _on_biomass_changed
