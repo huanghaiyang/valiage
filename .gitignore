@@ -27,3 +27,5 @@ __pycache__/
 # exr_tools 测试用的探针目录（每次跑测试都会重建，不该进版本库）
 addons/exr_tools/__probe__/
 three-fx-lab/node_modules/
+# RES 查看器测试夹具（每次跑测试都会重建，不该进版本库）
+addons/res_inspector/__probe__/
