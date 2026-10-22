@@ -131,6 +131,13 @@ var _ars_active := false
 var _ars_dir := Vector3.ZERO
 ## 上一次 ARS 切换的时刻（秒）：用于节流，避免每帧来回切。
 var _ars_switch_t := -1.0
+## ★ 这只蝴蝶"对资源的兴趣"（0~1，setup 时随机定死，之后不变）。
+## 用途：只有 `_ars_bias < ars_participation` 的个体才会被资源点吸住 ——
+##   这样队伍里总有一部分在照常巡飞，整群不会**同步**收拢/散开。
+##   （用户反馈"反复在两点之间散开再重聚"：整群同步收拢是最主要的视觉原因之一。）
+var _ars_bias := 0.5
+## 上一处趋花目标（本地坐标）。用于**避免重复回同一个点**（见 `_find_flower_world`）。
+var _last_seek_target: Variant = null
 
 # ==================== 确定性随机 ====================
 ## 由 swarm 注入的随机数发生器（同 seed_value 可复现）。
@@ -172,6 +179,10 @@ func setup(tex: Texture2D, crop_rect: Rect2i, r: RandomNumberGenerator, tuning: 
 	if _wander.length_squared() < 0.0001:
 		_wander = Vector3(1, 0, 0)
 	_wander = _wander.normalized()
+	# ★ 每只蝴蝶对资源的"兴趣"：随机定死（不随时间抖），配合 swarm 的 `ars_participation`
+	#   让"被蜜源吸住"的只有一部分个体 -> 整群不会同步收拢/散开。
+	_ars_bias = r.randf()
+	_last_seek_target = null
 	var sh := shader
 	if sh == null:
 		if ResourceLoader.exists(WINGS_SHADER):
@@ -879,7 +890,17 @@ func _force_seek_or_cruise(delta: float, bounds: AABB, extra: Dictionary) -> Vec
 	# ---- 资源感知（ARS）：由 swarm 注入"资源在哪"，这里算"朝它偏"的方向 ----
 	var ars_on := _flag("area_restricted_search", true)
 	_ars_active = false
-	if ars_on:
+	# ★ 参与度门槛：每只蝴蝶有一个**固定的**随机偏置 `_ars_bias`（setup 时定），
+	#   只有 `_ars_bias < ars_participation` 的才吃 ARS。
+	#   为什么需要它（用户反馈"反复在两点之间散开再重聚"）：
+	#     如果整群都响应同一个资源点，它们就会**同步**一起收拢、一起散开、再一起收回 —— 
+	#     看着像一个整体在两点间来回。真实蝴蝶群里只有一部分个体会被某处蜜源吸住，
+	#     其余照常巡飞 —— 群就不会整体收拢，也不会整体散开。
+	var part := 1.0
+	var pv: Variant = extra.get("ars_participation", 1.0)
+	if pv is float:
+		part = clampf(pv as float, 0.0, 1.0)
+	if ars_on and _ars_bias < part:
 		var hit: Variant = extra.get("ars_hit", false)
 		var ap: Variant = extra.get("ars_pos", null)
 		if hit is bool and (hit as bool) and ap is Vector3:
@@ -927,6 +948,16 @@ func _force_seek_or_cruise(delta: float, bounds: AABB, extra: Dictionary) -> Vec
 		f += Vector3(rng.randf_range(-1.0, 1.0), rng.randf_range(-0.4, 0.4),
 				rng.randf_range(-1.0, 1.0)) * 0.08
 
+	# ---- ④b 先算"聚散阶段"：散 / 聚 的强度，以及本轮聚散中心 ----
+	#   为什么要提前算：聚散阶段要**压制个体趋花力**（见 ⑤ 的 cycle_v），
+	#   否则每只蝴蝶各自冲向自己的花，整群根本不会在同一处聚/散 ——
+	#   实测：只加收拢力 2.8 而不压制个体目标时，质心到中心距离在"聚"阶段
+	#   反而比"散"阶段更大（4.73 m > 4.51 m），等于只散不聚。
+	var gpos: Variant = extra.get("gather_pos", null)
+	var pulse_v := float(extra.get("pulse", 0.0))
+	var regroup_v := float(extra.get("regroup", 0.0))
+	var cycle_v := maxf(pulse_v, clampf(regroup_v, 0.0, 1.0))
+
 	# ---- ⑤ 趋目标（SEEK/DRINK/COURT 才是"冲着某个点去"；CRUISE 不直冲）----
 	var goal: Variant = null
 	if state == State.SEEK or state == State.DRINK or state == State.COURT:
@@ -950,12 +981,46 @@ func _force_seek_or_cruise(delta: float, bounds: AABB, extra: Dictionary) -> Vec
 		var max_range := _num("seek_range_m", 12.0)
 		if dist > 0.05 and dist <= max_range * 1.5:
 			# 距离越近推力越小（接近目标时自然减速/盘旋，而不是一头撞上去）
-			f += to.normalized() * (2.2 * clampf(dist / maxf(0.5, max_range * 0.4), 0.15, 1.0))
-			var hover := float(extra.get("hover", 0.0))
-			if hover > 0.0 and dist < hover:
-				f -= to.normalized() * 1.5
+			# ★ 聚散阶段把个体趋花力压到 25%：让"整群聚到新中心 / 从新中心散开"真的发生，
+			#   而不是每个个体都继续各奔各的花（那正是"散不开也聚不拢"的原因）。
+			var seek_k := 1.0 - 0.75 * cycle_v
+			f += to.normalized() * (2.2 * clampf(dist / maxf(0.5, max_range * 0.4), 0.15, 1.0) * seek_k)
 		else:
 			_target = null
+	# ★★ 群体聚散周期：散 = 从**本轮新中心**外推，聚 = 朝同一个新中心收拢 ★★
+	#   为什么不再用"靠近自己的目标就外推"（旧实现，就是它造成"两点之间反复聚散"）：
+	#     蝴蝶的目标（SEEK 的花 / COURT 的同伴）几乎固定不变，于是
+	#     "冲向目标 -> 进半径后被推开 -> 再冲回去" 形成一个**稳定振荡环**：
+	#     每 25~70 秒重复一次，聚散发生在同一批坐标上。
+	#   现在中心每轮换（swarm 侧 `_new_gather_center()`），所以聚、散都在新地方发生。
+	if gpos is Vector3:
+		var to_g := (gpos as Vector3) - position
+		var d_g := to_g.length()
+		if d_g > 0.05:
+			var dir_g := to_g / d_g
+			# ★★ 关键：**同时改航向**，不能只加力 ★★
+			#   实测教训：CRW 的推进力是 `heading * (want_speed - v·heading) * 3.2`，
+			#   典型可达 7 m/s²，而收拢力只有 2.8 —— 光加力会被 CRW 的随机航向完全盖住，
+			#   实测"聚"阶段质心到中心距离反而变大（6.24 m > 散 5.78 m），等于只散不聚。
+			#   这和之前"边界只推不拐 -> 蝴蝶顶在边界排队"是同一个问题：
+			#   **力只能推，航向才能真的带它走过去**。
+			if pulse_v > 0.5:
+				_crw_heading = (_crw_heading - dir_g * (2.2 * delta)).normalized()
+			elif regroup_v > 0.001:
+				# 收拢时朝中心偏转（强度随 regroup 时间衰减）
+				_crw_heading = (_crw_heading + dir_g * (2.6 * regroup_v * delta)).normalized()
+				_crw_timer = maxf(_crw_timer, 0.15)
+			if pulse_v > 0.5:
+				# 散：离中心越近推得越狠（在中心原地"炸开"的感觉），并整体拔高
+				var hover := maxf(0.5, float(extra.get("hover", 3.0)))
+				var closeness := clampf(1.0 - d_g / hover, 0.0, 1.0)
+				f -= dir_g * (1.0 + 2.0 * closeness)
+				f.y += 0.9
+			elif regroup_v > 0.001:
+				# 聚：朝新中心收拢（强度随时间衰减，避免"啪"一下吸成一坨）
+				# ⚠ 实测调参：原来 1.3 太弱 —— 散开平均 5.9 m 后，收拢阶段质心反而更远
+				#   （6.06 m > 5.86 m），等于"只散不聚"。2.8 才能把质心明显拉回来。
+				f += dir_g * (2.8 * regroup_v)
 	return f
 
 
@@ -1147,6 +1212,33 @@ func _force_bounds(delta: float, bounds: AABB) -> Vector3:
 		if velocity.y < 0.0:
 			velocity.y = 0.0
 		f.y += 2.0
+	# ★★ 把"只推不拐"升级成"真的拐回去"（用户反馈"反复在两点之间散开再重聚"）★★
+	#   实测：只施加反弹力时风力会与边界力**打平**，蝴蝶于是长期**顶在下风边界**排队
+	#   （诊断抓到的聚集点全部落在下风角落 ~(8, 1, -7.5)，紧贴区域边界）。
+	#   阵风一变就散开、风再起又吹回同一角落 —— 看起来就是"总在同一处聚散"。
+	#   真实蝴蝶不会顶着边界飞，它们会**转身**。所以这里顺手改变 CRW 航向：
+	#   在边缘带内把 `_crw_heading` 往**区域内部**偏一点，让它们自己拐出去。
+	#   为什么改航向而不是加大力：力再大也只是"顶着推"，航向一转才是真的离开。
+	var inward := Vector3.ZERO
+	if p.x < lo.x + margin:
+		inward.x += 1.0
+	elif p.x > hi.x - margin:
+		inward.x -= 1.0
+	if p.z < lo.z + margin:
+		inward.z += 1.0
+	elif p.z > hi.z - margin:
+		inward.z -= 1.0
+	if inward.length_squared() > 1e-6:
+		inward = inward.normalized()
+		var cx := (lo.x + hi.x) * 0.5
+		var cz := (lo.z + hi.z) * 0.5
+		var outness := clampf(maxf(
+				absf(p.x - cx) / maxf(0.01, (hi.x - lo.x) * 0.5),
+				absf(p.z - cz) / maxf(0.01, (hi.z - lo.z) * 0.5)), 0.0, 1.0)
+		var steer := lerpf(0.15, 0.6, outness) * 0.35
+		_crw_heading = (_crw_heading + inward * steer * 2.0).normalized()
+		# 航向刚被改过：本决策段别被 CRW 计时器立刻覆盖（否则等于白改）
+		_crw_timer = maxf(_crw_timer, 0.12)
 	return f
 
 
@@ -1383,19 +1475,42 @@ func _find_flower_world(from_world: Vector3, radius: float) -> Vector3:
 	var tree := get_tree()
 	if tree == null:
 		return from_world
-	var best: Node3D = null
-	var best_d := radius * radius
+	# ★★ 不再"永远取最近的一朵"（用户反馈："反复在两点之间散开再重聚"）★★
+	#   旧实现：`if d < best_d` 只保留**距离最小**的那一朵 —— 场景布局不变时
+	#   同一片区域的蝴蝶会永远飞向同一朵花，散开后又收回同一个点。
+	#   现在：
+	#     ① 收集半径内**所有**候选；
+	#     ② 按"**离上一处太近的优先剔除**"（`seek_repeat_avoid_m`）—— 保证下次换地方；
+	#     ③ 在剩下的候选里**偏向近的随机挑**（取最近 K=3 作为池，池内随机）——
+	#        既保持"就近觅食"的合理性，又不会整片区的蝴蝶挤在同一朵上。
+	var cands: Array = []
+	var r2 := radius * radius
 	for g in ["butterfly_target", "flower"]:
 		for n in tree.get_nodes_in_group(g):
 			if n is not Node3D or n == self:
 				continue
-			var d := (n as Node3D).global_position.distance_squared_to(from_world)
-			if d < best_d:
-				best_d = d
-				best = n as Node3D
-	if best == null:
+			var p: Vector3 = (n as Node3D).global_position
+			var d := p.distance_squared_to(from_world)
+			if d <= r2:
+				cands.append([d, p])
+	if cands.is_empty():
 		return from_world
-	return best.global_position
+	cands.sort_custom(func(a, b): return float(a[0]) < float(b[0]))
+	# ② 排除"离上一处太近"的（给"换地方"用）
+	var avoid := maxf(0.0, _num("seek_repeat_avoid_m", 3.0))
+	var pool: Array = []
+	if _last_seek_target is Vector3 and avoid > 0.0:
+		for c in cands:
+			if (c[1] as Vector3).distance_to(_last_seek_target as Vector3) >= avoid:
+				pool.append(c)
+	if pool.is_empty():
+		# 全都太近（候选本来就少/挤）-> 退而求其次：用全量候选
+		pool = cands
+	# ③ 偏向近的随机：取最近 K 个作为池，池内随机
+	var k := mini(3, pool.size())
+	var pick: Vector3 = pool[rng.randi_range(0, k - 1)][1]
+	_last_seek_target = to_local(pick)
+	return pick
 
 
 ## 找落脚点（停歇用）：优先花/叶，其次原地。

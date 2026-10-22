@@ -151,6 +151,16 @@ extends Resource
 @export_range(0.1, 1.0, 0.01) var ars_speed_scale := 0.55
 ## 是否启用 ARS（区域限制搜索）。关掉 = 只按 CRW/Lévy 飞，不理会附近有没有资源。
 @export var area_restricted_search := true
+## ★ 资源点**轮换周期**（秒）。每隔这么久重新挑一个资源点。
+## 为什么必须有它（用户实测反馈："蝴蝶出现聚集行为后，会反复在两点之间散开再重聚"）：
+##   旧实现挑完资源点后**再也不更新**（计时器只设不递减），整群永远被同一个坐标吸引。
+@export_range(1.0, 60.0, 0.5) var ars_rotate_s := 8.0
+## ★ 新资源点必须离上一个至少这么远（米），防止"抽来抽去还在原地"。
+@export_range(0.0, 20.0, 0.5) var ars_min_move_m := 3.0
+## ★ 参与度（0~1）：多少比例的蝴蝶响应资源点。全部响应会让整群**同步**收拢/散开。
+@export_range(0.0, 1.0, 0.01) var ars_participation := 0.55
+## ★ 趋花时避开上一处的半径（米）：下次挑目标会跳过离上次这么近的候选。
+@export_range(0.0, 20.0, 0.5) var seek_repeat_avoid_m := 3.0
 ## 侧向摆动幅度（米/秒²）：给直线段叠一层左右摆（真实蝴蝶在直飞段也在小幅左右晃）。
 @export_range(0.0, 3.0, 0.05) var lateral_weave := 0.55
 ## 侧向摆动的频率（Hz）：太快像蜂鸟、太慢看不出来。

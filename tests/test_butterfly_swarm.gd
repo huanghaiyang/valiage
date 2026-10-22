@@ -1221,6 +1221,156 @@ func test_export_group_names_have_no_slash() -> void:
 	print("[蝴蝶测试] 分组名检查：%d 个分组，均不含 `/`" % groups.size())
 
 
+## ★★ 聚散中心必须**每轮都换坐标**（用户反馈："蝴蝶出现聚集行为后，会反复的在两点之间
+## 散开再重聚，这种行为非常不合理，起码要换个坐标进行聚散"）★★
+##
+## 根因（实测定位）：旧实现的"聚"和"散"都围绕**每只蝴蝶自己的目标**（SEEK 的花 /
+## COURT 的同伴）发生 —— 目标几乎固定不变，于是
+## "冲向目标 -> 进入 hover 半径被推开 -> 再冲回去" 形成一个**稳定振荡环**，
+## 每 25~70 秒重复一次，聚散永远发生在同一批坐标上。
+## 修法：每轮脉冲开始前用 `_new_gather_center()` 挑一个**离最近几轮都够远**的新中心。
+func test_gather_center_rotates_each_cycle() -> void:
+	var paths := BFLY_IO.list_butterfly_paths()
+	var tex := load(String(paths[0])) as Texture2D
+	var sw = SWARM.new()
+	track(sw)
+	sw.set_sprite_textures([tex])
+	sw.count = 0          # 只要群组逻辑，不建蝴蝶（快）
+	sw.region_size = Vector3(12, 1.4, 12)
+	sw.region_offset = Vector3(0, 1.2, 0)
+	sw.gather_min_move_m = 3.0
+	sw.gather_history_n = 3
+	# 造 8 朵花（3×3 网格去掉中心，间距 4.5 m）
+	var host := Node3D.new()
+	track(host)
+	var loop := Engine.get_main_loop()
+	if loop is SceneTree:
+		(loop as SceneTree).root.add_child(host)
+	for gx in [-4.5, 0.0, 4.5]:
+		for gz in [-4.5, 0.0, 4.5]:
+			if is_equal_approx(gx, 0.0) and is_equal_approx(gz, 0.0):
+				continue
+			var n := Node3D.new()
+			n.position = Vector3(gx, 1.0, gz)
+			n.add_to_group("flower")
+			host.add_child(n)
+	host.add_child(sw)
+	var centers: Array = []
+	for i in range(6):
+		sw._new_gather_center()
+		var g: Variant = sw._gather_pos
+		assert_true(g is Vector3, "第 %d 轮应选出聚集中心" % (i + 1))
+		centers.append(g)
+	# ① 相邻两轮必须换坐标（>= gather_min_move_m）
+	var min_d := 1.0e9
+	for i in range(1, centers.size()):
+		min_d = minf(min_d, (centers[i] as Vector3).distance_to(centers[i - 1] as Vector3))
+	assert_true(min_d >= sw.gather_min_move_m - 1e-3,
+			"相邻两轮中心必须至少相距 %.1f m（实测最小 %.2f m）—— 这就是\"换个坐标聚散\""
+			% [sw.gather_min_move_m, min_d])
+	# ② 不许回到最近几轮的历史点
+	var back := 0
+	for i in range(1, centers.size()):
+		for j in range(maxi(0, i - 1 - sw.gather_history_n), maxi(0, i - 1)):
+			if (centers[i] as Vector3).distance_to(centers[j] as Vector3) < 1.0:
+				back += 1
+				break
+	assert_eq(back, 0, "不该回到最近 %d 轮出现过的中心（实测 %d 次）"
+			% [sw.gather_history_n, back])
+	# ③ 历史列表长度受 gather_history_n 限制
+	assert_true(sw._gather_hist.size() <= sw.gather_history_n,
+			"历史中心数应 <= gather_history_n（实测 %d <= %d）"
+			% [sw._gather_hist.size(), sw.gather_history_n])
+	print("[蝴蝶测试] 聚散中心轮换：6 轮 ｜ 相邻最小 %.2f m ｜ 回到历史 %d 次 ｜ 历史 %d 个"
+			% [min_d, back, sw._gather_hist.size()])
+
+
+## ★ 「散」要真的往外推、「聚」要真的往里收（并改变 CRW 航向）★
+##
+## 为什么必须**改航向**而不能只加力（实测教训）：
+##   CRW 的推进力是 `heading * (want_speed - v·heading) * 3.2`，典型可达 7 m/s²，
+##   而收拢力只有 2.8 —— 光加力会被 CRW 的随机航向完全盖住。
+##   实测"聚"阶段质心到中心距离反而更大（6.24 m > 散 5.78 m），等于只散不聚。
+##   改成"同时把 `_crw_heading` 朝中心偏转"之后才真的收得回来。
+func test_gather_cycle_scatter_and_regroup() -> void:
+	var paths := BFLY_IO.list_butterfly_paths()
+	var tex := load(String(paths[0])) as Texture2D
+	var crop := BFLY_IO.detect_bbox(String(paths[0]))
+	var bounds := AABB(Vector3(-8, 0.4, -8), Vector3(16, 3, 16))
+	var center := Vector3(0.0, 2.0, 0.0)
+
+	# ---- 散：力应指向"远离中心"；航向应被推离中心 ----
+	var b = _new_butterfly()
+	b.setup(tex, crop, _rng(31), {"size_m": 0.22, "flap_hz": 8.0})
+	b.spawn(bounds)
+	b.position = center + Vector3(0.6, 0.0, 0.0)      # 离中心 0.6 m（hover 半径内）
+	b.state = BFLY.State.CRUISE
+	b.velocity = Vector3.ZERO
+	var out_dir := Vector3(0.6, 0.0, 0.0).normalized()
+	b.set("_crw_heading", Vector3(0.0, 0.0, 1.0))     # 航向先指向 +Z（与"向外"无关）
+	var f_pulse: Vector3 = b.call("_force_seek_or_cruise", 1.0 / 60.0, bounds,
+			{"gather_pos": center, "pulse": 1.0, "hover": 4.0})
+	var dot_pulse := f_pulse.dot(out_dir)
+	assert_true(dot_pulse > 0.0,
+			"「散」时合力应朝**远离中心**方向（实测径向分量 %.2f，应 > 0）" % dot_pulse)
+	# （下面还会用"增量"方式再验一次散的方向，两者互补：
+	#   这里要求"合力朝外"，如果刚好朝外飞应该满足；增量验的是"我加上去的力"朝外。）
+
+	# ---- 聚：**用增量**量测（隔离 CRW 的影响）----
+	# 为什么不直接断言合力朝内：CRW 的推进力是 `heading * (want_speed - v·heading) * 3.2`，
+	# 典型可达 7 m/s²。如果蝴蝶恰好朝外飞，合力仍然是朝外的 —— 那是正确行为（"要转弯得有时间"），
+	# 不是 bug。所以正确的断言是：**我这次加上去的聚/散力**方向对不对，即
+	# "有 gather 参数" 与 "没有" 两次调用的差值（RNG 噪声只有 ±0.08，不影响判断）。
+	var b2 = _new_butterfly()
+	b2.setup(tex, crop, _rng(32), {"size_m": 0.22, "flap_hz": 8.0})
+	b2.spawn(bounds)
+	b2.position = center + Vector3(3.0, 0.0, 0.0)      # 离中心 3 m
+	b2.state = BFLY.State.CRUISE
+	var out2 := Vector3(3.0, 0.0, 0.0).normalized()    # 由中心指向蝴蝶 = "向外"
+	var heading0 := Vector3(0.0, 0.0, 1.0)             # 与径向垂直，避免干扰判断
+	b2.velocity = Vector3.ZERO
+	b2.set("_crw_heading", heading0)
+	var f_base: Vector3 = b2.call("_force_seek_or_cruise", 1.0 / 60.0, bounds, {})
+	b2.velocity = Vector3.ZERO
+	b2.set("_crw_heading", heading0)
+	var f_regroup: Vector3 = b2.call("_force_seek_or_cruise", 1.0 / 60.0, bounds,
+			{"gather_pos": center, "regroup": 1.0})
+	var d_regroup := (f_regroup - f_base).dot(out2)
+	assert_true(d_regroup < 0.0,
+			"「聚」增量必须朝**靠近中心**方向（实测 %.2f，应 < 0）" % d_regroup)
+	# 航向也要被带向中心（多帧累积，CRW 每次重掷会部分抵消，所以给 30 帧）
+	var inward_before: float = heading0.dot(-out2)
+	var inward_after := inward_before
+	for i in range(30):
+		b2.call("_force_seek_or_cruise", 1.0 / 60.0, bounds,
+				{"gather_pos": center, "regroup": 1.0})
+		inward_after = (b2.get("_crw_heading") as Vector3).dot(-out2)
+	assert_true(inward_after > inward_before,
+			"「聚」时 CRW 航向应被拉向中心（朝内分量 %.3f -> %.3f）"
+			% [inward_before, inward_after])
+	# 「散」的增量也必须朝外
+	var b3 = _new_butterfly()
+	b3.setup(tex, crop, _rng(33), {"size_m": 0.22, "flap_hz": 8.0})
+	b3.spawn(bounds)
+	b3.position = center + Vector3(0.6, 0.0, 0.0)
+	b3.state = BFLY.State.CRUISE
+	b3.velocity = Vector3.ZERO
+	b3.set("_crw_heading", heading0)
+	var f_base3: Vector3 = b3.call("_force_seek_or_cruise", 1.0 / 60.0, bounds, {})
+	b3.velocity = Vector3.ZERO
+	b3.set("_crw_heading", heading0)
+	var f_pulse3: Vector3 = b3.call("_force_seek_or_cruise", 1.0 / 60.0, bounds,
+			{"gather_pos": center, "pulse": 1.0, "hover": 4.0})
+	var d_pulse := (f_pulse3 - f_base3).dot(out_dir)
+	assert_true(d_pulse > 0.0,
+			"「散」增量必须朝**远离中心**方向（实测 %.2f，应 > 0）" % d_pulse)
+	print("[蝴蝶测试] 聚散力向（增量）：散 %+.2f（应 >0）｜ 聚 %+.2f（应 <0）｜ 航向朝内 %.2f -> %.2f"
+			% [d_pulse, d_regroup, inward_before, inward_after])
+	b3.free()
+	b.free()
+	b2.free()
+
+
 ## ★ 批量加素材 API（用户在检查器里点的就是这些）：
 ##   add_sprites_from_paths / add_all_sprites_from_folder / add_random_sprites /
 ##   clear_sprites / sprite_summary。

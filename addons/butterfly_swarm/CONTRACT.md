@@ -341,6 +341,23 @@ func stats() -> Dictionary
 `wander_jitter`、`separation_m`、`wind_drag`、`seek_range_m`、`rest_energy`、
 `shelter_wind`（风速超过它就去躲）、`iridescence`、`backlight`、`tint` 等。
 
+#### 聚集 / 聚散 / ARS 段（**"聚散必须换坐标"是硬约定**）
+
+| 参数 | 默认 | 契约 |
+| --- | --- | --- |
+| `heading_persistence` `turn_scale_deg` `turn_heavy_p/deg` `levy_alpha` `step_time_s` `lateral_weave(_hz)` | 0.72 / 25 / 0.06 / 110 / 1.6 / 0.45 / 0.55 / 1.1 | CRW + Lévy 飞行模型（出处见该文件顶部注释） |
+| `area_restricted_search` `ars_radius_m` `ars_turn_scale_deg` `ars_speed_scale` `ars_participation` | true / 3.0 / 55 / 0.55 / 0.55 | ARS；`ars_participation` 让只有一部分个体响应（防整群同步聚散） |
+| `ars_rotate_s` `ars_min_move_m` | 8.0 / 3.0 | **资源点必须按周期轮换**，且新点离旧点 ≥ `ars_min_move_m` |
+| `seek_repeat_avoid_m` | 3.0 | 趋花目标必须避开"上一处"，不许总回同一朵 |
+| `gather_min_move_m` `gather_history_n` | 4.0 / 3 | **每一轮聚散中心都必须离最近几轮 ≥ `gather_min_move_m`**（用户硬性要求） |
+| `pulse_interval_min_s` `pulse_interval_max_s` `regroup_s` | 25 / 70 / 6.0 | 聚散周期与收拢时长 |
+
+> ⚠ 实现约定（踩过坑，别改回去）：
+> 1. **"聚/散"必须同时偏转 `_crw_heading`**，不能只加力 —— CRW 推进力最高约 7 m/s²，
+>    光加力会被随机航向盖住，实测会出现"只散不聚"。
+> 2. **候选排除集必须包含"当前值"**（`_gather_pos` 末尾才进历史），否则会"自己选回自己"。
+> 3. ARS 资源点的计时器**必须真的递减**（旧代码只赋值不递减 -> 永久冻结，这是历史 bug）。
+
 ## 4. 素材清单契约
 
 `addons/butterfly_swarm/sprite_manifest.json`（由 `tools/analyze_butterflies.gd` 生成）：

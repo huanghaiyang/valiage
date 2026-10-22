@@ -260,6 +260,20 @@ func scene_root() -> Window:
 @export_range(1.0, 120.0, 1.0) var ars_turn_scale_deg := 55.0
 ## ARS 速度上限乘子（0~1）：在花丛里飞得更慢更黏。
 @export_range(0.1, 1.0, 0.01) var ars_speed_scale := 0.55
+## ★ 资源点**轮换周期**（秒）：每隔这么久重新挑一个资源点。
+## 为什么必须有它（用户反馈"反复在两点之间散开再重聚"）：
+##   旧实现挑完资源点后**再也不更新**（计时器只设不递减），于是整群永远被
+##   同一个坐标吸引 -> 收拢、散开、再收回同一点。现在默认 8 秒换一处。
+@export_range(1.0, 60.0, 0.5) var ars_rotate_s := 8.0
+## ★ 新资源点必须离上一个至少这么远（米）。防止"抽来抽去还是在原地"。
+@export_range(0.0, 20.0, 0.5) var ars_min_move_m := 3.0
+## ★ 参与度（0~1）：有多少比例的蝴蝶会响应资源点。
+## 1.0 = 全部响应（整群会同步收拢，容易像"两点往返"）；0.55 = 只有一部分被吸住，
+## 其余照常巡飞 —— 群就不会整体收拢/散开。0 = 完全不响应（等于关掉 ARS 的吸引力）。
+@export_range(0.0, 1.0, 0.01) var ars_participation := 0.55
+## ★ 趋花时**避开上一处**的半径（米）：下次挑目标会跳过离上一次这么近的候选。
+## 这就是"别总回同一朵花"的保证。
+@export_range(0.0, 20.0, 0.5) var seek_repeat_avoid_m := 3.0
 
 @export_group("草交互 Grass (sgt)")
 ## 蝴蝶把草压弯的影响半径（米）。
@@ -312,6 +326,18 @@ func scene_root() -> Window:
 @export var ground_avoid := true
 ## 是否让整群偶尔集体腾起（晴天的"群飞"脉冲）。关掉每只各飞各的。
 @export var flock_pulses := true
+## ★ 群体聚散脉冲的最短/最长间隔（秒）。
+## 抽成参数是为了能快速验证：设成 3/5 就能几秒看一轮"聚—散—聚"，
+## 而不用等默认的 25~70 秒。
+@export_range(1.0, 120.0, 0.5) var pulse_interval_min_s := 25.0
+@export_range(1.0, 180.0, 0.5) var pulse_interval_max_s := 70.0
+## ★★ 新一轮聚散的中心必须离上一轮至少这么远（米）★★
+## 这是对"反复在两点之间散开再重聚"的直接修法：每轮开始前先挑一个
+## **和上一次不同**的聚集中心，再去那儿聚、再从那散。
+## 设 0 = 关闭（退回旧行为：永远在同一个地方聚散，不推荐）。
+@export_range(0.0, 30.0, 0.5) var gather_min_move_m := 4.0
+## 记忆多少轮历史中心（挑选新中心时会避开这些点，避免"来回两个点"）。
+@export_range(1, 6, 1) var gather_history_n := 3
 ## 受惊源：放进这个节点的路径（例如玩家）。靠近时蝴蝶会 FLEE。
 ## 留空则自动找分组 "player"（本项目玩家就在这个组里，见 scripts/wind.gd 的同一约定）。
 @export_node_path("Node3D") var threat_path: NodePath
@@ -333,6 +359,19 @@ var _wind_cache: Dictionary = {}
 ## 群体腾起脉冲：> 0 时整群获得一个额外的向上力（见 _process 的 extra.hover）。
 var _pulse_t := 0.0
 var _pulse_cooldown := 20.0
+## ★ 本轮聚散的**中心**（本地坐标；null = 还没开始过一轮）。
+## 用户反馈"反复在两点之间散开再重聚"的修法核心：
+##   旧实现里 `hover` 的反推中心 = 每只蝴蝶**自己的目标**（SEEK 的花 / COURT 的同伴），
+##   而这些目标基本固定 -> 每轮聚散都回到同一处，形成稳定的"两点往返"振荡环。
+##   现在每轮开始前先挑一个**离上一轮至少 `gather_min_move_m`** 的新中心，
+##   把"聚到哪、从哪散"都换掉。
+var _gather_pos: Variant = null
+## 历史聚集中心（最多 `gather_history_n` 个，最旧的先丢）：挑选新中心时避开它们。
+var _gather_hist: Array = []
+## "向新中心聚"阶段的剩余秒数（脉冲结束后开始倒计时）。
+var _regroup_t := 0.0
+## "向新中心聚"阶段时长（秒）。散完以后要收回来，否则只散不聚。
+@export_range(0.0, 20.0, 0.5) var regroup_s := 6.0
 ## 区域线框（debug_draw_region）用的 MeshInstance3D。
 var _region_gizmo: MeshInstance3D = null
 ## 自动贴地的重试计时：找不到地形时别每帧 raycast。
@@ -386,11 +425,21 @@ func _process(delta: float) -> void:
 	if flock_pulses:
 		_pulse_cooldown -= dt
 		if _pulse_cooldown <= 0.0:
-			_pulse_cooldown = _rng.randf_range(25.0, 70.0)
+			var cmin := minf(pulse_interval_min_s, pulse_interval_max_s)
+			var cmax := maxf(pulse_interval_min_s, pulse_interval_max_s)
+			_pulse_cooldown = _rng.randf_range(cmin, cmax)
 			_pulse_t = _rng.randf_range(1.2, 2.5)
+			# ★ 每轮开始前先挑一个"和最近几轮不同"的新聚集中心
+			#   （这是"起码要换个坐标进行聚散"的实现点）
+			_new_gather_center()
 		if _pulse_t > 0.0:
 			_pulse_t -= dt
-	var extra := _build_extra()
+			if _pulse_t <= 0.0:
+				# 脉冲结束 -> 进入"向新中心聚"阶段（聚散周期 = 散 -> 聚 -> 停）
+				_regroup_t = maxf(0.0, regroup_s)
+		elif _regroup_t > 0.0:
+			_regroup_t -= dt
+	var extra := _build_extra(dt)
 	# ★ 邻居列表**每帧一次算好**（而不是在循环里 duplicate()+remove_at()）：
 	#   旧写法对每只蝴蝶都复制一次整张位置表再删一项，是 O(n²) 的**数组拷贝**开销
 	#   （60 只 = 每帧 60 次 60 元素复制）。这里一趟遍历填好所有列表，复杂度只剩 O(n²) 的
@@ -427,9 +476,15 @@ var _grass_scan_t := 0.0
 ## 当前生效的蝴蝶插槽数（= 实际推给草的数量，调试/测试可读）。
 var _grass_slots := 0
 ## ★ 资源点缓存（**本地坐标**）与它的刷新计时器。null = 当前没有可用资源点。
-## 语义：这是"区域限制搜索（ARS）"要用的蜜源位置，由 `_refresh_resource()` 每 0.5 秒更新一次。
+## 语义：这是"区域限制搜索（ARS）"要用的蜜源位置，由 `_refresh_resource(delta)` 按 `ars_rotate_s` 周期轮换。
 var _flower_pos: Variant = null
-var _flower_scan_t := 0.0
+## 资源点**轮换**计时器（秒）。到点才重新挑资源点 —— 见 `_refresh_resource()`。
+## ★ 这里原来是 `_flower_scan_t`，但**全文件没有任何地方递减它**，
+##   导致资源点只算了一次就永久冻结（用户反馈"反复在两点之间散开再重聚"的根因）。
+##   现在由 `_refresh_resource(delta)` 每帧递减。
+var _resource_rotate_t := 0.0
+## 资源点挑选用的独立 RNG（与蝴蝶的 rng 分开，避免"挑点"扰动蝴蝶的随机序列）。
+var _res_rng := RandomNumberGenerator.new()
 ## 调试：最近一次草材质扫描的结果说明（`_grass_mats` 为空时用它定位）。
 var _grass_dbg_note := ""
 
@@ -995,14 +1050,24 @@ func _neighbor_lists() -> Array:
 ## 内容：threat（受惊源位置）/ partner（随机配对的同伴位置）/ hover（群体腾起脉冲时的盘旋半径）
 ##       / ars_hit + ars_pos（★ 附近有没有资源，供"区域限制搜索 ARS"用）。
 ## 注意：每帧都取一次 threat 位置（很便宜），但不做 raycast、不遍历分组。
-func _build_extra() -> Dictionary:
+func _build_extra(delta: float = 0.0) -> Dictionary:
 	var e: Dictionary = {}
 	var t := _find_threat()
 	if t != null:
 		e["threat"] = to_local(t.global_position)
+	# ★★ 群体聚散周期（"换个坐标聚散"的实现）★★
+	#   散（pulse）：从 `_gather_pos` 这个**本轮新中心**向外推开 + 整体拔高
+	#   聚（regroup）：脉冲结束后一段时间，朝同一个新中心收拢
+	#   centre 每轮都换（`_new_gather_center()`），所以不会在"同一对点"之间往返。
+	#   ⚠ 旧实现是 `e["hover"] = region_size.x * 0.35` + 蝴蝶侧"靠近自己目标就外推"，
+	#     那会形成围绕**固定目标**的稳定振荡环 —— 就是用户看到的"两点之间反复聚散"。
 	if _pulse_t > 0.0:
-		# 腾起脉冲：给一个"盘旋"行为（hover 半径内会反推，形成绕圈）
 		e["hover"] = region_size.x * 0.35
+		e["pulse"] = 1.0
+	elif _regroup_t > 0.0:
+		e["regroup"] = clampf(_regroup_t / maxf(0.1, regroup_s), 0.0, 1.0)
+	if _gather_pos is Vector3:
+		e["gather_pos"] = _gather_pos
 	# 求偶配对：每帧给一个随机同伴，蝴蝶在 COURT 状态时会去绕它
 	if _butterflies.size() >= 2 and rng_ok():
 		var a := _rng.randi_range(0, _butterflies.size() - 1)
@@ -1013,9 +1078,14 @@ func _build_extra() -> Dictionary:
 				e["partner"] = pb.position
 	# 资源感知（ARS）：附近有花/蜜源 -> 蝴蝶切成"原地打转"的搜索模式。
 	# 这是"环境互动"的感知那一半（模型出处见 butterfly_tuning.gd 顶部）。
-	# 资源点来源见 `_refresh_resource()`；缓存 null 表示"这次没找到"。
+	# 资源点来源见 `_refresh_resource(delta)`；null 表示"这次没找到"。
+	# ★ 资源点会按 `ars_rotate_s` **轮换**（用户反馈"反复在两点之间散开再重聚"的修法）。
 	if _tuning_num("area_restricted_search", 1.0) > 0.5:
-		_refresh_resource()
+		_refresh_resource(delta)
+		# ★ 参与度：不是每只蝴蝶都对同一个资源点起反应（否则整群锁步、一起收拢一起散开）。
+		#   具体"我这只蝴蝶参不参与"由 Butterfly 侧用**每只固定的随机数**决定
+		#   （见 butterfly.gd 的 `_ars_participate`），这里只把整体比例传下去。
+		e["ars_participation"] = clampf(_tuning_num("ars_participation", 0.55), 0.0, 1.0)
 		var fpos: Variant = _flower_pos
 		if fpos is Vector3:
 			e["ars_hit"] = true
@@ -1032,32 +1102,162 @@ func _build_extra() -> Dictionary:
 ##      用户看不到任何环境响应，等于没接。退回区域中心至少能保证
 ##      "蝴蝶会在场地中央聚集打转"，行为上仍然是对的（中心本来就是最可能有资源的地方）。
 ##
-## 副作用：写 `_flower_pos`（本地坐标）与 `_flower_scan_t`。
-func _refresh_resource() -> void:
-	if _flower_scan_t > 0.0:
+## 副作用：写 `_flower_pos`（本地坐标）与 `_resource_rotate_t`。
+func _refresh_resource(delta: float) -> void:
+	_resource_rotate_t -= delta
+	if _resource_rotate_t > 0.0:
 		return
-	_flower_scan_t = 0.5
+	_resource_rotate_t = maxf(1.0, _tuning_num("ars_rotate_s", 8.0))
+	var last: Variant = _flower_pos
+	var min_move := maxf(0.0, _tuning_num("ars_min_move_m", 3.0))
 	var st := scene_tree()
-	if st == null:
-		_flower_pos = null
-		return
-	for gname in ["flowers", "flower"]:
-		var arr := st.get_nodes_in_group(gname)
-		if arr.is_empty():
-			continue
-		var best: Node3D = null
-		var bestd := 1.0e18
+	if st != null:
+		var cands: Array = []
 		var mine := global_position
-		for n in arr:
-			if n is Node3D and is_instance_valid(n):
-				var d := (n as Node3D).global_position.distance_squared_to(mine)
-				if d < bestd:
-					bestd = d
-					best = n as Node3D
-		if best != null:
-			_flower_pos = to_local(best.global_position)
+		for gname in ["flowers", "flower"]:
+			for n in st.get_nodes_in_group(gname):
+				if n is Node3D and is_instance_valid(n):
+					var p: Vector3 = to_local((n as Node3D).global_position)
+					cands.append([p.distance_squared_to(to_local(mine)), p])
+			if not cands.is_empty():
+				break
+		if not cands.is_empty():
+			cands.sort_custom(func(a, b): return float(a[0]) < float(b[0]))
+			var k := mini(3, cands.size())
+			var pool: Array = []
+			for i in range(k):
+				pool.append(cands[i][1])
+			var pick: Variant = _choose_far_point(pool, last, min_move)
+			if pick != null:
+				_flower_pos = pick
+				return
+			_flower_pos = pool[_res_rng.randi_range(0, pool.size() - 1)]
 			return
-	_flower_pos = region_offset
+	var lo := _bounds().position
+	var hi := _bounds().position + _bounds().size
+	var band := minf(_bounds().size.y * 0.5, 2.5)
+	var fallback := Vector3(
+		_res_rng.randf_range(lo.x, hi.x),
+		lo.y + _res_rng.randf_range(0.25, maxf(0.3, band)),
+		_res_rng.randf_range(lo.z, hi.z))
+	if last is Vector3 and (last as Vector3).distance_to(fallback) < min_move:
+		var dir := Vector3(_res_rng.randf_range(-1.0, 1.0), 0.0,
+				_res_rng.randf_range(-1.0, 1.0))
+		if dir.length_squared() < 1e-6:
+			dir = Vector3.RIGHT
+		fallback = (last as Vector3) + dir.normalized() * maxf(1.0, min_move)
+		fallback.x = clampf(fallback.x, lo.x, hi.x)
+		fallback.z = clampf(fallback.z, lo.z, hi.z)
+		fallback.y = lo.y + clampf(fallback.y - lo.y, 0.25, maxf(0.3, band))
+	_flower_pos = fallback
+
+
+## ★ 挑选本轮的"聚散中心"：必须和最近 `gather_history_n` 轮的中心都拉开距离。
+##
+## 为什么要有这个函数（用户反馈："蝴蝶出现聚集行为后，会反复的在两点之间散开再重聚，
+## 起码要换个坐标进行聚散"）：
+##   旧实现里"聚"和"散"都围绕**每只蝴蝶自己的目标**（SEEK 的花 / COURT 的同伴）发生，
+##   而这些目标几乎固定不变 —— 于是每 25~70 秒重复一次"冲向同一朵花 -> 被 hover 反推出去
+##   -> 再冲回去"的振荡，视觉上就是同一对点之间的往返。
+##   现在每轮开始前换一个**新的中心**，聚、散都在新中心附近发生。
+##
+## 候选来源：分组 `flowers`/`flower` 的花节点；没有花就在区域下部随机取点。
+## 挑选规则：排除"离历史中心 < `gather_min_move_m`"的候选；
+##   若一个都不剩（候选太少/区域太小），就取**离历史中心最远**的那个 —— 尽力换地方。
+## 副作用：写 `_gather_pos`，并把旧中心压入 `_gather_hist`（最多 `gather_history_n` 个）。
+func _new_gather_center() -> void:
+	var min_move := maxf(0.0, gather_min_move_m)
+	var hist_n := maxi(1, gather_history_n)
+	var cands: Array = []
+	var st := scene_tree()
+	if st != null:
+		for gname in ["flowers", "flower"]:
+			for n in st.get_nodes_in_group(gname):
+				if n is Node3D and is_instance_valid(n):
+					cands.append(to_local((n as Node3D).global_position))
+			if not cands.is_empty():
+				break
+	if cands.is_empty():
+		# 没有花节点：在区域下部随机撒几个候选（数量取 8，够挑出"离历史中心远"的点）
+		var lo := _bounds().position
+		var hi := _bounds().position + _bounds().size
+		var band := minf(_bounds().size.y * 0.6, 2.5)
+		for i in range(8):
+			cands.append(Vector3(
+				_rng.randf_range(lo.x, hi.x),
+				lo.y + _rng.randf_range(0.25, maxf(0.3, band)),
+				_rng.randf_range(lo.z, hi.z)))
+	# ★★ 排除集 = 历史中心 + **当前这一轮的中心** ★★
+	#   实测踩过：`_gather_pos` 是在函数**末尾**才压进 `_gather_hist` 的，
+	#   所以筛选候选时它**还没进历史** —— 于是"自己选回自己"永远合法：
+	#   探针复现第 4 轮 center 与第 3 轮完全相同（位移 0.000 m），历史里也出现重复项。
+	#   现在把当前中心一起纳入排除集。
+	var avoid: Array = []
+	for h in _gather_hist:
+		avoid.append(h)
+	if _gather_pos is Vector3:
+		avoid.append(_gather_pos)
+	var ok: Array = []
+	for c in cands:
+		var good := true
+		if min_move > 0.0:
+			for h in avoid:
+				if (c as Vector3).distance_to(h as Vector3) < min_move:
+					good = false
+					break
+		if good:
+			ok.append(c)
+	var pick: Vector3
+	if not ok.is_empty():
+		pick = ok[_rng.randi_range(0, ok.size() - 1)]
+	else:
+		# 全都太近 -> 取"离历史最远"的那个。
+		# ★ 但必须**排除紧挨着的上一轮中心**：实测（回归测试抓到）候选被历史逐个排除后，
+		#   这个兜底会退回 `cands[0]`，正好又是上一轮那个点 —— 相邻两轮位移 0.00 m，
+		#   等于"换个坐标"在最需要它的极端情况下失效。所以先剔除上一轮，
+		#   只有"除了它别无候选"时才允许重复。
+		var pool2: Array = []
+		for c in cands:
+			if _gather_pos is Vector3 \
+					and (c as Vector3).distance_to(_gather_pos as Vector3) < 0.05:
+				continue
+			pool2.append(c)
+		if pool2.is_empty():
+			pool2 = cands
+		var best: Vector3 = pool2[0]
+		var best_d := -1.0
+		for c in pool2:
+			var dmin := 1.0e9
+			for h in _gather_hist:
+				dmin = minf(dmin, (c as Vector3).distance_to(h as Vector3))
+			if _gather_hist.is_empty():
+				dmin = 0.0
+			if dmin > best_d:
+				best_d = dmin
+				best = c
+		pick = best
+	# 记录历史（上一轮的中心进历史，供下一轮避开）
+	if _gather_pos is Vector3:
+		_gather_hist.append(_gather_pos)
+		while _gather_hist.size() > hist_n:
+			_gather_hist.pop_front()
+	_gather_pos = pick
+
+
+## 在候选点里选一个"离 `last` 至少 `min_move` 米"的点（随机）。
+## 参数 pool：候选 Vector3 数组；last：上一个资源点（可为 null）；min_move：最小位移（米）。
+## 返回值：选中的 Vector3；池内一个都不满足时返回 null（调用方退回随机）。
+func _choose_far_point(pool: Array, last: Variant, min_move: float) -> Variant:
+	if pool.is_empty():
+		return null
+	var ok: Array = []
+	for p in pool:
+		if last is Vector3 and (p as Vector3).distance_to(last as Vector3) < min_move:
+			continue
+		ok.append(p)
+	if ok.is_empty():
+		return null
+	return ok[_res_rng.randi_range(0, ok.size() - 1)]
 
 
 ## 取随机源是否可用（编辑器早期/被释放时可能为 null）。
@@ -1342,6 +1542,9 @@ func tuning_dict() -> Dictionary:
 		"turn_heavy_p": 0.06, "turn_heavy_deg": 110.0,
 		"levy_alpha": 1.6, "step_time_s": 0.45,
 		"ars_radius_m": 3.0, "ars_turn_scale_deg": 55.0, "ars_speed_scale": 0.55,
+		# ---- 聚集点必须会换（防"两点之间往返"）----
+		"ars_rotate_s": 8.0, "ars_min_move_m": 3.0, "ars_participation": 0.55,
+		"seek_repeat_avoid_m": 3.0,
 		"area_restricted_search": true,
 		"lateral_weave": 0.55, "lateral_weave_hz": 1.1,
 		# ---- 与草（SimpleGrassTextured）的交互 ----
@@ -1417,6 +1620,7 @@ const GROUP_OVERRIDE_KEYS := [
 	"heading_persistence", "turn_scale_deg", "turn_heavy_p", "turn_heavy_deg",
 	"levy_alpha", "step_time_s", "lateral_weave", "lateral_weave_hz",
 	"area_restricted_search", "ars_radius_m", "ars_turn_scale_deg", "ars_speed_scale",
+	"ars_rotate_s", "ars_min_move_m", "ars_participation", "seek_repeat_avoid_m",
 	# 草交互（sgt）
 	"grass_bend_radius", "grass_bend_strength", "grass_bend_height", "grass_bend_slots",
 ]
