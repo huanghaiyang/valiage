@@ -506,7 +506,14 @@ func _take_from_mesh(mi: MeshInstance3D) -> int:
 	#   → 注册成功时写进 `wind_height_ref` ✓
 	#     让 shader 的高度权重用**真实高度**，而不是我在材质里手填的常数 ✓
 	var mh: float = 0.0
-	if mi.mesh != null:
+	# ★★★ 分块树冠（scripts/world/canopy_chunk_cull.gd）专用 ✓
+	#   树冠被切成多块后，每块 `get_aabb()` 只是**自己那一小块**的高度 ✗
+	#   → 直接拿来当 `wind_height_ref` 会让风摆的高度权重整体变掉 ✗
+	#   → 分块脚本会把**整片树冠**的高度写进节点 meta ✓ 这里优先用它 ✓
+	#   （没有这个 meta 的普通网格走原逻辑 ✓ 行为不变 ✓）
+	if mi.has_meta("wind_height_ref"):
+		mh = float(mi.get_meta("wind_height_ref"))
+	elif mi.mesh != null:
 		mh = mi.get_aabb().size.y
 	if mi.material_override is ShaderMaterial:
 		got += _register_h(mi.material_override as ShaderMaterial, mh)

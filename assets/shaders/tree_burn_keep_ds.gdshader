@@ -22,7 +22,11 @@ global uniform float tornado_swirl;
 // ★★★ 测试性改动（验收后按结果定稿 ✓）：**暂时去掉双面** ✗
 //   树干是**闭合实体** ✓ → 双面时会画背面 → 与正面**深度冲突（镂空）** + 背面受光异常（发白）✓
 //   若这次正常 → 说明"双面"就是根因 ✓ → 我会把它定成：**实体默认单面** ✓（更快 ✓ 也无冲突 ✓）
-render_mode depth_draw_opaque;
+// ★★★ `depth_draw_always`（原来是 `depth_draw_opaque` ✗）：
+//   原写法 = "仅在材质不透明时才写深度" ✓ 一旦材质被判成"有 alpha"（哪怕只是
+//   写了 `ALPHA = 1.0`）→ 深度**完全不写** → 枝条被后画的花瓣/枝条盖住 = 透视 ✗✗
+//   `depth_draw_always` 无论如何都写深度 ✓ 从机制上堵死这个坑 ✓（用户实测确认 ✓）
+render_mode depth_draw_always;
 
 
 uniform sampler2D noise_tex : hint_default_black;
@@ -76,15 +80,42 @@ uniform bool use_uv = true;
 //   默认 false ✓ → 不采样 ✓ 零额外开销 ✓；由插件转换时按源材质自动写入 ✓
 uniform sampler2D normal_tex : hint_normal;
 uniform bool has_normal = false;
+/// ★★ 法线贴图**强度**（= NORMAL_MAP_DEPTH）：1.0 = 原来的全强度 ✓ 默认值不变 ✓
+///   为什么要它（2026-10-19 实测反馈 ✓）：
+///   · 树皮的**细枝半径只有几毫米** ✓ 而法线贴图是按树干的 UV 密度做的 ✓
+///     → 在细枝上逐像素切向法线被放大成**假的明暗折痕/亮脊** ✗
+///     → 观感像"枝条被劈开/能看穿"（用户报的"不同视角出现透视"✓）
+///   · 给 0.2~0.4 就能保住一点树皮凹凸 ✓ 又不至于在细枝上翻车 ✓
+///   · 不想用法线细节就干脆 `has_normal = false` ✓（参考树的树干材质就是这么做的 ✓）
+uniform float normal_strength : hint_range(0.0, 2.0) = 1.0;
 uniform sampler2D rough_tex : hint_default_white;
 uniform bool has_rough = false;
+/// ★★ 粗糙度贴图里**哪个通道**是粗糙度：0=r / 1=g / 2=b / 3=a ✓
+///   默认 0 = r（灰度粗糙度图 ✓ 与原来行为一致 ✓）
+///   ★ 需要 1（g）的场合：**glTF/GLB 的 metallicRoughness 贴图** ✓
+///     glTF 规范把它定义成 ORM 打包：**R=遮蔽 / G=粗糙度 / B=金属度** ✓
+///     原来固定读 `.r` ✗ → 实际读到的是 **AO（遮蔽）** → 树干粗糙度是错的 ✓
+uniform int rough_channel = 0;
+/// ★★ 枝条"径向法线压平"强度：0.0 = 完全不动（默认 ✓ 老资产行为不变 ✓）
+///   为什么需要：细枝是很细的圆柱 ✓ 用真实法线做**漫反射** → 正对光源的那一条母线
+///   N·L≈1 → 出现**一条沿枝条方向的亮带** ✓ 在细枝上看起来就像"枝条被剖开/能看穿"✗
+///   （实测：把 SPECULAR 关到 0 这条亮带仍在 ✓ → 不是高光而是漫反射 ✓
+///     纯 albedo（unshaded）完全没有这条带 ✓ 所以是光照问题而非贴图问题 ✓
+///     GLB 原本的 StandardMaterial3D 也有同样现象 ✓ 不是本项目的回归 ✓）
+///   做法：把法线朝"由树干中轴向外的径向"混合 ✓ → 枝条整体受光更均匀 ✓ 亮带消失 ✓
+///   注意：树干也会受影响（会变平板 ✗）→ 大樱花树实测取 0.55 观感最好 ✓ 别设 1.0 ✓
+uniform float radial_normal : hint_range(0.0, 1.0) = 0.0;
 
 varying vec2 v_uv;
 varying float v_hgt;      // ★ 距模型根部的高度（**模型空间** ✓ 稳定 ✓ 不随相机抖动 ✓）
+varying vec3 v_radial;    // ★ 由树干中轴指向外的径向（**视空间** ✓ 供 radial_normal 用 ✓）
 
 void vertex() {
 	v_uv = UV;
 	v_hgt = VERTEX.y;         // ★ 模型空间高度 ✓（插值到像素 ✓ 比逐像素重建世界坐标稳定得多 ✓）
+	// ★ 径向 = 从树干中轴（模型空间 y 轴）指向该顶点 ✓ 用**未位移**的 VERTEX 算（风摆不抖法线 ✓）
+	//   +1e-5 防止顶点正好落在中轴上时 normalize(0) 出 NaN ✓
+	v_radial = normalize((MODELVIEW_MATRIX * vec4(normalize(vec3(VERTEX.x, 0.0, VERTEX.z) + vec3(1e-5, 0.0, 1e-5)), 0.0)).xyz);
 	float h = clamp(VERTEX.y / max(height_ref, 0.01), 0.0, 1.5);
 	float alive = 1.0 - clamp(burn, 0.0, 1.0) * 0.75;
 	// ★★★ 与树叶**同步**（用户要求 ✓）：用**同一套风**（阵风/沿线/湍流/高度加权 ✓）
@@ -138,13 +169,22 @@ void fragment() {
 	// ★ 有法线/粗糙度就采样 ✓（没有就用默认值 ✓ 不白花两次采样 ✓）
 	if (has_normal) {
 		NORMAL_MAP = texture(normal_tex, v_uv).rgb;
-		NORMAL_MAP_DEPTH = 1.0;
+		NORMAL_MAP_DEPTH = normal_strength;
 	}
 	// ★ 没有粗糙度贴图时用 **1.0（全哑光）** ✓ —— 与原来的 StandardMaterial3D 默认一致 ✓
 	//   （原来我写 0.75 ✗ → 更反光 → 树干观感偏亮/发白 ✓ 用户反馈 ✓）
 	ROUGHNESS = 1.0;
 	if (has_rough) {
-		ROUGHNESS = texture(rough_tex, v_uv).r;
+		// ★ 粗糙度通道可选 ✓（默认 r = 原行为 ✓；glTF 的 ORM 贴图必须用 g ✓）
+		vec4 r = texture(rough_tex, v_uv);
+		ROUGHNESS = r.r;
+		if (rough_channel == 1) {
+			ROUGHNESS = r.g;
+		} else if (rough_channel == 2) {
+			ROUGHNESS = r.b;
+		} else if (rough_channel == 3) {
+			ROUGHNESS = r.a;
+		}
 	}
 	METALLIC = 0.0;
 	// ★★★ 关键修复：**双面渲染时背面必须翻转法线** ✓✓
@@ -153,6 +193,11 @@ void fragment() {
 	//   （原生 StandardMaterial3D 在双面时会自动处理 ✓ 所以它一直正常 ✓；自定义 shader 必须自己做 ✗）
 	if (!FRONT_FACING) {
 		NORMAL = -NORMAL;
+	}
+	// ★★ 枝条径向压平（见文件头 uniform 处说明 ✓）：默认 0 = 什么都不做 ✓
+	//   排在"法线贴图"和"背面翻转"**之后** ✓ → 压平的是最终法线 ✓ 顺序错了会被覆盖 ✗
+	if (radial_normal > 0.001) {
+		NORMAL = normalize(mix(NORMAL, v_radial, radial_normal));
 	}
 	vec3 wp = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	// ★ 世界坐标哈希噪声 ✓ —— **不依赖噪声贴图** ✗
@@ -225,6 +270,14 @@ void fragment() {
 		ALPHA = clamp(burned * 0.92 + ember * 0.55, 0.0, 1.0) * shape;   // ★ 不随 ash 淡出 ✓
 	} else {
 		ALBEDO = col;
-		ALPHA = 1.0;
+		// ★★★ 这里**绝对不能写 ALPHA** ✓✓（用户亲测确认 ✓）
+		//   机制：只要 shader 里出现 `ALPHA = ...`，Godot 就把该材质当成"有 alpha"✗
+		//     而本 shader 原 render_mode 是 `depth_draw_opaque`
+		//     = **"仅在材质不透明时才写深度"**✗ → 被判成透明后枝条**完全不写深度**✗
+		//     → 后画的枝条 / 花瓣（透明通道按物体距离排序）直接盖上来 ✓
+		//     → 观感就是"枝条被看穿 / 前后错位"，且**随相机转动不断变**✓（用户描述"眼花"✓）
+		//   为什么之前测不出来：静态单机位只渲染树皮、后面没有东西盖上来 → 看不出差异 ✗
+		//   ★ 兜底：render_mode 已同时改成 `depth_draw_always` ✓
+		//     即使哪天又被判成透明，也强制写深度 → 不会再穿透 ✓
 	}
 }

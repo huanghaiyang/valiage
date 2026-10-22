@@ -390,7 +390,7 @@ func burn_node(n: Node3D, delay: float = 0.0) -> bool:
 	# ★ 若目标材质用的着色器**自带 burn**（如 assets/shaders/vegetation_wind.gdshader），
 	#   就走"改材质内建 burn"这条路 —— 对**不透明植被**天然正确：
 	#   不需要遮罩/轮廓/透明度处理，未烧部分保持原样，烧过部分在它自己的光照里变焦。
-	if _shader_has_burn(_first_material()):
+	if _first_burn_material() != null:
 		global_position = n.global_position
 		_apply_in_shader_burn()
 		_collect_surface_points()      # ★ 不能漏：否则 _surface 为空 -> 火星取模崩溃
@@ -554,6 +554,43 @@ func _transparency_from_material(m: Material) -> Dictionary:
 
 
 ## 取第一个可用材质（透明度配置以它为准）
+## ★★★ 专供"走哪条燃烧路线"判定用：找第一个**真的带 burn 参数**的材质 ✓
+##   为什么要单独一个（不能直接用 _first_material ✗）：
+##   `_first_material()` 只保证"第一个非空材质"✗ —— 而目标子树里常常混着
+##   **不带 burn 的装饰网格**（实测：Wind 自动加载的 `FootRing` 会把脚底圈挂到
+##   当前场景下 ✓ 它的 material_override 是一个没有 burn 的叠加着色器 ✓）
+##   → `_first_material()` 返回它 ✗ → `_shader_has_burn` 判 false ✗
+##   → 整棵树**误走"叠加层"路线** ✓（明明自己的 shader 有 burn ✓ 却不走内置路线 ✓）
+##   → 逐面 burn 副本一份都不建 ✓ 烧起来只能靠一层叠加，叶子/枝干的分类冻结也失效 ✓
+##   本函数逐个 surface 找 ✓ 找到带 burn 的就返回 ✓ 找不到返回 null ✓
+func _first_burn_material() -> Material:
+	for mi in _meshes:
+		if mi == null or not is_instance_valid(mi):
+			continue
+		if _shader_has_burn(mi.material_override):
+			return mi.material_override
+		if mi.mesh == null:
+			continue
+		for s in range(mi.mesh.get_surface_count()):
+			var ov: Material = mi.get_surface_override_material(s)
+			if _shader_has_burn(ov):
+				return ov
+			var sm2: Material = mi.mesh.surface_get_material(s)
+			if _shader_has_burn(sm2):
+				return sm2
+	for mmi in _multimeshes:
+		if mmi == null or not is_instance_valid(mmi):
+			continue
+		if _shader_has_burn(mmi.material_override):
+			return mmi.material_override
+		if mmi.multimesh != null and mmi.multimesh.mesh != null:
+			for s in range(mmi.multimesh.mesh.get_surface_count()):
+				var m3: Material = mmi.multimesh.mesh.surface_get_material(s)
+				if _shader_has_burn(m3):
+					return m3
+	return null
+
+
 func _first_material() -> Material:
 	for mi in _meshes:
 		var m: Material = mi.material_override
@@ -719,10 +756,29 @@ func _apply_in_shader_burn() -> void:
 	for mi in _meshes:
 		if mi.mesh == null:
 			continue
+		# ★★★ 关键：Godot 里 **material_override 的优先级高于逐面 override** ✗
+		#   （实测：两份材质都设了，画面上生效的是 material_override ✓）
+		#   → 用「材质覆盖」装配的模型（aux_scene 这种把 3 份 .tres 盖在 GLB 上的）
+		#     即使逐面塞了燃烧副本，**渲染仍然用 material_override** ✓
+		#     → 逐面 burn 写进去也没人看 ✓ → 树"烧了但一点不变色"✓✓
+		#   → 所以下面装完逐面副本后要**把 material_override 清掉** ✓
+		#     并把原值记进 _prev_override ✓（非保留型目标收尾时能还原 ✓）
+		var had_override: Material = mi.material_override
+		var made := 0
 		for s in range(mi.mesh.get_surface_count()):
-			var base: Material = mi.mesh.surface_get_material(s)
+			# ★★★ 修复（material_override 路线 ✓）：原来**先**取网格自带材质 ✗
+			#   → 用「材质覆盖」装配的模型（GLB 的每个 Mesh 都还带着导入器生成的
+			#     StandardMaterial3D ✓ 而实际渲染的是节点的 material_override ✓）会拿到
+			#     StandardMaterial3D → `duplicate() as ShaderMaterial` 得到 null → `continue` ✗
+			#   → **_shader_mats 为空 → 一点烧蚀都没有** ✓✓（只剩火星 ✓ 树不变色 ✓）
+			#   正确口径 = 「**实际在渲染的那个材质**」：逐面 override > 节点 override > 网格自带 ✓
+			#   ⚠ 老目标（tree_small_02 这种三面共用网格自带材质的）三处全空 → 落到
+			#     网格自带材质 ✓ → 判定与改动前**完全一致** ✓
+			var base: Material = mi.get_surface_override_material(s)
 			if base == null:
 				base = mi.material_override
+			if base == null:
+				base = mi.mesh.surface_get_material(s)
 			if base == null:
 				continue
 			var dup := base.duplicate() as ShaderMaterial
@@ -733,9 +789,9 @@ func _apply_in_shader_burn() -> void:
 			#   会掉成"白模" ✓ —— 症状正是"编辑器里正常 ✓ 游戏内发白" ✓（用户实测 ✓）
 			var src_sm := base as ShaderMaterial
 			if src_sm != null:
-				for pn in ["albedo_tex", "alpha_tex", "base_color", "use_albedo", "use_mask",
+				for pn in ["albedo_tex", "alpha_tex", "alpha_channel", "normal_up_blend", "ambient_fill", "base_color", "use_albedo", "use_mask",
 						"mask_channel", "scissor", "scissor_enabled", "force_opaque", "use_uv",
-						"has_normal", "normal_tex", "has_rough", "rough_tex", "overlay_mode"]:
+						"has_normal", "normal_tex", "normal_strength", "radial_normal", "has_rough", "rough_tex", "rough_channel", "overlay_mode"]:
 					var pv: Variant = src_sm.get_shader_parameter(pn)
 					if pv != null:
 						dup.set_shader_parameter(pn, pv)
@@ -745,12 +801,19 @@ func _apply_in_shader_burn() -> void:
 			#   手填的风险 ✓：材质写着 8.2 ✗ 而树实际只有 **4.56 米** ✗
 			#     → 前沿 `burn × 8.2 × 1.15` 在 burn≈0.43 就**越过树顶** ✗
 			#     → 火焰只用前 43% 时间扫完 ✓ 看着"飞快/闪烁"✓ 之后整棵**瞬间全黑**✓（用户实测 ✓）
-			if mi.mesh != null:
+			# ★★★ 分块树冠（scripts/world/canopy_chunk_cull.gd）专用 ✓
+			#   树冠被切成多块后，每块 `mesh.get_aabb()` 只是**自己那一小块** ✗
+			#   → 各块会得到**不同的燃烧前沿** ✗ → 烧痕在块边界处错位/断成一片片 ✗
+			#   → 分块脚本会把**整片树冠**的顶部高度写进节点 meta ✓ 这里优先用它 ✓
+			var top := 0.0
+			if mi.has_meta("burn_height_ref"):
+				top = float(mi.get_meta("burn_height_ref"))
+			elif mi.mesh != null:
 				var ab: AABB = mi.mesh.get_aabb()
-				var top := ab.position.y + ab.size.y
-				if top > 0.05:
-					dup.set_shader_parameter("height_ref", top)
-					print("[燃烧] 自动量高 ✓ height_ref = %.2f 米（%s）" % [top, mi.name])
+				top = ab.position.y + ab.size.y
+			if top > 0.05:
+				dup.set_shader_parameter("height_ref", top)
+				print("[燃烧] 自动量高 ✓ height_ref = %.2f 米（%s）" % [top, mi.name])
 			dup.set_shader_parameter("burn", 0.0)
 			dup.set_shader_parameter("ash", 0.0)
 			dup.set_shader_parameter("burn_phase", _phase)
@@ -758,6 +821,13 @@ func _apply_in_shader_burn() -> void:
 			_shader_mats.append(dup)
 			_shader_src.append(base as ShaderMaterial)
 			_copy_wind_params(_shader_src.size() - 1)
+			made += 1
+		# ★ material_override 优先级更高 ✓ → 装好逐面副本后必须清掉它，
+		#   否则逐面副本**根本参与不到渲染** ✓（见本函数开头说明 ✓）
+		#   只在真的做成了至少一份副本时才清 ✓（全失败就保持原样，别把模型弄没材质 ✓）
+		if made > 0 and had_override != null:
+			_prev_override.append({"n": mi, "m": had_override, "o": mi.material_overlay})
+			mi.material_override = null
 
 
 ## 材质是否"卡片型"（透明/裁剪/哈希）—— 这类必须靠贴图 alpha 才是真实轮廓
@@ -1097,37 +1167,73 @@ func _update_sparks(delta: float, burn: float) -> void:
 
 
 # ==================== 目标分类与收尾 ====================
+## 这份材质是不是「木质型（烧完保留焦黑）」的？
+## 判据（任一 ✓）：① shader 是 tree_burn_keep* ✓ ② 资源 meta burn_mode == "wood" ✓
+## 参数 m：任意 Material，可为 null。返回：bool，null 一律 false（不崩）。
+## 抽成独立函数的原因：判定要**在三个材质来源上分别做**（见 _target_is_keep ✓），
+##   三处写三遍容易漏一处 ✓（这次就是漏了「逐面 override」那一处 ✓）。
+func _mat_is_wood(m: Material) -> bool:
+	if m == null:
+		return false
+	if m is ShaderMaterial:
+		var sm := m as ShaderMaterial
+		# ★ 修正（方案 A ✓）：原来用 `ends_with("tree_burn_keep.gdshader")` ✗
+		#   而材质实际引用的是 `tree_burn_keep_ds.gdshader` ✗ → 这条判断**一直是失效的** ✓
+		#   → 之前只靠材质的 `burn_mode == "wood"` meta 生效 ✓
+		#   改用 contains ✓：任何变体（_ds / 无后缀 / 以后改名）都能认出来 ✓
+		if sm.shader != null and String(sm.shader.resource_path).contains("tree_burn_keep"):
+			return true
+	if String(m.get_meta("burn_mode", "")) == "wood":
+		return true
+	return false
+
+
+## 本控制器**实际装上的燃烧副本**里，有没有木质材质？
+## 用途：_finish() 的"要不要隐藏目标"与"冻结成焦黑"两处判定都拿它做保险 ✓
+##   —— 副本是我们自己装的 ✓ 最可靠 ✓（不受材质来源 / 节点层级影响 ✓）
+func _has_wood_mats() -> bool:
+	for m in _shader_mats:
+		if m != null and is_instance_valid(m) and _mat_is_wood(m):
+			return true
+	return false
+
+
 ## ★★ 目标是否"保留型"（木质：烧完**留下焦黑** ✓ 不消失 ✓）
 ##   用户要求：叶子靠**材质 alpha 淡出**到透明 ✓ → 同一节点上的枝干必须**不被隐藏** ✓
-##   判定依据（任一 ✓）：材质 shader 是 tree_burn_keep ✓ ／ 资源 meta burn_mode == "wood" ✓
+##   判定依据见 _mat_is_wood ✓（shader 是 tree_burn_keep* / meta burn_mode=="wood"）
+## ★★★ 三个材质来源都要查、且要**递归整棵子树** ✓（这两处都是踩过的坑 ✓）：
+##   ① 网格自带材质   —— tree_small_02 这类「blender 导出、三面各带一份材质」的走这里 ✓
+##   ② 逐面 override  —— 燃烧中/烧完之后走这里（_apply_in_shader_burn 把副本装在这里 ✓）
+##   ③ 节点 override  —— 用「材质覆盖」装配的（sakura_tree / aux_scene 那种）走这里 ✓
+##   ⚠ 不能再"只看第一个直接子 MeshInstance3D"✗：
+##     · _apply_in_shader_burn 装完副本后会把 ③ 清成 null ✓（否则逐面副本不参与渲染 ✓）
+##       → 只剩 ② 可查 ✓；只看 ① 就会判成"普通植被" ✓
+##     · 组 "burnable" 可能挂在**场景根**而不是树节点上 ✓（用户自己新建场景时常见 ✓）
+##       → 第一层子节点是 Node3D 而不是 MeshInstance3D ✗ → 原来直接返回 false ✗
+##     → 后果不是"少烧一会" ✗ 而是 **收尾时 _target.visible=false 把整棵树藏掉** ✓✓
 func _target_is_keep() -> bool:
 	if _target == null or not is_instance_valid(_target):
 		return false
-	var mi := _target as MeshInstance3D
-	if mi == null or mi.mesh == null:
-		for c in _target.get_children():
-			var cmi := c as MeshInstance3D
-			if cmi != null and cmi.mesh != null:
-				mi = cmi
-				break
-		if mi == null:
-			return false
-	for s in range(mi.mesh.get_surface_count()):
-		var m: Material = mi.mesh.surface_get_material(s)
-		if m == null:
-			m = mi.get_surface_override_material(s)
-		if m == null:
+	# ① 先看自己装上的燃烧副本（最准 ✓）
+	if _has_wood_mats():
+		return true
+	# ② 再递归整棵子树，三个材质来源逐个查
+	var stack: Array = [_target]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n == null:
 			continue
-		if m is ShaderMaterial:
-			var sm := m as ShaderMaterial
-			# ★ 修正（方案 A ✓）：原来用 `ends_with("tree_burn_keep.gdshader")` ✗
-			#   而材质实际引用的是 `tree_burn_keep_ds.gdshader` ✗ → 这条判断**一直是失效的** ✓
-			#   → 之前只靠材质的 `burn_mode == "wood"` meta 生效 ✓
-			#   改用 contains ✓：任何变体（_ds / 无后缀 / 以后改名）都能认出来 ✓
-			if sm.shader != null and String(sm.shader.resource_path).contains("tree_burn_keep"):
+		var mi := n as MeshInstance3D
+		if mi != null and mi.mesh != null:
+			for s in range(mi.mesh.get_surface_count()):
+				if _mat_is_wood(mi.mesh.surface_get_material(s)):
+					return true
+				if _mat_is_wood(mi.get_surface_override_material(s)):
+					return true
+			if _mat_is_wood(mi.material_override):
 				return true
-		if String(m.get_meta("burn_mode", "")) == "wood":
-			return true
+		for c in n.get_children():
+			stack.append(c)
 	return false
 
 
@@ -1159,7 +1265,10 @@ func _finish() -> void:
 		if _multimeshes.is_empty():
 			# ★★ 保留型（树干/枝 ✓）：**不隐藏** ✓ —— 叶子已由材质 alpha 缓慢淡出到透明 ✓
 			#    → 同一节点上也能做到"叶子没了、枝干焦黑留下" ✓ 不需要拆节点 ✓
-			if not _target_is_keep():
+			# ★★★ 修复「烧完整棵树消失」✗：判定不能只看几何结构 ✓
+			#   只要本控制器**装上的燃烧副本里有任何木质材质** ✓ → 一律不隐藏 ✓
+			#   （这是最后一道保险：木材都烧成焦炭了，把节点藏掉显然不是需求 ✓）
+			if not (_target_is_keep() or _has_wood_mats()):
 				_target.visible = false      # 普通植被（草等）：烧尽 -> 消失 ✓
 		elif _mat != null:
 			_mat.set_shader_parameter("burn", 0.0)
@@ -1167,7 +1276,7 @@ func _finish() -> void:
 	# ★★ 保留型（树干/枝/整棵树 ✓）：**不还原材质** ✗→✓，而是**定在全焦黑** ✓
 	#   原因（用户实测 ✓）：还原 = 烧过的树**恢复原样、变绿** ✗✓
 	#   需求：烧过的树要保持"焦黑树架" ✓（再烧也还是焦的 ✓）
-	if _target_is_keep():
+	if _target_is_keep() or _has_wood_mats():
 		# ★★★ 记下"已烧毁"终态（用户要求 ✓）：第二次施法**直接跳过** ✗（见 burn_node 的检查 ✓）
 		#   否则第二次会从原始材质重新复制 → 看起来"又还原了" ✓✓（用户实测 ✓）
 		_target.set_meta("burned_out", true)

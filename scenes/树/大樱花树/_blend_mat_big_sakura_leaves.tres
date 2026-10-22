@@ -1,0 +1,55 @@
+[gd_resource type="ShaderMaterial" format=3]
+
+[ext_resource type="Shader" uid="uid://mbdce3dmuoks" path="res://assets/shaders/tree_leaves_burn_ds.gdshader" id="1_shdr"]
+[ext_resource type="Texture2D" uid="uid://chwsmot2uay0q" path="res://assets/models/树/大樱花树_leaf_diff.png" id="2_diff"]
+[ext_resource type="Texture2D" uid="uid://s36f314v3m42" path="res://assets/models/树/大樱花树_leaf_alpha.png" id="3_alpha"]
+[ext_resource type="Texture2D" uid="uid://bdf7kx6x56imm" path="res://assets/models/树/大樱花树_leaf_nor_gl.png" id="4_nor"]
+[ext_resource type="Texture2D" uid="uid://dqfn7d7o3gok8" path="res://assets/models/树/大樱花树_leaf_rough.png" id="5_rough"]
+
+[resource]
+resource_name = "big_sakura_leaves"
+render_priority = 0
+shader = ExtResource("1_shdr")
+shader_parameter/albedo_tex = ExtResource("2_diff")
+shader_parameter/alpha_tex = ExtResource("2_diff")
+shader_parameter/alpha_channel = 3
+shader_parameter/normal_tex = ExtResource("4_nor")
+shader_parameter/has_normal = true
+shader_parameter/rough_tex = ExtResource("5_rough")
+shader_parameter/has_rough = true
+shader_parameter/rough_channel = 0
+shader_parameter/alpha_scissor = 0.35
+shader_parameter/base_color = Color(1, 1, 1, 1)
+shader_parameter/burn = 0.0
+shader_parameter/ash = 0.0
+shader_parameter/char_color = Color(0.06, 0.05, 0.045, 1)
+shader_parameter/ember_color = Color(1, 0.34, 0.05, 1)
+shader_parameter/ember_width = 0.045
+shader_parameter/ember_gain = 0.7
+shader_parameter/height_ref = 27.2
+shader_parameter/edge_jitter = 0.25
+shader_parameter/sway_amt = 0.06
+shader_parameter/sway_freq = 1.4
+shader_parameter/phase = 0.0
+shader_parameter/wind_enabled = true
+shader_parameter/wind_direction = Vector2(1, 0)
+shader_parameter/wind_strength = 0.18
+shader_parameter/wind_gust = 0.15
+shader_parameter/wind_turbulence = 0.3
+shader_parameter/wind_speed = 1.4
+shader_parameter/wind_height_ref = 27.2
+shader_parameter/wind_height_power = 1.8
+shader_parameter/wind_sway_scale = 0.22
+shader_parameter/player_pos = Vector3(0, -100000, 0)
+shader_parameter/player_forward = Vector3(0, 0, -1)
+shader_parameter/player_radius = 0.55
+shader_parameter/player_bend = 0.75
+shader_parameter/player_spread = 0.3
+shader_parameter/player_move = 0.0
+shader_parameter/player_height_max = 1.2
+shader_parameter/normal_up_blend = 0.85
+shader_parameter/ambient_fill = 0.3
+metadata/burn_mode = "leaf"
+metadata/burn_height = 27.2
+metadata/cull_mode = 2
+metadata/cull_shader = "ds(双面)"
