@@ -102,6 +102,11 @@ static func get_instance() -> WindSystem:
 @export var player_radius := 0.75      ## 踩踏影响半径
 @export var player_bend := 0.55        ## 下压强度
 @export var player_spread := 0.30      ## 左右分开力度
+## ★ 角色头顶高度（米）：**低于头顶**的树 L5 枝条/树叶/花朵会被角色顶开。
+##   写到材质的 player_head_y = 脚底 y + 这个值 —— 跳跃时脚底抬高，头顶自动跟着变高，
+##   所以不需要再单独传"正在跳跃"的标志。
+##   角色节点带 target_height（player.gd 有）时优先用它，这里只是兜底。
+@export var player_head_height := 1.75
 @export var move_ref_speed := 3.0      ## 多少米/秒算全速（超过按满算）
 ## ★ 站着不动时也**持续保持**的一个分开量：身体把草撑开着，不会完全回弹
 @export var stand_bend := 0.35
@@ -1026,6 +1031,9 @@ func _write_mats(list: Array[ShaderMaterial], dir2: Vector2, strength: float, gu
 	var tree_force: float = tree_force_min + clampf(strength, 0.0, 1.0) * tree_force_per_wind
 	if not tree_wind_enabled:
 		tree_force = 0.0
+	# ★ 角色头顶的**世界高度**：脚底 + 身高（跳跃时脚底抬高 -> 头顶自动变高）
+	#   只在树的材质上写（草用的是自己的高度闸门，见 _sgt_gate_s）
+	var head_y := ppos.y + _player_head_height()
 	for m in list:
 		if not is_instance_valid(m):
 			continue
@@ -1041,6 +1049,8 @@ func _write_mats(list: Array[ShaderMaterial], dir2: Vector2, strength: float, gu
 		m.set_shader_parameter("player_spread", player_spread)
 		m.set_shader_parameter("player_move", bend_amt)
 		if is_tree:
+			# ★ 头顶高度（世界 y）：着色器用它判断"这个枝叶是否低于头顶、能被角色顶到"
+			m.set_shader_parameter("player_head_y", head_y)
 			# ★ fast-tree 移植参数（assets/shaders/fast_tree_wind.gdshaderinc）
 			m.set_shader_parameter("wind_force", tree_force)
 			m.set_shader_parameter("wind_freq_scale", tree_frequency)
@@ -1051,6 +1061,17 @@ func _write_mats(list: Array[ShaderMaterial], dir2: Vector2, strength: float, gu
 			m.set_shader_parameter("wind_bias", tree_bias)
 			m.set_shader_parameter("wind_flex_falloff", tree_flex_falloff)
 			m.set_shader_parameter("wind_seed", tree_seed)
+
+
+## ★ 角色身高（米）：优先读玩家节点的 target_height（player.gd 会按角色档案自动缩放），
+##   读不到 / 不是数值 / 节点已释放时，用 @export player_head_height 兜底。
+## 返回：头顶相对脚底的高度（> 0）。
+func _player_head_height() -> float:
+	if _player != null and is_instance_valid(_player):
+		var v: Variant = _player.get("target_height")
+		if (v is float or v is int) and float(v) > 0.1:
+			return float(v)
+	return player_head_height
 
 
 func _write_sgt(dir2: Vector2, strength: float, gust: float, turb: float,

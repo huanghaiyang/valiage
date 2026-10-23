@@ -101,12 +101,10 @@ uniform float phase = 0.0;
 //     wind_flex_falloff/wind_seed + 材质级 wind_sway/wind_is_leaf/
 //     wind_leaf_flutter/wind_leaf_twist + 回退路径的 wind_strength/wind_height_*/
 //     wind_sway_scale）—— 在这里重复声明会变量重定义编译失败 ✗
-uniform vec3 player_pos = vec3(0.0, -100000.0, 0.0);
-uniform vec3 player_forward = vec3(0.0, 0.0, -1.0);
-uniform float player_radius : hint_range(0.05, 3.0) = 0.55;
-uniform float player_bend : hint_range(0.0, 2.0) = 0.75;
-uniform float player_spread : hint_range(0.0, 1.5) = 0.30;
-uniform float player_move : hint_range(0.0, 1.0) = 0.0;
+// ★★★ 角色扰动（站立 / 走过 / 跳跃）：
+//   树干/枝条在**低于角色头顶**时被顶开；实际幅度由 aWind 决定 ✓
+//   （树干 aWind≈0.01 ≈ 不动；L5 细枝 aWind≈0.75 动得最明显 ✓）
+#include "res://assets/shaders/tree_player_disturb.gdshaderinc"
 uniform float height_ref : hint_range(0.05, 20.0) = 6.0;
 uniform bool use_albedo = true;
 uniform bool use_uv = true;
@@ -190,6 +188,11 @@ void vertex() {
 			}
 		}
 	}
+	// ★★★ 角色扰动（站立 / 走过 / 跳跃）：
+	//   低于头顶的低垂枝被顶开（向上抬 + 左右分开 ✓ 见 tree_player_disturb.gdshaderinc）
+	//   amount=0.45：枝条比叶子硬（与风摆的比例一致 ✓）
+	// ⚠ 第一个实参必须是 MODEL_MATRIX：该函数内部取不到内置变量，只能在这里传（否则编译报"标识符未知"）
+	VERTEX += tree_player_displace(MODEL_MATRIX, VERTEX, CUSTOM0, CUSTOM1, true, 0.45) * alive;
 	// ★ 这里**没有** `VERTEX *= 1.0 - ash * 0.35` ✓ —— 烧完不收缩 ✓（与 burn_foliage 的关键区别 ✓）
 }
 

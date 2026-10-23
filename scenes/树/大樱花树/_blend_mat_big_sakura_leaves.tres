@@ -51,7 +51,6 @@ shader_parameter/player_radius = 0.55
 shader_parameter/player_bend = 0.75
 shader_parameter/player_spread = 0.3
 shader_parameter/player_move = 0.0
-shader_parameter/player_height_max = 1.2
 shader_parameter/normal_up_blend = 0.85
 shader_parameter/ambient_fill = 0.3
 metadata/burn_mode = "leaf"

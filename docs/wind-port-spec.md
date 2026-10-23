@@ -139,6 +139,15 @@ vec3 tree_wind_offset(vec3 pos, vec4 c0, vec4 c1, vec3 world_pos, float base_y,
         float legacy_scale, out float out_flex);
 ```
 
+角色扰动来自另一个 include（`assets/shaders/tree_player_disturb.gdshaderinc`，详见 §6）：
+
+```glsl
+// model_matrix 必须由调用方传 MODEL_MATRIX（同上：自定义函数取不到内置变量）
+// 返回模型空间位移；无扰动时返回 vec3(0.0)
+vec3 tree_player_displace(mat4 model_matrix, vec3 pos_model, vec4 c0, vec4 c1,
+        bool is_bark, float amount);
+```
+
 ---
 
 ## 3. wind.gd 改造约定
@@ -195,6 +204,7 @@ vec3 tree_wind_offset(vec3 pos, vec4 c0, vec4 c1, vec3 world_pos, float base_y,
 | 树枝 ↔ 树叶/花朵同步（2026-10-22 用户反馈追加） | ✅ | 叶/花顶点烘焙时追加 `CUSTOM2=(宿主枝 phase, 宿主枝 aWind, 宿主 nodeId, 1)`：用叶生点 `aOrigin` 在 0.35m 内找最近树皮顶点；shader 里**刚性摆动**用宿主值、**局部抖动**用自身相位；叶/花材质刚性摆幅改为 0.8（与树皮一致）。`tests/wind_leaf_branch_sync.gd` 12/12 PASS：叶/花 95.1%/94.4% 顶点宿主相位=附近枝条相位，同相位配对刚性位移最大差 0.0216 m |
 | 独立验证 | ✅ | `docs/wind-port-verification.md`：38/38 PASS（与 JS 源逐值一致 14 项、轨迹 7 项、烘焙 11 项、视觉 6 项） |
 | 抖动去同步化（2026-10-22 用户反馈追加） | ✅ | 源实现所有元素同一个抖动频率 → 观感机械。新增 `wind_variation / wind_sway_variation` + 材质级 `wind_flutter_rate`：每片叶/每朵花按烘焙相位得到独立频率与幅度（叶 1.10 / 花 0.72 基础频率）。`tests/wind_freq_diversity.gd`：10/10 PASS（variation=0 时回到源实现；叶片频率跨度 0.605–1.594，花/叶均值比 0.658，元素内频率一致 0/不一致） |
+| 角色扰动（2026-10-23 追加） | ✅ | `assets/shaders/tree_player_disturb.gdshaderinc` + 两个树着色器各一行调用；`wind.gd` 每帧写 `player_head_y`。改动后 `tests/wind_leaf_branch_sync.gd` 12/12 PASS、`tools/scan_all_scripts.gd` 0/413 失败、真实渲染 12 帧 0 SHADER ERROR。详见 §6 |
 | 其它树（非 fast-tree 导出） | ⚠ 保持旧观感 | 没有 `_AWIND/_APHASE/_AORIGIN` 数据 → 走旧的高度权重回退路径（分支/叶片不丢，只是没有"逐枝柔度 + 叶柄铰链"） |
 
 **已知限制**
@@ -206,9 +216,146 @@ vec3 tree_wind_offset(vec3 pos, vec4 c0, vec4 c1, vec3 world_pos, float base_y,
 - 树冠中央那片"白色网格状斑点"（`depth_prepass_alpha` + 花材质的 alpha 抖动）在改动前就存在，
   静态对比像素完全一致，不属于本次移植范围。
 - 位移是在**模型空间**沿风向施加的（与 fast-tree 源实现一致，因为 fast-tree 的网格都在单位变换下）。
-  当前 `main.tscn` 里那棵樱花树是单位变换，所以方向正确；如果以后给树节点加**绕 Y 的旋转**，
-  摆向会跟着模型一起转 —— 那时需要在 include 里把风向用 `MODEL_MATRIX` 转进模型空间
-  （注意 `MODEL_MATRIX` 在自定义函数作用域不可见，要么在 `vertex()` 里算好当参数传，要么写在 vertex 里）。
+  当前 `main.tscn` 的 `BigSakuraTree` 只有平移 + **0.3 均匀缩放、无旋转**（均匀缩放不改变方向，
+  所以摆向正确）；如果以后给树节点加**绕 Y 的旋转**，摆向会跟着模型一起转 —— 那时需要在
+  `vertex()` 里把风向用 `MODEL_MATRIX` 转进模型空间（注意 `MODEL_MATRIX` 在自定义函数作用域不可见，
+  要么在 `vertex()` 里算好当参数传，要么直接写在 `vertex()` 里）。
+
+---
+
+## 6. 树木"角色扰动"（2026-10-23）
+
+> 需求：角色站在 / 走过 / 跳到**低于头顶**的 L5 枝条、树叶、花朵下面时，把它们顶开。
+> 参考草的踩踏扰动，但树不是"倒下去"，而是**向上抬 + 左右分开**（低垂枝被头/肩顶起）。
+> 实现文件：`assets/shaders/tree_player_disturb.gdshaderinc`（唯一实现，两个树着色器共用）。
+
+### 6.1 判定顺序（shader 内）
+
+| 步骤 | 条件 | 结果 |
+| --- | --- | --- |
+| 1 | `player_move <= 0.001` | 返回 0（未找到玩家，或 `stand_bend = 0` 且完全静止） |
+| 2 | `player_head_y < -90000` | 返回 0（`wind.gd` 找不到玩家时的哨兵值 `-100000`） |
+| 3 | 顶点世界高度 > 头顶 | `cap = 0`；头顶以上 `player_head_soft` 米内 `smoothstep` 淡出 |
+| 4 | 水平距离 ≥ `player_radius` | 权重 0；范围内用 `1-t` 再 `smoothstep` 平滑到边缘不硬切 |
+| 5 | 软度 `tree_player_flex()` | 烘焙网格取 `CUSTOM0.w`（aWind）；未烘焙树皮按高度渐入、叶片固定 0.70 |
+| 6 | 位移 | `(左右分开 + 向前推 + 向上抬) × infl × amount` |
+
+> 站立时 `player_move` 实际写的是 `max(stand_bend, _move_amt)`（见 `wind.gd` 的 `_write_mats`），
+> 所以站着**也会**保持一个基础撑开量，不会完全回弹；走动时平滑逼近 1。
+
+### 6.2 涉及文件
+
+| 文件 | 作用 |
+| --- | --- |
+| `assets/shaders/tree_player_disturb.gdshaderinc` | uniform + `tree_player_flex()` + `tree_player_displace()` |
+| `assets/shaders/tree_leaves_burn_ds.gdshader` | 树叶 / 花朵：`VERTEX += tree_player_displace(MODEL_MATRIX, VERTEX, CUSTOM0, CUSTOM1, false, 1.0) * alive` |
+| `assets/shaders/tree_burn_keep_ds.gdshader` | 树干 / 枝条：同上，`is_bark=true`、`amount=0.45`（比叶子硬） |
+| `scripts/wind.gd` | 每帧写 `player_*`；`is_tree` 时额外写 `player_head_y` |
+| `scenes/树/大樱花树/*.tres` | **删除**了已不存在的旧 uniform `player_height_max`（写错的 uniform 是静默无效的） |
+
+### 6.3 uniform 接口（每帧由 `wind.gd` 写）
+
+| uniform | 类型 | 默认值 | 含义 |
+| --- | --- | --- | --- |
+| `player_pos` | vec3 | `(0, -100000, 0)` | 玩家**脚底**世界坐标 |
+| `player_forward` | vec3 | `(0, 0, -1)` | 玩家水平朝向（只用 xz） |
+| `player_radius` | float | 0.55 | 影响半径（米）；运行时写入的是 `player_radius × lerp(stand_radius_scale, 1, move)` |
+| `player_bend` | float | 0.55 | 向上抬的幅度（米级） |
+| `player_spread` | float | 0.30 | 左右分开的幅度（米级） |
+| `player_move` | float | 0.0 | 扰动强度 0..1（站立取 `stand_bend`，走动逼近 1） |
+| `player_head_y` | float | `-100000` | 头顶**世界高度** = 脚底 y + 角色身高 |
+| `player_head_soft` | float | 0.35 | 头顶以上淡出宽度（米）；0 = 硬线 |
+
+材质级 `amount` 不通过 uniform：树皮 `0.45`、叶花 `1.0`，在调用点写死（与风摆比例一致）。
+
+> `.tres` 里也会序列化一份 `player_*`（例如 `player_bend = 0.75`），那只是**初始值**；
+> 运行时每帧都会被 `wind.gd` 覆盖，调手感请改 `WindSystem` 节点上的 `@export`，不要改材质。
+
+### 6.4 写入链路（`scripts/wind.gd`）
+
+```gdscript
+# _write_mats(..., is_tree=true)
+var head_y := ppos.y + _player_head_height()   # 脚底 + 身高
+m.set_shader_parameter("player_head_y", head_y)
+```
+
+- `ppos` = 玩家 `global_position`（脚底）。**跳跃时脚底抬高 → 头顶自动变高**，
+  所以不需要额外传"是否在跳跃"的标志。
+- `_player_head_height()`：优先读玩家节点的 `target_height`（`player.gd` 有，按角色档案缩放），
+  读不到再用节点上的 `@export player_head_height = 1.75` 兜底。
+- 只有 `_mats_tree` 会写 `player_head_y`；草走自己的高度闸门（`sgt_height_gate`），互不影响。
+
+### 6.5 数学要点
+
+1. **必须用世界坐标判定**：`VERTEX` 是模型空间，`player_pos` 是世界坐标。
+   旧实现直接 `VERTEX.xz - player_pos.xz` → 大樱花树在 `(-13.72, -14.54)`、缩放 0.3，
+   两者天然差十几米 → 权重恒 0 → 永远没效果。
+   现在：`wp = (MODEL_MATRIX * vec4(VERTEX, 1)).xyz` 先转世界，算完再反解回模型空间。
+2. **权重**：先 `x = 1 - d/r`（`d` = 水平距离），再 `x²(3-2x)` 平滑（边缘不硬切）；
+   `infl = x × player_move × cap × flex`，低于 `0.002` 直接早退。
+3. **方向**：以玩家朝向 `fw` 和右向 `rt` 建立水平基；
+   - 左右分开：`rt × sign(side) × player_spread`
+   - 向前推：`-fw × 0.10 × front`（角色前方/身上的枝被顶得更明显）
+   - 向上抬：`player_bend × (0.35 + 0.65 × front)` —— **向上的分量**，与草的倒伏方向相反
+4. **世界 → 模型反解**：模型 basis 只有旋转 + 缩放（列向量两两正交）时，
+   逆矩阵 = 转置 / 列长平方，所以逐轴做投影再除以 `dot(b, b)`。
+   大樱花树缩放 0.3：若直接把世界位移加到 `VERTEX` 上会放大 `1/0.3 ≈ 3.33` 倍。
+   （带斜切的非正交 basis 下是近似解，画面上通常看不出来。）
+
+### 6.6 关键约束：`MODEL_MATRIX` 必须由调用方传入
+
+```glsl
+// ✗ 编译报错：表达式中的标识符未知："MODEL_MATRIX"
+vec3 tree_player_displace(...) { vec3 wp = (MODEL_MATRIX * vec4(pos, 1)).xyz; ... }
+
+// ✓ 内置变量只在 vertex()/fragment() 里可见 → 当参数传
+vec3 tree_player_displace(mat4 model_matrix, ...) { ... }
+VERTEX += tree_player_displace(MODEL_MATRIX, VERTEX, CUSTOM0, CUSTOM1, false, 1.0) * alive;
+```
+
+这是 2026-10-23 实际踩到的编译错误。`VERTEX` / `TIME` / `MODEL_MATRIX` 等内置变量
+都遵循同一规则：自定义函数里取不到，必须从 `vertex()` 传参。
+
+### 6.7 软度与位移实测（大樱花树，缩放 0.3）
+
+| 网格 | aWind（CUSTOM0.w，缩放前模型空间） |
+| --- | --- |
+| `Bark_Trunk` 低处 | 0.012（几乎不动） |
+| `Bark_L1` 低处 | ≈ 0 |
+| `Bark_L3` | 0.462 |
+| `Bark_L4` | 0.631 |
+| `Bark_L5` | 0.746（动得最明显） |
+| `Leaves` | 0.900 |
+| `Flowers` | 0.808 |
+
+角色站在最低枝叶正下方时的位移量（临时探针实测）：
+
+| 网格 | 最大位移 |
+| --- | --- |
+| `Bark_L5` | ≈ 0.218 m |
+| `Leaves` | ≈ 0.559 m |
+| `Flowers` | ≈ 0.484 m |
+| `Bark_Trunk` | ≈ 0.003 m（可忽略） |
+
+即"只扰动 L5 与叶花、树干基本不动"由 aWind 天然保证，不需要额外按节点名分支。
+
+### 6.8 验收 / 回归
+
+- `tests/wind_leaf_branch_sync.gd`：12/12 PASS（原有枝叶同步未受影响）。
+- `tools/scan_all_scripts.gd`：413 个脚本，0 失败。
+- 真实渲染（真实 Vulkan，12 帧）：0 `SHADER ERROR`。
+  > 注意：headless 下如果相机没有 `current = true`、场景未被绘制，着色器**不会被编译**，
+  > 这种"探针通过"是假通过；验证着色器必须用真实渲染器并让相机出图。
+
+### 6.9 调参与已知限制
+
+- 手感优先改 `wind.gd` 上的 `player_bend / player_spread / player_radius / player_head_height`；
+  想单独调树的抬升量，改两个调用点的 `amount`（树皮 `0.45` / 叶花 `1.0`）。
+- 未烘焙的树（没有 CUSTOM0/1）：树皮按 `smoothstep(1.2, 3.0, y) × 0.45` 渐入，叶片固定 0.70；
+  观感可用，但没有"L5 比 L1 软"的精确差异。
+- 该 include 与 `fast_tree_wind.gdshaderinc` 的位移是**相加**的：风摆 + 角色扰动同时生效，
+  互不覆盖（两者都在模型空间叠加）。
+- 位移只在 `vertex()` 里改顶点，不写材质参数，因此**不会**污染场景文件（与蝴蝶参数保存问题不同）。
 
 
 

@@ -129,15 +129,10 @@ uniform float phase = 0.0;
 //     wind_flex_falloff/wind_seed + 材质级 wind_sway/wind_is_leaf/
 //     wind_leaf_flutter/wind_leaf_twist + 回退路径的 wind_strength/wind_height_*/
 //     wind_sway_scale）—— 在这里重复声明会变量重定义编译失败 ✗
-uniform vec3 player_pos = vec3(0.0, -100000.0, 0.0);
-uniform vec3 player_forward = vec3(0.0, 0.0, -1.0);
-uniform float player_radius : hint_range(0.05, 3.0) = 0.55;
-uniform float player_bend : hint_range(0.0, 2.0) = 0.75;
-uniform float player_spread : hint_range(0.0, 1.5) = 0.30;
-uniform float player_move : hint_range(0.0, 1.0) = 0.0;
-// ★★★ 角色身高上限（从 grass_wind_cull **移动过来** ✓ 用户要求：应该放在**叶片** ✓）
-//   离模型根部越高，角色影响越弱 ✓ 超过它就完全不受影响 ✓（保护树冠只被风吹 ✓）
-uniform float player_height_max : hint_range(0.1, 8.0) = 1.2;
+// ★★★ 角色扰动（站立 / 走过 / 跳跃）：
+//   叶子与花朵在**低于角色头顶**时被顶开 ✓ 与树皮共用同一份实现 ✓
+//   （世界坐标 + 头顶高度闸门 + 按 aWind 揉软度 —— 见 include 里的说明）
+#include "res://assets/shaders/tree_player_disturb.gdshaderinc"
 
 uniform sampler2D noise_tex : hint_default_black;
 
@@ -190,31 +185,11 @@ void vertex() {
 			}
 		}
 	}
-	// 角色走过时的倒伏 / 左右分开（同样照草 ✓）
-	if (player_move > 0.001) {
-		float base_y2 = MODEL_MATRIX[3].y;
-		float h2 = clamp((VERTEX.y - base_y2) / max(0.001, wind_height_ref), 0.0, 1.0);
-		// ★ 身高上限：离根越高角色影响越弱 ✓ 超过 player_height_max 完全不受影响 ✓
-		float capf = 1.0 - smoothstep(player_height_max * 0.6, player_height_max, VERTEX.y - base_y2);
-		vec2 rel = VERTEX.xz - player_pos.xz;
-		float dd = length(rel);
-		float infl = 1.0 - clamp(dd / max(0.01, player_radius), 0.0, 1.0);
-		infl = infl * infl * (3.0 - 2.0 * infl) * clamp(player_move, 0.0, 1.0) * capf;   // ★ × 身高上限 ✓
-		if (infl > 0.001) {
-			vec2 fw = normalize(player_forward.xz + vec2(0.0001));
-			vec2 rt = vec2(-fw.y, fw.x);
-			float along2 = dot(rel, fw);
-			float side = dot(rel, rt);
-			float front = smoothstep(-0.35, 0.45, along2);
-			float dirsign = 1.0;
-			if (side < 0.0) {
-				dirsign = -1.0;
-			}
-			vec2 push = rt * (dirsign * player_spread) - fw * (0.10 * front);
-			VERTEX.xz += push * (infl * h2 * (0.35 + 0.65 * front)) * alive;
-			VERTEX.y -= infl * h2 * player_bend * (0.40 + 0.60 * front) * alive;
-		}
-	}
+	// ★★★ 角色扰动（站立 / 走过 / 跳跃）：
+	//   低于头顶的叶/花被顶开（向上抬 + 左右分开 ✓ 见 tree_player_disturb.gdshaderinc）
+	//   amount=1.0：叶子/花朵与风摆同幅度（枝条是 0.45 ✓ 更硬）
+	// ⚠ 第一个实参必须是 MODEL_MATRIX：该函数内部取不到内置变量，只能在这里传（否则编译报"标识符未知"）
+	VERTEX += tree_player_displace(MODEL_MATRIX, VERTEX, CUSTOM0, CUSTOM1, false, 1.0) * alive;
 	// ★ 消失**只用材质透明**（用户要求 ✓）：不再缩放几何 ✗
 	//   —— 原来看起来会"整株缩没" ✗；现在叶子保持原尺寸、只靠 alpha 淡出 ✓✓
 }
