@@ -96,6 +96,9 @@ extends MultiMeshInstance3D
 ## Scale variable factor, scale of random grasses will be affected by this 
 ## factor
 @export var scale_var := -0.25 : set = _on_set_scale_var
+## ★ 本项目改动：笔刷分类，用于在编辑器里按类别管理草地节点（花/草/树/藤蔓）。
+##   默认"草"；空值或未填时也回落到草。
+@export_enum("花", "草", "树", "藤蔓") var brush_category := 1 : set = _on_set_brush_category
 ## Defines the strength of this grass, with large values ​​the grass will not be 
 ## moved by the wind, for example a bamboo can be 0.9 (it will almost not be 
 ## affected by the wind), and a tall grass can be 0.2 (very affected by the 
@@ -1452,6 +1455,17 @@ func _on_set_scale_var(value : float):
 	scale_var = value
 	if _material != null:
 		_material.set_shader_parameter("scale_var", scale_var)
+
+
+## ★ 本项目改动：笔刷分类 setter。
+##   空值 / 非法值时回落到"草"(1)；编辑状态下通知 Inspector 刷新显示。
+func _on_set_brush_category(value) -> void:
+	var idx := int(value)
+	if idx < 0 or idx > 3:
+		idx = 1   # 空 / 越界 -> 草
+	brush_category = idx
+	if Engine.is_editor_hint() and is_inside_tree():
+		notify_property_list_changed()
 
 
 func _on_set_grass_strength(value : float):

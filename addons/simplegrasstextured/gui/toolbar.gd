@@ -29,6 +29,8 @@ signal planes_changed(planes: int)
 ## ★ 本项目改动：V 字张开开关 / 张开量
 signal v_fold_changed(enabled: bool)
 signal v_spread_changed(spread: float)
+## ★ 本项目改动：笔刷分类切换（0=花, 1=草, 2=树, 3=藤蔓）
+signal category_changed(category: int)
 
 enum MENU_SHAPE_ID {
 	TOOL_SHAPE_SPHERE,
@@ -70,6 +72,11 @@ var _grass_selected = null
 var check_v_fold :CheckBox = null
 var edit_v_spread :EditorSpinSlider = null
 var _v_cont :HBoxContainer = null
+## ★ 本项目改动：笔刷分类控件（代码构建，同上理由）
+var _category_option :OptionButton = null
+var _category_cont :HBoxContainer = null
+## ★ 本项目改动：同步守卫（OptionButton 无 select_no_signal，用 bool 挡住 set_current_grass 里的回写）
+var _syncing := false
 
 @onready var _label_radius :Label = $HSliderRadius/Label
 @onready var _label_density :Label = $HSliderDensity/Label
@@ -101,6 +108,8 @@ func _ready() -> void:
 			option_planes.item_selected.connect(_on_option_planes_item_selected)
 	# ★ 本项目改动：V 字张开控件（开关 + 张开量），紧跟在"面数"后面
 	_build_v_controls()
+	# ★ 本项目改动：笔刷分类控件，紧跟在 V 字控件后面
+	_build_category_controls()
 
 
 func _unhandled_input(event :InputEvent) -> void:
@@ -177,6 +186,19 @@ func set_current_grass(grass) -> void:
 		var spread: Variant = _grass_selected.get("v_spread")
 		if spread is float or spread is int:
 			edit_v_spread.set_value_no_signal(float(spread))
+	# ★ 本项目改动：同步笔刷分类（类型安全 + 同步守卫避免回写）
+	if _category_option != null:
+		var cat: Variant = _grass_selected.get("brush_category")
+		var cat_idx := -1
+		if cat is int:
+			cat_idx = _category_option.get_item_index(int(cat))
+		elif cat is float:
+			cat_idx = _category_option.get_item_index(int(round(float(cat))))
+		# 找不到（旧节点没这个属性时）就保持默认草(1)，不做任何操作
+		if cat_idx >= 0:
+			_syncing = true
+			_category_option.select(cat_idx)
+			_syncing = false
 	for tool_name in _grass_selected.sgt_tool_shape:
 		match tool_name:
 			"airbrush":
@@ -224,6 +246,44 @@ func _on_check_v_fold_toggled(enabled :bool) -> void:
 
 func _on_edit_v_spread_value_changed(value :float) -> void:
 	v_spread_changed.emit(value)
+
+
+## ★ 本项目改动：笔刷分类控件。
+##   代码构建 HBoxContainer + OptionButton，紧跟 VCont 之后。
+##   四个选项：花(0)、草(1)、树(2)、藤蔓(3)，默认草。
+func _build_category_controls() -> void:
+	if _category_cont != null:
+		return
+	_category_cont = HBoxContainer.new()
+	_category_cont.name = "CategoryCont"
+	var label := Label.new()
+	label.text = "分类"
+	_category_cont.add_child(label)
+	_category_option = OptionButton.new()
+	_category_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_category_option.custom_minimum_size.x = 90
+	_category_option.add_item("花", 0)
+	_category_option.add_item("草", 1)
+	_category_option.add_item("树", 2)
+	_category_option.add_item("藤蔓", 3)
+	_category_option.select(_category_option.get_item_index(1))   # 默认草
+	_category_option.tooltip_text = "笔刷分类：花 / 草 / 树 / 藤蔓，便于按类别管理草地节点"
+	_category_cont.add_child(_category_option)
+	add_child(_category_cont)
+	# 插到 VCont 后面
+	var v_cont := get_node_or_null("VCont")
+	if v_cont != null:
+		move_child(_category_cont, v_cont.get_index() + 1)
+	if not _category_option.item_selected.is_connected(_on_category_option_item_selected):
+		_category_option.item_selected.connect(_on_category_option_item_selected)
+
+
+func _on_category_option_item_selected(index: int) -> void:
+	if _syncing:
+		return
+	if _category_option == null:
+		return
+	category_changed.emit(_category_option.get_item_id(index))
 
 
 func _create_slider(label :String, min_value :float, max_value :float, step :float, value :float = 0.0) -> EditorSpinSlider:

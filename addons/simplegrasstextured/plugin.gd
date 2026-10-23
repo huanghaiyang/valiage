@@ -268,6 +268,8 @@ func _enter_tree() -> void:
 	# ★ 本项目改动：V 字张开开关 / 张开量
 	_gui_toolbar.v_fold_changed.connect(_on_v_fold_changed)
 	_gui_toolbar.v_spread_changed.connect(_on_v_spread_changed)
+	# ★ 本项目改动：笔刷分类
+	_gui_toolbar.category_changed.connect(_on_category_changed)
 	_edit_tool = TOOL.AIRBRUSH
 
 
@@ -1224,6 +1226,12 @@ func _on_v_spread_changed(spread : float) -> void:
 	_edit_v_spread = clampf(spread, 0.0, 2.0)
 	if _grass_selected != null:
 		_grass_selected.v_spread = _edit_v_spread
+
+
+## ★ 本项目改动：笔刷分类切换。
+func _on_category_changed(category : int) -> void:
+	if _grass_selected != null:
+		_grass_selected.brush_category = category
 
 
 func _on_set_tool(value : TOOL) -> void:

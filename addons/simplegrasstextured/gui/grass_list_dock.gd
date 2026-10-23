@@ -610,7 +610,31 @@ func _grass_label(node) -> String:
 	var count := 0
 	if node.multimesh != null:
 		count = node.multimesh.instance_count
+	# ★ 本项目改动：追加笔刷分类显示，下拉框里一眼看清是花/草/树/藤蔓
+	var cat_str := _category_name_of(node)
+	if not cat_str.is_empty():
+		return "%s  (%d)  [%s]" % [path, count, cat_str]
 	return "%s  (%d)" % [path, count]
+
+
+## ★ 本项目改动：把 brush_category 枚举转成可读字符串。
+##   节点无此属性（旧版本）或值越界时返回空串，不强行显示。
+func _category_name_of(node) -> String:
+	if node == null:
+		return ""
+	var v: Variant = node.get("brush_category")
+	if v is int:
+		pass
+	elif v is float:
+		v = int(round(float(v)))
+	else:
+		return ""
+	match int(v):
+		0: return "花"
+		1: return "草"
+		2: return "树"
+		3: return "藤蔓"
+		_: return ""
 
 
 func _collect_grass_nodes() -> Array:
