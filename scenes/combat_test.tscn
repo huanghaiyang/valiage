@@ -1,0 +1,106 @@
+[gd_scene format=3 uid="uid://cxua5c65us2hp"]
+
+[ext_resource type="Script" uid="uid://c3srt4o7win41" path="res://scripts/combat_test.gd" id="0_root"]
+[ext_resource type="Script" uid="uid://b5amhkv2vrypk" path="res://scripts/player.gd" id="1_player"]
+[ext_resource type="Script" uid="uid://cwdumdckdptxp" path="res://scripts/camera_rig.gd" id="2_camera"]
+[ext_resource type="Script" uid="uid://ce46l04hgra0d" path="res://scripts/world/terrain.gd" id="3_terrain"]
+[ext_resource type="Script" uid="uid://dkpoys3jnr0h2" path="res://scripts/damage_dummy.gd" id="4_dummy"]
+[ext_resource type="PackedScene" uid="uid://k8hm4jly2vef" path="res://assets/models/characters/Knight.glb" id="5_knight"]
+
+[sub_resource type="Environment" id="Environment_test"]
+background_mode = 1
+background_color = Color(0.45, 0.58, 0.72, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.62, 0.64, 0.7, 1)
+ambient_light_energy = 0.45
+tonemap_mode = 2
+
+[sub_resource type="StandardMaterial3D" id="Material_ground"]
+albedo_color = Color(0.3, 0.38, 0.28, 1)
+
+[sub_resource type="BoxMesh" id="Mesh_ground"]
+material = SubResource("Material_ground")
+size = Vector3(40, 0.5, 40)
+
+[sub_resource type="BoxShape3D" id="Shape_ground"]
+size = Vector3(40, 0.5, 40)
+
+[sub_resource type="CapsuleShape3D" id="Shape_target"]
+radius = 0.35
+height = 1.5
+
+[node name="CombatTest" type="Node3D" unique_id=32874761]
+script = ExtResource("0_root")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1408369964]
+environment = SubResource("Environment_test")
+
+[node name="Sun" type="DirectionalLight3D" parent="." unique_id=341119006]
+transform = Transform3D(0.81915206, 0.43938503, -0.36868784, 0, 0.64278764, 0.7660445, 0.57357645, -0.62750685, 0.5265408, 0, 20, 0)
+light_color = Color(1, 0.93, 0.82, 1)
+light_energy = 1.15
+shadow_enabled = true
+
+[node name="Terrain" type="Node3D" parent="." unique_id=1211186191]
+script = ExtResource("3_terrain")
+use_terrain3d = false
+
+[node name="Ground" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.25, 0)
+collision_layer = 2
+collision_mask = 0
+
+[node name="Mesh" type="MeshInstance3D" parent="Ground" unique_id=978179435]
+mesh = SubResource("Mesh_ground")
+
+[node name="Collision" type="CollisionShape3D" parent="Ground" unique_id=1333533210]
+shape = SubResource("Shape_ground")
+
+[node name="Player" type="CharacterBody3D" parent="." unique_id=1615644778]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.6518124, 3)
+script = ExtResource("1_player")
+
+[node name="CameraRig" type="Node3D" parent="." unique_id=1298912193]
+script = ExtResource("2_camera")
+
+[node name="Camera3D" type="Camera3D" parent="CameraRig" unique_id=72824097]
+current = true
+fov = 60.0
+near = 0.1
+far = 600.0
+
+[node name="TargetDummy" type="StaticBody3D" parent="." groups=["enemies"]]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -3)
+collision_layer = 4
+collision_mask = 0
+script = ExtResource("4_dummy")
+
+[node name="Model" parent="TargetDummy" unique_id=671904127 instance=ExtResource("5_knight")]
+transform = Transform3D(0.61, 0, 0, 0, 0.61, 0, 0, 0, 0.61, 0, 0, 0)
+
+[node name="Collision" type="CollisionShape3D" parent="TargetDummy" unique_id=189433682]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.75, 0)
+shape = SubResource("Shape_target")
+
+[node name="DamageLabel" type="Label3D" parent="TargetDummy" unique_id=1339818483]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.15, 0)
+billboard = 1
+no_depth_test = true
+text = "人物靶子"
+font_size = 40
+
+[node name="Hint" type="CanvasLayer" parent="." unique_id=1703225545]
+
+[node name="Label" type="Label" parent="Hint" unique_id=613995510]
+offset_left = 16.0
+offset_top = 12.0
+offset_right = 760.0
+offset_bottom = 140.0
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
+theme_override_constants/outline_size = 6
+text = "攻击数值测试
+1. 按 Q 唤出法术轮盘，选「火焰灼烧 / 火焰推进 / 蓝色龙卷风」
+2. 按住左键施放（选点类法术先点靶子附近的地面）
+3. 靶子头顶实时显示：累计伤害 / 命中次数 / 平均 DPS
+4. 按 R 清零统计"
