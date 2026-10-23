@@ -288,6 +288,35 @@ func scene_root() -> Window:
 @export_range(0, 4, 1) var grass_bend_slots := 2
 ## 调试：每帧打印蝴蝶→草的 press 计算（排查"压草没反应"）。
 @export var debug_grass_bend := false
+@export_group("花上停留 Flower Perch (sgt)")
+## ★ 总开关：蝴蝶是否**随机落到 SGT 花笔刷（brush_category = 0）上**停一会儿。
+##   和"能量低才落地晒太阳"是两条独立路径：这里不看能量，纯随机、纯观赏。
+##   关掉后一切行为回到原样（不改任何其它参数）。
+@export var sgt_perch_enabled := true
+## 两次"花上停留"之间的**最短**间隔（秒，每只蝴蝶独立计时）。
+@export_range(1.0, 120.0, 0.5) var sgt_perch_interval_min_s := 8.0
+## 两次"花上停留"之间的**最长**间隔（秒）。实际值在 [min, max] 内均匀随机。
+@export_range(1.0, 180.0, 0.5) var sgt_perch_interval_max_s := 20.0
+## 一次停留的**最短**时长（秒）。停留期间蝴蝶被"钉"在花顶，能量也照常回升。
+@export_range(0.2, 30.0, 0.1) var sgt_perch_duration_min_s := 1.5
+## 一次停留的**最长**时长（秒）。实际值在 [min, max] 内均匀随机。
+@export_range(0.2, 60.0, 0.1) var sgt_perch_duration_max_s := 4.0
+## "飞向花"的最长允许时间（秒）：超时仍未落到花顶就放弃、回去巡飞。
+## ★ 为什么必须和"停留时长"分开：从决策点到花顶要飞好几米、还要向下俯冲
+##   （花顶通常低于区域底），若拿停留时长当接近计时，计时结束时蝴蝶还在半路 ——
+##   表现出来就是"半路掉头/乱飞"（实测 bug）。
+@export_range(1.0, 30.0, 0.5) var sgt_perch_approach_timeout_s := 8.0
+## 选择花时的**搜索半径**（米）：只在离自己这么近的花里随机挑。
+## 调大 -> 更愿意飞远一点去停；调小 -> 只停身边的花（找不到就继续飞）。
+@export_range(0.5, 40.0, 0.5) var sgt_perch_radius_m := 6.0
+## 落点高度：占"这株花世界高度"的比例（0 = 花根，1 = 花顶）。
+## SGT 的网格是 1×1、底面在 y=0，所以实例 basis.y 的长度就是花高。
+@export_range(0.0, 1.5, 0.01) var sgt_perch_height_ratio := 0.85
+## 缓存的花落脚点上限（超过就用步长抽样）。
+## 整片花可能有上千株，而蝴蝶每次只要一个点 —— 没必要全拿。
+@export_range(16, 8192, 16) var sgt_perch_max_points := 512
+## 调试：打印本次扫描到的花笔刷数 / 落脚点数（排查"蝴蝶从不停留"）。
+@export var debug_sgt_perch := false
 @export_group("")
 # ==================== 行为总开关 ====================
 ## 总开关。关掉：**只隐藏蝴蝶子节点**并停止推进（不释放节点，打开即恢复）。
@@ -401,6 +430,11 @@ func _ready() -> void:
 		if sprites.is_empty():
 			autoload_all_sprites(false)
 		_build()
+	# ★ SGT 花落脚点**只在这里扫一次**（进场景/重载场景时）。
+	#   花是地图编辑阶段摆好的静态笔刷，运行中不会增删 —— 每帧/定期重扫纯属浪费。
+	#   代价：编辑器里画了新花、或挪了区域，要重载场景（或调 rebuild()）才生效。
+	if sgt_perch_enabled:
+		_scan_sgt_flowers()
 	set_process(true)
 
 
@@ -439,6 +473,8 @@ func _process(delta: float) -> void:
 				_regroup_t = maxf(0.0, regroup_s)
 		elif _regroup_t > 0.0:
 			_regroup_t -= dt
+	# ★ SGT 花落脚点不再周期重扫（见 `_ready()` 的注释）：缓存只在 `_ready()` /
+	#   `rebuild()` 时刷新，`_build_extra()` 会按当前区域过滤后交给蝴蝶。
 	var extra := _build_extra(dt)
 	# ★ 邻居列表**每帧一次算好**（而不是在循环里 duplicate()+remove_at()）：
 	#   旧写法对每只蝴蝶都复制一次整张位置表再删一项，是 O(n²) 的**数组拷贝**开销
@@ -488,6 +524,23 @@ var _res_rng := RandomNumberGenerator.new()
 ## 调试：最近一次草材质扫描的结果说明（`_grass_mats` 为空时用它定位）。
 var _grass_dbg_note := ""
 
+## ★★ 草材质扫描的**分帧**执行状态（与花扫描同一套 time-slicing 思路）★★
+## 每帧只推进若干个节点，扫完整轮才原子替换 `_grass_mats` —— 避免整轮集中跑造成的周期性卡顿。
+var _grass_scan_running := false
+var _grass_scan_stack: Array = []
+var _grass_tmp_mats: Array[ShaderMaterial] = []
+var _grass_seen := {}
+var _grass_looked := 0
+const GRASS_SCAN_SLICE_US := 900
+
+## ★ SGT 花的落脚点缓存（**本地坐标**，已含"花顶"高度）。
+## 只在 `_ready()` / `rebuild()` 时由 `_scan_sgt_flowers()` 扫一次（花是静态笔刷）；
+## `_build_extra()` 每帧按当前区域过滤后塞进 `extra["sgt_perches"]` 供蝴蝶随机挑选。
+var _sgt_perch_pts: Array = []
+## 本次扫描到的花笔刷节点数 / 结果说明（调试用）。
+var _sgt_perch_nodes := 0
+var _sgt_perch_note := ""
+
 
 ## 扫描场景里所有"用 SGT 草着色器"的 ShaderMaterial 并缓存。
 ## 参数：无（从 current_scene 起深度优先）。
@@ -515,63 +568,249 @@ var _grass_dbg_note := ""
 ##   ② 主场景里真正渲染的草用的是 `assets/shaders/grass_wind.gdshader`（实测 274 个材质），
 ##      不是 SGT 自带着色器（只有 6 个节点）—— 所以 hints 必须**两个都认**。
 func _scan_grass() -> int:
-	_grass_mats.clear()
+	_grass_scan_begin()
+	while _grass_scan_running:
+		_grass_scan_step(1 << 30)
+	return _grass_mats.size()
+
+
+## 开始新一轮草材质扫描：只压入 root 节点，实际遍历交给 `_grass_scan_step()` 分帧推进。
+## 参数：无。
+## 副作用：重置 `_grass_scan_*` 状态；**不**修改 `_grass_mats`（旧结果在整轮扫完前继续可用）。
+func _grass_scan_begin() -> void:
+	_grass_scan_running = false
+	_grass_scan_stack.clear()
+	_grass_tmp_mats.clear()
+	_grass_seen.clear()
+	_grass_looked = 0
 	var st := scene_tree()
 	if st == null:
 		_grass_dbg_note = "scene_tree 为空"
-		return 0
+		return
 	var root := st.current_scene if st.current_scene != null else scene_root()
 	if root == null:
 		_grass_dbg_note = "root 为空"
+		return
+	_grass_scan_stack.append(root)
+	_grass_scan_running = true
+
+
+## 分帧推进草材质扫描，最多消耗 `budget_us` 微秒。
+## 参数：`budget_us` 本帧允许的耗时（微秒）；同步调用可传一个极大值。
+## 返回值：true = 本轮已结束（结果已原子换入 `_grass_mats`）；false = 还没扫完。
+##
+## ★ 为什么原子替换：`_grass_mats` 每帧被 `_write_grass_bend()` 读取 —— 如果中途
+##   原地 clear/append，那一帧蝴蝶就会推空数组给草，视觉上草的压草效果会"闪一下"。
+##   扫到临时数组里，扫完才整体赋值，中途始终有旧结果可用。
+func _grass_scan_step(budget_us: int) -> bool:
+	if not _grass_scan_running:
+		return true
+	var t_end := Time.get_ticks_usec() + budget_us
+	var walked := 0
+	while not _grass_scan_stack.is_empty():
+		var n: Node = _grass_scan_stack.pop_back()
+		if n != null:
+			# ★ 共同父类 GeometryInstance3D：MultiMeshInstance3D 与 MeshInstance3D 都是它的子类
+			if n is GeometryInstance3D:
+				var gi := n as GeometryInstance3D
+				var cands: Array = [gi.material_override]
+				# 按实际类型取 mesh（**不能**直接 `as MeshInstance3D`）
+				var mesh: Mesh = null
+				if n is MeshInstance3D:
+					mesh = (n as MeshInstance3D).mesh
+				elif n is MultiMeshInstance3D:
+					var mm := (n as MultiMeshInstance3D).multimesh
+					if mm != null:
+						mesh = mm.mesh
+				if mesh != null:
+					for s in range(mesh.get_surface_count()):
+						var sm := mesh.surface_get_material(s)
+						if sm != null:
+							cands.append(sm)
+				for c in cands:
+					if c == null:
+						continue
+					_grass_looked += 1
+					if c is ShaderMaterial:
+						var smat := c as ShaderMaterial
+						var sh: Shader = smat.shader
+						if sh == null:
+							continue
+						var sp := String(sh.resource_path)
+						for hint in GRASS_SHADER_HINTS:
+							if sp.contains(String(hint)):
+								var id := smat.get_instance_id()
+								if not _grass_seen.has(id):
+									_grass_seen[id] = true
+									_grass_tmp_mats.append(smat)
+								break
+		for ch in n.get_children():
+			_grass_scan_stack.append(ch)
+		walked += 1
+		if walked >= 32:
+			walked = 0
+			if Time.get_ticks_usec() >= t_end:
+				return false
+	_grass_scan_finish()
+	return true
+
+
+## 收尾：把本轮结果**原子替换**进 `_grass_mats`（蝴蝶下一帧起才会用到）。
+func _grass_scan_finish() -> void:
+	_grass_scan_running = false
+	_grass_scan_stack.clear()
+	_grass_dbg_note = "看了 %d 个材质槽，命中 %d" % [_grass_looked, _grass_tmp_mats.size()]
+	# ★ 原子替换：直接赋值 Array[ShaderMaterial] 类型数组，Godot 会更新类型引用
+	_grass_mats = _grass_tmp_mats
+	_grass_tmp_mats = []
+	_grass_seen.clear()
+
+
+## 中止未完成的扫描。
+func _grass_scan_abort() -> void:
+	_grass_scan_running = false
+	_grass_scan_stack.clear()
+	_grass_tmp_mats.clear()
+	_grass_seen.clear()
+
+
+## ★ 扫描场景里的 **SGT 花笔刷**，缓存"花顶"落脚点（本地坐标）。
+## 参数：无（从 current_scene 起深度优先，与 `_scan_grass()` 同一套遍历）。
+## 返回值：本次缓存到的落脚点数。
+## 副作用：覆盖 `_sgt_perch_pts` / `_sgt_perch_nodes` / `_sgt_perch_note`。
+##
+## 判定"这是花"的方式（**不看节点名**，用户随时会改名）：
+##   · 节点是 `MultiMeshInstance3D`（SGT 的草/花都是它）；
+##   · 带 `brush_category` 属性，且值 == 0（SGT 插件里 0 = 花，见 grass.gd 的 @export_enum）；
+##   · 有 non-null 的 multimesh、TRANSFORM_3D、可见。
+##
+## 落点 = 实例原点 + 实例 basis.y × `sgt_perch_height_ratio`：
+##   SGT 网格是 1×1、底面在 y=0，所以实例 basis.y（含节点/实例缩放）的长度就是这株花的世界高度。
+##   再加 1 cm 抬高，避免蝴蝶中心正好埋进花瓣上缘。
+##
+## 性能：整片花可能上千株，用**步长抽样**把总量压在 `sgt_perch_max_points` 以内。
+##   只在 `_ready()` / `rebuild()` 时扫一次（花是静态笔刷，运行中不会增删），
+##   不需要周期重扫、也不需要分帧；蝴蝶每个决策点只随机挑一个点，开销可忽略。
+##
+## ★ 只收**水平落在区域里**的花（x/z 在 bounds 内），原因见函数内注释：
+##   区域外的花会让蝴蝶整段飞出区域，观感就是"乱飞"。竖直方向不限制（花在区域底下方）。
+func _scan_sgt_flowers() -> int:
+	_sgt_perch_pts.clear()
+	_sgt_perch_nodes = 0
+	_sgt_perch_note = ""
+	var st := scene_tree()
+	if st == null:
+		_sgt_perch_note = "scene_tree 为空"
 		return 0
+	var root := st.current_scene if st.current_scene != null else scene_root()
+	if root == null:
+		_sgt_perch_note = "root 为空"
+		return 0
+	var nodes: Array = []
 	var stack: Array = [root]
-	var seen := {}
-	var looked := 0
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
-		if n == null:
-			continue
-		# ★ 共同父类 GeometryInstance3D：MultiMeshInstance3D 与 MeshInstance3D 都是它的子类
-		if n is GeometryInstance3D:
-			var gi := n as GeometryInstance3D
-			var cands: Array = [gi.material_override]
-			# 按实际类型取 mesh（**不能**直接 `as MeshInstance3D`，见上面坑 ①）
-			var mesh: Mesh = null
-			if n is MeshInstance3D:
-				mesh = (n as MeshInstance3D).mesh
-			elif n is MultiMeshInstance3D:
-				var mm := (n as MultiMeshInstance3D).multimesh
-				if mm != null:
-					mesh = mm.mesh
-			if mesh != null:
-				for s in range(mesh.get_surface_count()):
-					var sm := mesh.surface_get_material(s)
-					if sm != null:
-						cands.append(sm)
-			for c in cands:
-				if c == null:
-					continue
-				looked += 1
-				if c is ShaderMaterial:
-					var smat := c as ShaderMaterial
-					var sh: Shader = smat.shader
-					if sh == null:
-						continue
-					var sp := String(sh.resource_path)
-					var is_grass := false
-					for hint in GRASS_SHADER_HINTS:
-						if sp.contains(String(hint)):
-							is_grass = true
-							break
-					if is_grass:
-						var id := smat.get_instance_id()
-						if not seen.has(id):
-							seen[id] = true
-							_grass_mats.append(smat)
 		for ch in n.get_children():
 			stack.append(ch)
-	_grass_dbg_note = "看了 %d 个材质槽，命中 %d" % [looked, _grass_mats.size()]
-	return _grass_mats.size()
+		if not (n is MultiMeshInstance3D):
+			continue
+		var mi := n as MultiMeshInstance3D
+		if not mi.is_visible_in_tree():
+			continue
+		var cat: Variant = mi.get("brush_category")
+		if cat == null or int(cat) != 0:
+			continue
+		var mm: MultiMesh = mi.multimesh
+		if mm == null or mm.transform_format != MultiMesh.TRANSFORM_3D or mm.instance_count <= 0:
+			continue
+		nodes.append(mi)
+	if nodes.is_empty():
+		_sgt_perch_note = "场景里没有 SGT 花笔刷（brush_category = 0）"
+		return 0
+	_sgt_perch_nodes = nodes.size()
+	# ★ 抽样预算按"**检查**的实例数"算，而不是"保留的点数"（实测教训）：
+	#   区域内的花可能只占全部花的一小部分（本项目 85/3952 ≈ 2%）。
+	#   旧算法 stride = 实例数 / sgt_perch_max_points，等于只检查 512 个实例 ——
+	#   只能命中约 5~10 个点，蝴蝶能选的花极少，随机性基本没有。
+	#   这里把检查量提到保留上限的 16 倍（默认 512 -> 8192），本项目足以覆盖全部 3952 株。
+	var inspect_budget := maxi(1, sgt_perch_max_points * 16)
+	var budget := maxi(1, int(ceil(float(inspect_budget) / float(nodes.size()))))
+	# ★ 只保留**水平方向落在区域里**的花：蝴蝶"只在区域内飞"是硬需求，
+	#   落脚点如果在区域外，蝴蝶要么够不着（边界力把它推回来），要么得整段飞出区域 ——
+	#   后者在观感上就是"乱飞"（用户反馈）。
+	#   实测本项目：3952 个花实例里只有 85 个水平落在区域 12×12 内，其余散布到场外几十米；
+	#   旧代码用 `_bounds().grow(半径 6m)` 收点，等于把大量区域外的花都当成了候选。
+	#   竖直方向**不设限**：花本来就长在区域底下方（实测花顶比区域底低 1.1~2.0 m），
+	#   停留/接近期间由蝴蝶侧临时豁免下边界（见 Butterfly._force_bounds）。
+	var bnd := _bounds()
+	var bnd_lo := bnd.position
+	var bnd_hi := bnd.position + bnd.size
+	var ratio := clampf(sgt_perch_height_ratio, 0.0, 1.5)
+	for n in nodes:
+		var mi := n as MultiMeshInstance3D
+		var mm: MultiMesh = mi.multimesh
+		if mm == null:
+			continue
+		var cnt := mm.instance_count
+		# ★★ 每个 MultiMesh 只读**一次** `mm.buffer`（实测性能杀手）★★
+		#   `mm.buffer` 的读取是**整块复制**（本项目 1013 个实例 = 1.6 万个 float）。
+		#   放进逐实例循环里，扫一遍 3952 株花 ≈ 复制 250 MB 内存。
+		var buf := mm.buffer
+		var stride := maxi(1, int(ceil(float(cnt) / float(budget))))
+		# ★ 读取实例变换的实际 stride（float 个数 / 实例）
+		var xf_stride := 16
+		if cnt > 0 and buf.size() % cnt == 0 and buf.size() / cnt >= 12:
+			xf_stride = buf.size() / cnt
+		# ★ 节点变换与它的逆也只算一次：`to_local()` 内部就是 `global_transform.affine_inverse() * p`，
+		#   放在循环里等于每个实例做一次 3×3 求逆。
+		var mi_xf := mi.global_transform
+		var inv := global_transform.affine_inverse()
+		# 每轮随机起点：每次扫描抽到的样本不完全相同，视觉上"停的花"更随机
+		var first := _res_rng.randi_range(0, stride - 1)
+		for i in range(first, cnt, stride):
+			var xf: Transform3D = mi_xf * _multimesh_instance_xf(mm, buf, i, xf_stride)
+			var up := xf.basis.y
+			var h := up.length()
+			if h < 0.05:
+				continue
+			var p := xf.origin + up / h * (h * ratio) + Vector3.UP * 0.01
+			var lp := inv * p
+			if lp.x >= bnd_lo.x and lp.x <= bnd_hi.x and lp.z >= bnd_lo.z and lp.z <= bnd_hi.z:
+				_sgt_perch_pts.append(lp)
+			if _sgt_perch_pts.size() >= sgt_perch_max_points:
+				break
+		if _sgt_perch_pts.size() >= sgt_perch_max_points:
+			break
+	if _sgt_perch_pts.is_empty():
+		_sgt_perch_note = "找到 %d 个花笔刷，但区域范围内没有落脚点" % _sgt_perch_nodes
+	elif debug_sgt_perch:
+		print("[butterfly] SGT 花：%d 个笔刷 -> %d 个落脚点" % [_sgt_perch_nodes, _sgt_perch_pts.size()])
+	return _sgt_perch_pts.size()
+
+
+## 读取 MultiMesh 第 `i` 个实例的 Transform3D。
+## 参数：`mm`（回退用）、`buf`（**由调用方一次性读好传入**，见 `_scan_sgt_flowers` 的性能注释）、
+##       `i`（实例下标）、`stride`（每个实例占的 float 个数，12 或 16）。
+## ★ 为什么不在这里面读 `mm.buffer`：那会整块复制，逐实例调用等于把整块复制 N 遍。
+## ★ 为什么不直接用 `mm.get_instance_transform(i)`：
+##   本项目实测（Godot 4.7.2，SGT 从 `maps/*_grass.res` 加载的 MultiMesh）该 API
+##   **一律返回单位阵**（origin 全变 (0,0,0)），而 `mm.buffer` 里其实存着正确的数据
+##   —— 直接用它会把整片花当成"全在原点的一株"，落脚点全部错误。
+## buffer 布局（TRANSFORM_3D）：每个实例 12 个 float，按 **3 行 × (basis 3 + origin 分量)**：
+##   [bx.x, bx.y, bx.z, ox,  by.x, by.y, by.z, oy,  bz.x, bz.y, bz.z, oz]
+##   若该 MultiMesh 带 custom data（本项目 SGT 是 4 个 float），后面再跟 4 个 float；
+##   `stride` 由 `buffer.size() / instance_count` 动态算出，所以带不带 custom data 都对。
+func _multimesh_instance_xf(mm: MultiMesh, buf: PackedFloat32Array, i: int, stride: int) -> Transform3D:
+	var need := (i + 1) * stride
+	if stride >= 12 and buf.size() >= need:
+		var o := i * stride
+		var b := Basis()
+		b.x = Vector3(buf[o], buf[o + 1], buf[o + 2])
+		b.y = Vector3(buf[o + 4], buf[o + 5], buf[o + 6])
+		b.z = Vector3(buf[o + 8], buf[o + 9], buf[o + 10])
+		return Transform3D(b, Vector3(buf[o + 3], buf[o + 7], buf[o + 11]))
+	# 没有 buffer（例如运行时动态新建、还没上传）时才回退到官方 API
+	return mm.get_instance_transform(i)
 
 
 ## 每帧把"最贴近草的几只蝴蝶"写给草着色器。
@@ -582,10 +821,14 @@ func _scan_grass() -> int:
 ##   但我们只在有蝴蝶时写 -> 关掉时 `count=0`，草恢复原状（符合"关掉就干净"）。
 func _write_grass_bend(delta: float) -> void:
 	_grass_scan_t -= delta
-	if _grass_mats.is_empty() or _grass_scan_t <= 0.0:
-		# 5 秒扫一次：草的材质集合基本不变（用户加草/删草时最迟 5 秒生效）
+	# ★ 草材质扫描**分帧**执行（与花扫描同思路）：
+	#   整轮遍历场景树在编辑器里实测 ~10 ms，拆到多帧后单帧 ≤ 1 ms。
+	#   扫到临时数组里，整轮结束才原子换入 `_grass_mats`，蝴蝶中途继续用旧结果。
+	if _grass_scan_t <= 0.0:
 		_grass_scan_t = 5.0
-		_scan_grass()
+		_grass_scan_begin()
+	if _grass_scan_running:
+		_grass_scan_step(GRASS_SCAN_SLICE_US)
 	var slots := int(_num_grass_slots())
 	if _grass_mats.is_empty() or slots <= 0 or _butterflies.is_empty():
 		_grass_slots = 0
@@ -1118,6 +1361,22 @@ func _build_extra(delta: float = 0.0) -> Dictionary:
 		if fpos is Vector3:
 			e["ars_hit"] = true
 			e["ars_pos"] = fpos
+	# ★ SGT 花上随机停留：把扫描好的落脚点（本地坐标）交给蝴蝶自己挑。
+	#   只在非空时放进去，蝴蝶侧 `extra.get("sgt_perches", null)` 判空即可（关掉时零开销）。
+	if sgt_perch_enabled and not _sgt_perch_pts.is_empty():
+		# ★ 花点是在**扫描那一刻**的区域范围内筛出来的；之后区域可能被拖动/缩放。
+		#   这里按当前区域再过滤一次（几十个点，开销可忽略），
+		#   避免蝴蝶飞向区域外的旧花点（否则又会出现"乱飞"）。
+		var bnd := _bounds()
+		var lo := bnd.position
+		var hi := bnd.position + bnd.size
+		var keep: Array = []
+		for p in _sgt_perch_pts:
+			var v := p as Vector3
+			if v.x >= lo.x and v.x <= hi.x and v.z >= lo.z and v.z <= hi.z:
+				keep.append(v)
+		if not keep.is_empty():
+			e["sgt_perches"] = keep
 	return e
 
 
@@ -1371,6 +1630,9 @@ func respawn_all() -> void:
 ## 立刻重建（外部脚本改了 sprites/count 后调它，避免等下一帧节流）。
 func rebuild() -> void:
 	_build()
+	# 重建后按当前区域重扫花点（手工刷新入口：编辑器里画完新花可以直接调它）
+	if sgt_perch_enabled:
+		_scan_sgt_flowers()
 
 
 ## 把素材目录里扫到的 PNG **全部**灌进 sprites（生成清单缓存，缺清单就现场扫）。
@@ -1578,6 +1840,12 @@ func tuning_dict() -> Dictionary:
 		# ---- 与草（SimpleGrassTextured）的交互 ----
 		"grass_bend_radius": 0.42, "grass_bend_strength": 1.0,
 		"grass_bend_height": 1.15, "grass_bend_slots": 2.0,
+		# ---- 花上随机停留（SGT 花笔刷）----
+		"sgt_perch_enabled": true,
+		"sgt_perch_interval_min_s": 8.0, "sgt_perch_interval_max_s": 20.0,
+		"sgt_perch_duration_min_s": 1.5, "sgt_perch_duration_max_s": 4.0,
+		"sgt_perch_approach_timeout_s": 8.0,
+		"sgt_perch_radius_m": 6.0, "sgt_perch_height_ratio": 0.85,
 		# ---- 立体感（体积）----
 		"wing_camber": 0.30, "wing_thickness": 0.035, "wing_bend_y": 0.0,
 		"edge_min_facing": 0.0, "edge_min_deg": 14.0, "rim_dark": 0.55,
@@ -1651,6 +1919,12 @@ const GROUP_OVERRIDE_KEYS := [
 	"ars_rotate_s", "ars_min_move_m", "ars_participation", "seek_repeat_avoid_m",
 	# 草交互（sgt）
 	"grass_bend_radius", "grass_bend_strength", "grass_bend_height", "grass_bend_slots",
+	# 花上随机停留（sgt 花笔刷）
+	"sgt_perch_enabled",
+	"sgt_perch_interval_min_s", "sgt_perch_interval_max_s",
+	"sgt_perch_duration_min_s", "sgt_perch_duration_max_s",
+	"sgt_perch_approach_timeout_s",
+	"sgt_perch_radius_m", "sgt_perch_height_ratio",
 ]
 
 
@@ -1710,6 +1984,11 @@ func stats() -> Dictionary:
 		"max_y": ymax if ymax > -1.0e19 else 0.0,
 		"min_bound_y": _bounds().position.y,
 		"max_bound_y": _bounds().position.y + _bounds().size.y,
+		# ★ SGT 花上停留的调试信息：扫到几个笔刷 / 缓存几个落脚点 / 没扫到时的原因
+		"sgt_perch_enabled": sgt_perch_enabled,
+		"sgt_perch_nodes": _sgt_perch_nodes,
+		"sgt_perch_points": _sgt_perch_pts.size(),
+		"sgt_perch_note": _sgt_perch_note,
 	}
 
 

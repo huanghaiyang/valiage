@@ -139,6 +139,26 @@ var _ars_bias := 0.5
 ## 上一处趋花目标（本地坐标）。用于**避免重复回同一个点**（见 `_find_flower_world`）。
 var _last_seek_target: Variant = null
 
+# ==================== SGT 花上随机停留 ====================
+## 本次 BASK 是否是"随机落到 SGT 花上"（true 时**不看能量**，只看计时器）。
+## 为什么需要它：普通 BASK 是"能量低 -> 晒太阳"，energy 一满 0.995 就结束；
+##   随机花上停留与能量无关，必须用独立标记区分，否则刚落上去就可能被 energy 立刻弹走。
+var _sgt_rest := false
+## ★ 是否**已经到达花顶**（`_sgt_rest = true` 只表示"正在去/已停在花上"）。
+## 为什么必须分开：从决策到真正落到花上要飞 1~6 米、还要向下俯冲（花顶常低于区域底），
+##   这段时间如果就关掉边界/避地力，蝴蝶会被风带着乱飘 —— 视觉上就是"乱飞"。
+##   所以：接近途中保留正常约束，只有 `_sgt_arrived` 后才真正"钉住"。
+var _sgt_arrived := false
+## 距离下次"随机找花停留"还剩多少秒；<= 0 表示本次决策点可以尝试。
+var _sgt_perch_t := 0.0
+## 上一次停过的花（本地坐标）：挑选时优先避开，避免在同一朵花上反复起落。
+var _last_sgt_perch := Vector3(1.0e9, 0.0, 0.0)
+## 从花上起飞后的"回区域"宽限时间（秒）。
+## ★ 为什么需要：花长在地上（世界 y 可能比 swarm 区域底部还低 ~1 m），
+##   停留时我们允许它低于区域底；离开花后如果立刻按原规则**硬夹**回区域底，
+##   会看到蝴蝶"啪"地瞬移到半空。宽限期内改用弹簧升力慢慢爬回去。
+var _sgt_release_t := 0.0
+
 # ==================== 确定性随机 ====================
 ## 由 swarm 注入的随机数发生器（同 seed_value 可复现）。
 ## ★ 注入 rng 而不是用全局 randf()：整群的初始位置/相位应当只由 seed_value 决定。
@@ -627,6 +647,11 @@ func spawn(bounds: AABB, start_state: int = State.CRUISE) -> void:
 	_state_timer = rng.randf_range(1.0, 3.0)
 	_target = null
 	distance_travelled = 0.0
+	# SGT 花上停留：每只蝴蝶的"下一次尝试"错开（否则整群会同时扑向花）
+	_sgt_rest = false
+	_sgt_arrived = false
+	_last_sgt_perch = Vector3(1.0e9, 0.0, 0.0)
+	_rearm_sgt_perch()
 	_sync_transform(0.0)
 
 
@@ -664,6 +689,12 @@ func advance(delta: float, bounds: AABB, wind: Dictionary = {}, weather: Diction
 	_clock += delta
 	_state_timer -= delta
 	_target_scan_t -= delta
+	# 花上随机停留的"下一次尝试"倒计时（只在决策点消费，见 _update_state ⑤）
+	if _sgt_perch_t > 0.0:
+		_sgt_perch_t -= delta
+	# 从花上起飞后的回区域宽限（见 _sgt_release_t 的说明）
+	if _sgt_release_t > 0.0:
+		_sgt_release_t = maxf(0.0, _sgt_release_t - delta)
 	energy = clampf(energy - _num("energy_drain", 0.035) * delta, 0.0, 1.0)
 	# 记住本帧的区域 AABB：状态决策（_update_state -> _pick_cruise_waypoint）要用它挑巡飞航点。
 	# 用成员而不是加参数：`_update_state` 的签名被测试与其它调用点依赖，加参数会扩大改动面。
@@ -763,6 +794,13 @@ func _update_state(delta: float, weather: Dictionary, extra: Dictionary) -> void
 				state = State.FLEE
 				_state_timer = 1.6
 				_target = null
+				# 受惊会打断"花上停留"：清标记并把下一次尝试推后，别刚落地又被惊飞
+				if _sgt_rest:
+					_sgt_release_t = 1.2
+				_sgt_rest = false
+				_sgt_arrived = false
+				if _sgt_perch_t <= 0.0:
+					_rearm_sgt_perch()
 		elif state == State.FLEE and d > 6.0:
 			state = State.CRUISE
 			_state_timer = 1.0
@@ -778,6 +816,13 @@ func _update_state(delta: float, weather: Dictionary, extra: Dictionary) -> void
 			state = State.SHELTER
 			_target = null
 			_state_timer = 3.0
+			# 恶劣天气同样会打断"花上停留"（花上更暴露），并推后下一次尝试
+			if _sgt_rest:
+				_sgt_release_t = 1.2
+			_sgt_rest = false
+			_sgt_arrived = false
+			if _sgt_perch_t <= 0.0:
+				_rearm_sgt_perch()
 		return
 	if state == State.SHELTER:
 		# 天气好转 -> 出来飞
@@ -786,6 +831,37 @@ func _update_state(delta: float, weather: Dictionary, extra: Dictionary) -> void
 
 	# ③ 停歇回能
 	if state == State.BASK or state == State.DRINK:
+		if _sgt_rest:
+			# ★ SGT 花上停留分两段：
+			#   ① 接近段（_sgt_arrived = false）：还在飞向花顶，`_state_timer` 是超时预算；
+			#   ② 停留段（_sgt_arrived = true）：已经落在花顶，`_state_timer` 是停留时长。
+			#   为什么不能合成一段：接近要飞几米、还要俯冲到区域底以下，耗时远大于停留时长；
+			#   混在一起就会出现"还没到花上就被判到时" —— 半路掉头，也就是用户看到的"乱飞"。
+			if not _sgt_arrived:
+				if position.distance_squared_to(_perch) <= 0.09:   # 0.3 m 内视为已落到花顶
+					_sgt_arrived = true
+					var dmin := maxf(0.2, _num("sgt_perch_duration_min_s", 1.5))
+					var dmax := maxf(dmin, _num("sgt_perch_duration_max_s", 4.0))
+					_state_timer = rng.randf_range(dmin, dmax)
+				elif _state_timer <= 0.0:
+					# 超时还没到：放弃这次停留，慢慢爬回区域
+					_sgt_rest = false
+					_sgt_arrived = false
+					_sgt_release_t = 1.2
+					state = State.CRUISE
+					_state_timer = rng.randf_range(1.0, 2.5)
+					_rearm_sgt_perch()
+				return
+			# 已经停在花顶：与能量无关，**只按本次停留时长结束**
+			#   （若走下面 `energy >= 0.995` 的判定，刚从花上落下就可能被立刻结束）
+			if _state_timer <= 0.0:
+				_sgt_rest = false
+				_sgt_arrived = false
+				_sgt_release_t = 1.2        # 慢慢爬回区域，别硬夹瞬移（见 _sgt_release_t 注释）
+				state = State.CRUISE
+				_state_timer = rng.randf_range(1.0, 2.5)
+				_rearm_sgt_perch()
+			return
 		if energy >= 0.995 or _state_timer <= 0.0:
 			state = State.CRUISE
 			_state_timer = rng.randf_range(1.0, 2.5)
@@ -799,6 +875,8 @@ func _update_state(delta: float, weather: Dictionary, extra: Dictionary) -> void
 		#   只要这次没算过落脚点，蝴蝶就会朝世界原点冲（旧实现是每帧 lerp 25%）。
 		#   现在即使找不到落脚点，也只会在原地"停下"，不会跳。
 		_perch = position
+		_sgt_rest = false
+		_sgt_arrived = false        # 这是普通晒太阳，不是随机花上停留
 		state = State.BASK
 		_state_timer = rng.randf_range(2.5, 6.0)
 		# 落脚点：附近的花/叶子上，找不到就原地地面上方一点
@@ -809,6 +887,28 @@ func _update_state(delta: float, weather: Dictionary, extra: Dictionary) -> void
 	# ⑤ 到点重新决策：巡飞 / 趋花 / 求偶
 	if _state_timer > 0.0:
 		return
+	# ★ ⑤a 随机到 SGT 花上停一会儿（不看能量，纯随机；受总开关 sgt_perch_enabled 控制）
+	#   放在"到点决策"这一层而不是每帧，是为了**限流**：每次决策点最多做一次数组挑选。
+	#   花点由 swarm 扫描后通过 extra["sgt_perches"] 传进来（本地坐标）。
+	if _flag("sgt_perch_enabled", true) and state != State.FLEE and _sgt_perch_t <= 0.0:
+		var pts_v: Variant = extra.get("sgt_perches", null)
+		if pts_v is Array:
+			var spot: Variant = _pick_sgt_flower_local(pts_v as Array)
+			if spot is Vector3:
+				_sgt_rest = true
+				_sgt_arrived = false          # 还只是"决定去"，没到花顶
+				_perch = spot as Vector3
+				_last_sgt_perch = _perch
+				state = State.BASK
+				# ★ 此刻的 `_state_timer` 是**接近阶段的超时预算**，不是停留时长 ——
+				#   真正落到花顶时才改写成随机停留时长（见 _update_state ③）。
+				#   旧实现直接写停留时长（1.5~4 s），而飞过去 + 向下俯冲往往要更久，
+				#   计时到了人还在半路 -> 半路掉头 = 用户看到的"乱飞"。
+				_state_timer = maxf(1.0, _num("sgt_perch_approach_timeout_s", 8.0))
+				_target = null
+				return
+			# 附近没有可用的花：稍后再试（不要每帧重扫几百个点）
+			_sgt_perch_t = _sgt_perch_interval() * 0.25
 	var roll := rng.randf()
 	if roll < 0.42:
 		var t := _find_flower_local(position, _num("seek_range_m", 12.0))
@@ -1186,6 +1286,19 @@ func _force_flee(delta: float, extra: Dictionary) -> Vector3:
 ##   越界越远回弹越猛 -> 实测越界收敛到 ≈0（见 CONTRACT 的验收项）。
 ## 注意：这里就地改 position（硬夹下方），因为调用它的 advance() 之后才积分位置。
 func _force_bounds(delta: float, bounds: AABB) -> Vector3:
+	# ★ 花上停留（含飞向花的接近段）**完全不施加区域力**：
+	#   · 花长在地上，高度比 swarm 区域底部低很多（本项目实测花顶低 1.1~2.0 m），
+	#     若仍按原规则硬夹，蝴蝶会被顶在花上方 1~2 m 悬空、永远落不到花上；
+	#   · 下探到区域底以下必须允许，所以这里连"软升力"也一起去掉。
+	#   为什么不会因此"乱飞"：
+	#     ① 花点扫描只收**水平落在区域里**的花（见 ButterflySwarm._scan_sgt_flowers），
+	#        蝴蝶不会为了停花整段飞出区域；
+	#     ② BASK 的速度上限只有 speed_max*0.12，风力根本吹不走它；
+	#     ③ 接近段有超时预算（sgt_perch_approach_timeout_s），到不了就放弃并爬回区域。
+	#   替代约束：`_force_perch()` 的弹簧 + 强阻尼 + `_sync_transform()` 的限速靠拢。
+	#   离开后由 `_sgt_release_t` 宽限期软升力慢慢爬回区域（见下方 floor_y 分支）。
+	if _sgt_rest:
+		return Vector3.ZERO
 	var margin := maxf(0.01, _num("edge_margin_m", 0.8))
 	var lo := bounds.position
 	var hi := bounds.position + bounds.size
@@ -1207,11 +1320,15 @@ func _force_bounds(delta: float, bounds: AABB) -> Vector3:
 	# 下方：硬夹 + 向上推（防钻地）
 	var floor_y := lo.y + maxf(0.05, _num("min_height_m", 0.35))
 	if p.y < floor_y:
-		p.y = floor_y
-		position = p
-		if velocity.y < 0.0:
-			velocity.y = 0.0
-		f.y += 2.0
+		if _sgt_release_t > 0.0:
+			# ★ 刚离开花：不要硬夹（会瞬移到半空），改用弹簧升力平滑爬回区域底
+			f.y += (floor_y - p.y) * 6.0
+		else:
+			p.y = floor_y
+			position = p
+			if velocity.y < 0.0:
+				velocity.y = 0.0
+			f.y += 2.0
 	# ★★ 把"只推不拐"升级成"真的拐回去"（用户反馈"反复在两点之间散开再重聚"）★★
 	#   实测：只施加反弹力时风力会与边界力**打平**，蝴蝶于是长期**顶在下风边界**排队
 	#   （诊断抓到的聚集点全部落在下风角落 ~(8, 1, -7.5)，紧贴区域边界）。
@@ -1260,6 +1377,11 @@ func _edge_push(d: float, margin: float) -> float:
 ##   真正的"撞地形"由 _force_bounds 的硬夹兜底；要更精确可把 swarm.ground_avoid 配合
 ##   外部注入的地面高度使用（见 ButterflySwarm 的 ground_probe 约定）。
 func _force_ground(delta: float, bounds: AABB) -> Vector3:
+	# ★ 花上停留 / 离花回区域的宽限期内不施加避地力：
+	#   花顶本来就在 `floor_y` 下方（实测 ~1.1 m），这股升力会把蝴蝶从花上顶起来，
+	#   落地就永远"贴不住"。回区域阶段由 `_force_bounds` 的弹簧升力接手。
+	if _sgt_rest or _sgt_release_t > 0.0:
+		return Vector3.ZERO
 	var floor_y := bounds.position.y + maxf(0.05, _num("min_height_m", 0.35))
 	var soft := floor_y + maxf(0.05, _num("avoid_distance_m", 1.2)) * 0.5
 	var f := Vector3.ZERO
@@ -1436,8 +1558,15 @@ func _sync_transform(delta: float) -> void:
 		# ★ 二次兜底：落脚点离得太远就**重新就近落脚**（而不是长途跋涉/瞬移过去）。
 		#   触发场景：`_perch` 被换区域/换种子后的残留值、或 `respawn_all()` 后忘了清。
 		#   没有这条，蝴蝶会以 `perch_speed` 一路直线"飞"回几米外的旧落脚点，看着像瞬移。
+		#
+		# ★★ 但 SGT 花上停留（`_sgt_rest`）**必须豁免这条**（实测 bug）★★
+		#   花顶离蝴蝶往往超过 3 m（本项目实测：花点全部比区域底低 1.1~2.0 m，
+		#   水平距离也常有几米）。旧代码在这里直接把 `_perch = position`，
+		#   等于"刚决定去花上就当场把目标改成自己" —— 结果蝴蝶在**半空中原地僵住**
+		#   1.5~4 s，既没落到花上、也不像正常飞行，就是用户反馈的"乱飞"。
+		#   所以 SGT 停留一律按真实目标靠拢，是否放弃由状态机的"接近超时"决定。
 		var rearm := maxf(0.5, _num("perch_rearm_distance", 3.0))
-		if d_perch > rearm:
+		if d_perch > rearm and not _sgt_rest:
 			_perch = position
 			velocity = Vector3.ZERO
 		elif d_perch > 0.0005:
@@ -1529,6 +1658,53 @@ func _find_perch(from: Vector3, radius: float) -> Vector3:
 	return to_local(hit + Vector3(0, 0.05, 0))
 
 
+# ==================== SGT 花上随机停留 ====================
+
+## 随机一个"两次花上停留"的间隔（秒）：取 `sgt_perch_interval_min_s .. max_s`。
+## ★ min/max 写反也不会死：内部用 maxf 兜底，保证 lo <= hi。
+func _sgt_perch_interval() -> float:
+	var lo := maxf(0.5, _num("sgt_perch_interval_min_s", 8.0))
+	var hi := maxf(lo, _num("sgt_perch_interval_max_s", 20.0))
+	return rng.randf_range(lo, hi)
+
+
+## 把"下一次花上停留"推后一个随机间隔。
+## 调用点：spawn、一次停留结束、受惊/避雨打断。**每只蝴蝶独立**，所以整群不会同步。
+func _rearm_sgt_perch() -> void:
+	_sgt_perch_t = _sgt_perch_interval()
+
+
+## 从 swarm 扫描好的 SGT 花落脚点里**随机**挑一个（**本地坐标**）。
+## 参数 points：`extra["sgt_perches"]`，由 ButterflySwarm._scan_sgt_flowers() 生成。
+## 返回值：选中的花顶位置；附近没有可用花时返回 null（蝴蝶继续自己的飞行）。
+## 规则：
+##   · 只考虑 `sgt_perch_radius_m` 半径内的点（不为了停一朵花飞半个场地）；
+##   · 优先避开 `_last_sgt_perch`（距离 < 0.5 m 的点放到备选），避免原地反复起落；
+##   · 候选里**等概率随机**，所以每次落的都可能是不同的花。
+func _pick_sgt_flower_local(points: Array) -> Variant:
+	if points.is_empty():
+		return null
+	var rad := maxf(0.2, _num("sgt_perch_radius_m", 6.0))
+	var r2 := rad * rad
+	var pick_from: Array = []
+	var fallback: Array = []
+	for p in points:
+		if not (p is Vector3):
+			continue
+		var v: Vector3 = p
+		if v.distance_squared_to(position) > r2:
+			continue
+		if v.distance_squared_to(_last_sgt_perch) < 0.25:
+			fallback.append(v)
+		else:
+			pick_from.append(v)
+	if pick_from.is_empty():
+		pick_from = fallback
+	if pick_from.is_empty():
+		return null
+	return pick_from[rng.randi_range(0, pick_from.size() - 1)]
+
+
 # ==================== 风 / 天气读取 ====================
 
 ## 把风字典转成**世界空间的水平风向单位向量**（含 y 分量 0）。
@@ -1611,4 +1787,8 @@ func stats() -> Dictionary:
 		"has_visual": visual != null and is_instance_valid(visual),
 		"sprite": String(sprite_tex.resource_path) if sprite_tex != null else "",
 		"crop": crop,
+		# ★ 是否正停在 SGT 花上（随机停留，与能量驱动的 BASK 区分）
+		"sgt_rest": _sgt_rest,
+		# ★ 是否**已经落在花顶**（false = 还在飞向花的路上）
+		"sgt_arrived": _sgt_arrived,
 	}
