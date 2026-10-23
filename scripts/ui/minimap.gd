@@ -16,9 +16,10 @@
 ##       - main.player      : Player（scripts/player.gd），本文件只读它的 global_position
 ##       - main.player.body : 玩家可视根节点（player.gd:81 `var body: Node3D`），读 rotation.y 当朝向
 ##       - main.camera_rig  : CameraRig，读 @export iso_yaw_deg（场景方位角，单位：度）
-##   * /root/Weather（自动加载，scripts/world/weather.gd）
-##       - current（天气枚举 Kind，0=CLEAR…5=WINDY）、wind_dir（世界风向 Vector2(x, z)）、wind（风力）
-##       - 用 get_node_or_null + get() 弱耦合读取：自动加载缺失时静默跳过天气块，不影响地图本体
+##   * 天气节点（main.tscn 的 "Weather"，scripts/world/weather.gd，分组 weather_system）
+##       - current（天气编号：0=CLEAR…5=WINDY，自定义天气从 6 开始）、wind_dir（世界风向
+##         Vector2(x, z)）、wind（风力）
+##       - 用分组查找 + get() 弱耦合读取：天气节点缺失时静默跳过天气块，不影响地图本体
 ##   * scripts/ui/map_weather_overlay.gd（preload 为 MapWeatherOverlay）
 ##       - 小地图实例 compact=true、大地图实例 compact=false，尺寸由本文件负责摆位
 ##   * 本文件内嵌类 ArrowOverlay（玩家箭头）、LandmarkOverlay（地标 + 北向），都是自绘 Control
@@ -453,17 +454,21 @@ func _process(delta: float) -> void:
 		landmarks.set_map_yaw(cam_yaw)
 	coord_label.text = "X %d · Z %d · 海拔 %.1f" % [int(p.x), int(p.z), p.y]
 	# ---- 天气图标 + 风向标（小图跟随地图旋转，大地图正北朝上）----
-	# 天气是自动加载节点，用 get_node_or_null + get() 弱耦合读取：
-	# 拿不到（测试场景 / 自动加载被裁）就整块跳过，不影响地图本体。
-	var w := get_node_or_null("/root/Weather")
+	# 天气是 main.tscn 里的场景节点，用分组查找 + get() 弱耦合读取：
+	# 拿不到（测试场景 / 场景里裁掉了该节点）就整块跳过，不影响地图本体。
+	var w := get_tree().get_first_node_in_group(&"weather_system")
 	if w != null:
 		var k: int = int(w.get("current"))
 		var dir: Vector2 = w.get("wind_dir") if w.get("wind_dir") is Vector2 else Vector2(1.0, 0.0)
 		var power := float(w.get("wind"))
+		# ★ 本项目改动：自定义天气（编号 >= 6）由天气节点给出中文名与图标种类，
+		#   叠加层不再自己按 0..5 硬编码。
+		var wname := str(w.call("weather_name")) if w.has_method("weather_name") else ""
+		var wicon := int(w.call("weather_icon_kind", k)) if w.has_method("weather_icon_kind") else -1
 		if weather_overlay != null:
-			weather_overlay.update_weather(k, dir, power, cam_yaw)
+			weather_overlay.update_weather(k, dir, power, cam_yaw, wname, wicon)
 		if big_weather != null and big_weather.visible:
-			big_weather.update_weather(k, dir, power, 0.0)
+			big_weather.update_weather(k, dir, power, 0.0, wname, wicon)
 	# 大地图隐藏时不做任何 big_* 的刷新：省掉一次坐标字符串 shaping 与一次箭头重绘。
 	if big_root.visible:
 		big_arrow.update_arrow(p.x, p.z, yaw)

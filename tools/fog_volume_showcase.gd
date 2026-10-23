@@ -96,7 +96,7 @@ func _build_scene() -> void:
 	field.edge_fade = 0.22
 	field.box_height = 12.0
 	field.particle_count = 260
-	field.auto_weather = false      # 独立场景里没有 /root/Weather
+	field.auto_weather = false      # 独立场景里没有天气节点（分组 weather_system）
 	field.quality_follows_project = false
 	add_child(field)
 

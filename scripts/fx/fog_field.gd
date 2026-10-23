@@ -35,7 +35,7 @@ extends Node3D
 ##   · enabled                           开关（关掉时求解器完全停止渲染）
 ##
 ## 【与天气/画质的接线】
-##   · auto_weather = true 时每帧读 /root/Weather 的 wind_dir / wind / fog 三个量：
+##   · auto_weather = true 时每帧读天气节点（分组 weather_system）的 wind_dir / wind / fog 三个量：
 ##       风 -> 求解器的目标速度（按域尺寸换算成"域单位/秒"）
 ##       雾 -> 体积雾的 opacity（并叠加 idle_opacity 保证晴天也有薄薄一层地雾）
 ##     未装 Weather（无头测试/独立场景）时**自动跳过**，不报错。
@@ -250,7 +250,7 @@ const PARTICLE_DRAW_SHADER_LEGACY := "res://assets/shaders/fog_mist_particle_dra
 @export var brush_field: FogBrushField
 
 # ==================== 天气 / 画质接线 ====================
-## 是否自动跟随 /root/Weather 的风与雾量
+## 是否自动跟随天气节点（分组 weather_system）的风与雾量
 @export var auto_weather: bool = true
 ## 风力换算：weather.wind = 1.0 对应的风速（m/s）
 @export var wind_speed_mps: float = 4.0
@@ -835,6 +835,9 @@ func _apply_pending_sources() -> void:
 
 
 func _apply_weather() -> void:
+	if _weather == null and is_inside_tree():
+		# 懒绑定：本节点可能早于天气节点进入场景树（main 里挂载顺序不保证）。
+		_weather = get_tree().get_first_node_in_group(&"weather_system")
 	if _weather != null and auto_weather and not _has_wind_override:
 		var wind_dir: Vector2 = _weather.get("wind_dir")
 		var wind_amount: float = float(_weather.get("wind"))
@@ -1208,7 +1211,8 @@ var enabled: bool = true:
 
 
 func _bind_weather() -> void:
-	_weather = get_node_or_null("/root/Weather")
+	# ★ 本项目改动：天气是 main.tscn 里的场景节点（分组 weather_system），不再是 autoload。
+	_weather = get_tree().get_first_node_in_group(&"weather_system")
 	_apply_opacity()
 
 

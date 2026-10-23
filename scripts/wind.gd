@@ -38,12 +38,13 @@ extends Node
 ##   · 取用口：静态 `WindSystem.get_instance()`；_ready() 里 add_to_group("wind_system") 登记，
 ##     _exit_tree() 里注销。别的脚本取风的推荐顺序见 get_instance() 上方的注释。
 ##   · 所属系统：世界表现层（风 / 草 / 植被 / 角色与草的交互），与 scripts/world/weather.gd 配套。
-##   · 天气来源：优先读根节点下名为 "Weather" 的节点
-##     （wind / wind_gust / wind_turbulence / wind_speed / wind_dir），
-##     读不到就用自己的 fallback_* 兜底（见 _apply_from_weather / _apply_fallback）。
+##   · 天气来源：优先读**当前场景**里名为 "Weather" 的节点
+##     （main.tscn 的 Main/Weather；wind / wind_gust / wind_turbulence / wind_speed / wind_dir），
+##     其次 /root/Weather（旧 autoload 兼容）与分组 weather_system；
+##     都读不到就用自己的 fallback_* 兜底（见 _apply_from_weather / _apply_fallback）。
 ##
 ## ★★ 关键依赖（下面这些是硬编码的路径 / 节点名 / 分组名，改名会静默失效）★★
-##   · res://scripts/world/weather.gd                       —— 风参数来源，节点名必须叫 "Weather"
+##   · res://scripts/world/weather.gd                       —— 风参数来源，场景节点名必须叫 "Weather"
 ##   · res://scripts/foot_ring.gd                           —— 按需 new() 出实体脚底圈，节点名 "FootRing"
 ##   · res://assets/shaders/grass_wind.gdshader（旧名 blend_alpha.gdshader）—— 自研草着色器
 ##   · res://addons/simplegrasstextured/shaders/grass.gdshaderinc          —— SGT 草着色器
@@ -408,13 +409,31 @@ func _process(delta: float) -> void:
 	# ★ SGT 草的人物倒伏：位置 + 这一帧的水平位移（逐材质写，见 _write_sgt）
 	_update_sgt_player(delta, p, ppos)
 	# 天气
-	var w: Node = null
-	if get_tree() != null:
-		w = get_tree().root.get_node_or_null("Weather")
+	var w: Node = _find_weather_node()
 	if w != null:
 		_apply_from_weather(w, delta, ppos, pmov)
 	else:
 		_apply_fallback(ppos, pmov)
+
+
+## 找天气节点。顺序：当前场景根下的 "Weather"（正式形态：main.tscn 的 Main/Weather）
+## -> /root/Weather（旧 autoload 兼容）-> 分组 weather_system（改名/换父节点时的兜底）。
+## ★ 必须**先查当前场景**：只查 /root 会漏掉场景里的节点，于是永远走 _apply_fallback，
+##   表现就是"按 V 换天气，草一点反应都没有"（本次回归的根因）。
+## 返回：天气节点或 null（null 时走 fallback_* 常量，草仍有风）。
+func _find_weather_node() -> Node:
+	var t := get_tree()
+	if t == null:
+		return null
+	var cs := t.current_scene
+	if cs != null:
+		var direct := cs.get_node_or_null("Weather")
+		if direct != null:
+			return direct
+	var legacy := t.root.get_node_or_null("Weather")
+	if legacy != null:
+		return legacy
+	return t.get_first_node_in_group(&"weather_system")
 
 
 # ==================== 材质收集（扫描场景树） ====================
@@ -949,7 +968,7 @@ func snap_player_to_nearest_grass() -> bool:
 # ==================== 风参数写入（逐材质 uniform） ====================
 # ---------------------------------------------------------------- 参数写入
 
-## 正常路径：从 "Weather" 节点取风参数，然后写进两套材质。
+## 正常路径：从 "Weather" 节点（_find_weather_node 的结果）取风参数，然后写进两套材质。
 ## 参数：
 ##   w    —— "Weather" 节点（约定它暴露 wind / wind_gust / wind_turbulence / wind_speed / wind_dir）
 ##   delta—— 帧间隔（秒），只用于推进 _movement

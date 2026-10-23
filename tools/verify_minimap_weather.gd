@@ -99,9 +99,11 @@ func _init() -> void:
 		if nm == "" or nm == "未知":
 			names_ok = false
 	_ck("六种天气都有中文名", names_ok, joined.strip_edges())
-	# 越界 kind 要被夹住（不越界访问数组）
+	# 越界 kind 不再夹到 5（自定义天气编号 >= 6 要原样保留），但名称必须兜底为"未知"
 	ov.call("update_weather", 99, Vector2(1.0, 0.0), 0.2, 0.0)
-	_ck("越界的天气编号被夹住", int(ov.get("kind")) == 5, "kind=%d" % int(ov.get("kind")))
+	_ck("越界的天气编号不越界访问（名称兜底）",
+			int(ov.get("kind")) == 99 and String(ov.call("weather_label")) == "未知",
+			"kind=%d label=%s" % [int(ov.get("kind")), String(ov.call("weather_label"))])
 	# 零向量风向要有兜底（否则 atan2(0,0) 角度不稳定）
 	ov.call("update_weather", 5, Vector2.ZERO, 0.2, 0.0)
 	_ck("零向量风向有兜底", (ov.get("wind_dir") as Vector2).length() > 0.5,

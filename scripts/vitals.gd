@@ -27,9 +27,9 @@ extends Node
 ##   全局访问方式：`/root/Vitals` 或自动加载名 `Vitals`（两者同一节点）。
 ##
 ## ── 关键依赖 ──
-##   · autoload /root/Weather（scripts/world/weather.gd）：只读 rain / wind / fog 三个
-##     参数（取值范围 rain 0..1、fog 0..1、wind 0..1.5，见该文件的天气参数表）。
-##     用 get_node_or_null 取并判空，所以天气缺失时舒适度按满值处理，不会报错。
+##   · 天气节点（main.tscn 的 "Weather"，scripts/world/weather.gd，分组 weather_system）：
+##     只读 rain / wind / fog 三个参数（取值范围 rain 0..1、fog 0..1、wind 0..1.5，
+##     见该文件的天气参数表）。用分组查找并判空，所以天气缺失时舒适度按满值处理，不会报错。
 ##   · player.gd（CharacterBody3D，且 _ready() 里 add_to_group("player")）：
 ##     本文件读它的 is_running()（= "加速键被按住"，由 camera_rig 每物理帧告知）
 ##     与 velocity（Vector3）。两个都拿不到时精力只是"不消耗"，不会崩。
@@ -486,8 +486,9 @@ func _tick_comfort(delta: float) -> void:
 
 ## 舒适度目标值：由**已有**的天气系统给出（下雨/大风/雾 -> 降低）
 ## 参数：无。返回值：目标舒适度（点），范围 0.15 * max_comfort ~ max_comfort 之间。
-## 副作用：无 —— 只读 /root/Weather 的参数，不写任何状态、不发信号（实际靠拢由 _tick_comfort 做）。
-## 依赖：autoload /root/Weather = scripts/world/weather.gd 的 rain(0..1) / wind(0..1.5) / fog(0..1)。
+## 副作用：无 —— 只读天气节点的参数，不写任何状态、不发信号（实际靠拢由 _tick_comfort 做）。
+## 依赖：场景里的天气节点（分组 weather_system）= scripts/world/weather.gd 的
+##   rain(0..1) / wind(0..1.5) / fog(0..1)。
 ##   取不到该节点时返回 max_comfort（没有天气系统就当天气晴朗，方便单场景/无头测试）。
 ## 公式：penalty = rain*0.55 + max(0, wind-0.35)*0.45 + fog*0.25
 ##       目标 = max_comfort * clampf(1 - penalty, 0.15, 1.0)
@@ -498,9 +499,9 @@ func _tick_comfort(delta: float) -> void:
 ##     即"天气再差也不把舒适度压到 0"，所以天气本身永远不会触发 emptied。
 ## 调用时机：_tick_comfort() 每帧调一次；也可以被外部调用来"预览"当前天气下的目标值。
 func comfort_target() -> float:
-	# 直接写 /root/Weather 是刻意的：这就是"挂到已有天气系统上"的落点；
+	# 按分组找天气节点是刻意的：这就是"挂到已有天气系统上"的落点；
 	# 取不到时返回满舒适度而不是报错（单场景调试/无头脚本里没有 Weather 也能跑）。
-	var w := get_node_or_null("/root/Weather")
+	var w := get_tree().get_first_node_in_group(&"weather_system") if is_inside_tree() else null
 	if w == null:
 		return max_comfort
 	# w 的静态类型是 Node，直接写 w.rain 会编译不过，所以必须走 get()；

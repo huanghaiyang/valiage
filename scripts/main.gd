@@ -57,6 +57,9 @@ extends Node3D
 @onready var camera: Camera3D = $CameraRig/Camera3D
 @onready var sun: DirectionalLight3D = $Sun
 @onready var env: WorldEnvironment = $WorldEnvironment
+## ★ 本项目改动：天气系统不再是 autoload，而是本场景里的节点 "Weather"。
+##   刻意不写类型（保持动态调用），这样其他脚本/测试裁剪掉该节点时只需判空即可。
+@onready var weather = $Weather
 @onready var ui: CanvasLayer = $UI
 # ==================== 二、交互半径参数 ====================
 ## 家具互动距离（米）：以**玩家的水平位置**为圆心，VegetationSystem.find_nearest_interactable()
@@ -354,12 +357,12 @@ func _dump_materials_deferred(wait_s: float = 2.0, tag: String = "") -> void:
 ##   4. WorldBuilder.build(...) 生成地形/平台/聚落/道路/植被/出生点，返回统计 report；
 ##   5. 世界级优化：道具可见距离、道具贴图分级、阴影距离、墓园合批（默认关）、草贴图分级；
 ##   6. _setup_previews() / _setup_ui() / _setup_input_actions()（依赖 terrain/buildings/player）；
-##   7. 绑定天气与全局引用：vegetation.set_camera → Weather.bind_world → Game.world →
+##   7. 绑定天气与全局引用：vegetation.set_camera → weather.bind_world → Game.world →
 ##      Settings.world_environment / vegetation_root → Settings.apply_quality()；
 ##   8. 解析命令行：天气、截图、自检、演示与隔离开关。
 ##
 ## 副作用：向自身 add_child 若干辅助节点；调用 WorldBuilder 生成大量节点与碰撞体；
-##   写 Game.world / Settings.* 两个全局；可能直接改 Weather 状态、隐藏 ui/_minimap。
+##   写 Game.world / Settings.* 两个全局；可能直接改天气节点状态、隐藏 ui/_minimap。
 ## 返回值：无。
 ## 注意：正文里对 OS.get_cmdline_user_args() 的多次调用是刻意的（各分支各自解析、互不影响），
 ##   不要"优化"成解析一次存字典 —— 那样任何一处 return 早退都会影响后面的开关。
@@ -428,7 +431,10 @@ func _ready() -> void:
 	# 天气系统：绑定太阳/环境/雨，并订阅相机跟随
 	# 顺序要求：放在植被之后 —— wind_materials() 返回的是已生成植被材质的引用集合，
 	# 植被还没建就调，会把空数组写进风摇 uniform。
-	Weather.bind_world(sun, env, self, vegetation.wind_materials())
+	# ★ 本项目改动：Weather 现在是场景节点（main.tscn 的 "Weather"），不再是 autoload。
+	#   统一在这里拿引用，其它脚本用分组 weather_system 查找，避免散落的 /root/Weather 路径。
+	if weather != null:
+		weather.bind_world(sun, env, self, vegetation.wind_materials())
 	# 把主场景暴露到全局：UI、法杖、法术等通过 Game.world 反向拿主场景（避免长参数链）。
 	Game.world = self
 	# Settings 拿到环境与植被根节点后才知道"画质档位要作用在谁身上"，
@@ -440,17 +446,18 @@ func _ready() -> void:
 	print("World | 场景组装 平台=%d 建筑=%d 道路=%d 清场=%d 出生点=%s 地形=%dms"
 			% [report["platforms"], report["buildings"], report["roads"],
 			report["clear_zones"], str(report["spawn"]), report["generated_ms"]])
-	# 命令行指定初始天气：--weather=0..5（配合 --capture 做截图验证）
-	# 0..5 对应 Weather.Kind：0 晴朗 / 1 多云 / 2 阴天 / 3 小雨 / 4 雷雨 / 5 大风；
-	# 越界的值**静默忽略**（不报错），这样脚本传错参数也只是看到默认天气。
+	# 命令行指定初始天气：--weather=编号（配合 --capture 做截图验证）
+	# 内置编号 0..5：0 晴朗 / 1 多云 / 2 阴天 / 3 小雨 / 4 雷雨 / 5 大风；
+	# 自定义天气由 addons/weather_composer 面板生成，编号从 6 开始。
+	# 不存在的编号**静默忽略**（不报错），这样脚本传错参数也只是看到默认天气。
 	# 必须同时关掉 auto_change：否则过几十秒自动天气会把指定状态换走，截图就不可复现了。
 	for a in OS.get_cmdline_user_args():
-		if a.begins_with("--weather="):
+		if a.begins_with("--weather=") and weather != null:
 			var k := int(a.split("=")[1])
-			if k >= 0 and k < Weather.KIND_NAMES.size():
-				Weather.auto_change = false
-				Weather.set_weather(k, true)
-				print("Weather | 启动指定 -> %s (wind=%.2f)" % [Weather.weather_name(), Weather.wind])
+			if weather.has_weather(k):
+				weather.auto_change = false
+				weather.set_weather(k, true)
+				print("Weather | 启动指定 -> %s (wind=%.2f)" % [weather.weather_name(), weather.wind])
 	# 调试截图模式：渲染稳定后保存画面并退出
 	# 90 帧（60fps 下约 1.5s）是在"等世界/植被/天气过渡稳定"与"别白等"之间的折中；
 	# _capture_frames 与 _capture_start 一起写同一个值：前者负责倒计时，后者留作连拍反推 elapsed
@@ -528,7 +535,7 @@ func _ready() -> void:
 ##   * 累加 _place_rot_accum、修改 _place_yaw（右键按住旋转放置朝向）；
 ##   * 递减 _variant_hint_time / _hint_timer / _capture_frames / _probe_t，递增 _verify_frame、
 ##     _coltest_frame；
-##   * 调用 Weather.follow_camera() 让雨盒跟随相机；
+##   * 调用天气节点的 follow_camera() 让雨盒跟随相机；
 ##   * 触发 UI 提示文本刷新（_update_interact_hint）；
 ##   * 调试模式下会调用 _save_capture() 写 PNG 并 get_tree().quit() 退出进程。
 ##
@@ -567,7 +574,8 @@ func _process(delta: float) -> void:
 	# 雨盒跟随相机
 	# follow_camera 每帧把雨体积的中心对齐相机（只动变换、不重建粒子），
 	# 目的是让玩家视野内永远有雨；漏掉这行会看到"雨只下在出生点附近"。
-	Weather.follow_camera(camera_rig.camera)
+	if weather != null:
+		weather.follow_camera(camera_rig.camera)
 	# 自检模式：等世界和各系统装配完，把关键状态打出来再退出。
 	# 放在截图逻辑之前：截图会把 _capture_frames 递减，两者共用一个计数器容易打架。
 	if _verify:
@@ -1294,7 +1302,7 @@ func _unhandled_input(event: InputEvent) -> void:
 # 注：紧接着的这两行"V 键/天气"的 ## 说明描述的其实是本段更靠后的 _cycle_weather()，
 # 它被插在了 _show_staff_hint() 文档块的前面（历史遗留的错位），按文档归类读时别被顺序误导。
 ## 参数：无。返回值：无。
-## 副作用：改 Weather.target（经 set_weather(next, true) 强化制立即生效、打断过渡），
+## 副作用：改天气节点的 target（经 set_weather(next, true) 强化制立即生效、打断过渡），
 ##   写 UI 提示 + _variant_hint_time，并打一行日志。
 ## 注意：本函数只"手动切一次"，且**不改 auto_change** —— 所以切完之后自动天气仍可能继续变化；
 ##   _ready() 里的 --weather=N 是另一条入口，那条会先关掉 auto_change（为了截图可复现）。
@@ -1331,19 +1339,24 @@ func _show_staff_hint(id: String) -> void:
 
 
 ## V 键的落点：把天气切到"下一个"并给出一条提示。
-## 参数/返回值：无。副作用：Weather.set_weather(next, true)（强制生效）、写 UI 提示与
+## 参数/返回值：无。副作用：weather.set_weather(next, true)（强制生效）、写 UI 提示与
 ##   _variant_hint_time，最后打一行日志便于截图/日志核对。
-## 顺序取自 Weather.KIND_NAMES 的键序（晴朗→多云→阴天→小雨→雷雨→大风），
-## 用取模回绕，所以从"大风"再按 V 会回到"晴朗"。
-## 注意：本函数不动 Weather.auto_change；自动天气之后仍可能继续变化。
+## 顺序取自 weather.weather_ids()（内置 0..5 + 自定义 6..N，按编号升序），
+## 用取模回绕，所以从最后一个天气再按 V 会回到"晴朗"。
+## 注意：本函数不动 weather.auto_change；自动天气之后仍可能继续变化。
 func _cycle_weather() -> void:
-	var n := Weather.KIND_NAMES.size()
-	var next: int = (Weather.target + 1) % n
-	Weather.set_weather(next, true)
+	if weather == null:
+		return
+	var ids: Array = weather.weather_ids()
+	if ids.is_empty():
+		return
+	var idx: int = ids.find(weather.target)
+	var next: int = ids[(idx + 1) % ids.size()] if idx >= 0 else ids[0]
+	weather.set_weather(next, true)
 	ui.show_interact_hint("天气：%s · 风力 %.2f · 风向 %s"
-		% [Weather.weather_name(), Weather.wind, str(Weather.wind_dir)])
+		% [weather.weather_name(), weather.wind, str(weather.wind_dir)])
 	_variant_hint_time = 1.6
-	print("Weather | 手动切换 -> %s (wind=%.2f)" % [Weather.weather_name(), Weather.wind])
+	print("Weather | 手动切换 -> %s (wind=%.2f)" % [weather.weather_name(), weather.wind])
 
 
 

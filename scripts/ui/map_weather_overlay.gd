@@ -28,17 +28,19 @@ extends PanelContainer
 # · 调用方 scripts/ui/minimap.gd 用 preload 拿到本脚本，new() 出两个实例：
 #     weather_overlay —— 小地图右上角（compact = true），随小地图一起旋转（传 cam_yaw）；
 #     big_weather     —— 大地图右上角（compact = false），正北朝上（传 0.0）。
-#   刷新被节流到 MAP_UPDATE_INTERVAL（约 15Hz），数据取自 autoload Weather 的
-#   current / wind_dir / wind 三个属性。
-# · **不依赖任何 autoload**：本文件里没有 /root/Weather 的访问，中文天气名自带一份
+#   刷新被节流到 MAP_UPDATE_INTERVAL（约 15Hz），数据由调用方从场景里的天气节点
+#   （main.tscn 的 "Weather"，分组 weather_system）读出后推入：current / wind_dir / wind。
+# · **不依赖任何 autoload**：本文件里没有对天气节点的直接访问，中文天气名自带一份
 #   （常量 KIND_NAMES），因此脱离天气系统也能单独实例化 —— 自检脚本正是这样跑的。
 # · **不依赖任何资源文件**：没有 .tscn / .tres / 贴图 / 字体，UI 全部在 _init 里用代码搭出来。
 # · 相关自检：tools/verify_minimap_weather.gd（校验角度换算、天气名、图标分支、网格列数）；
 #   解析检查：tools/check_parse.gd 的清单里包含本文件。
 #
 # 【主要对外接口】
-# · update_weather(k, dir, power, yaw) -> void —— 唯一的数据入口，四个参数见该函数注释。
-# · weather_label() -> String —— 当前天气的中文名（编号越界时返回"未知"）。
+# · update_weather(k, dir, power, yaw, kind_name := "", icon_kind := -1) -> void
+#   —— 唯一的数据入口，后两个可选参数用于自定义天气的名称与图标。
+# · weather_label() -> String —— 当前天气的中文名（自定义天气用调用方给的 kind_name；
+#   内置编号越界时返回"未知"）。
 # · vane_angle() -> float —— 风向在屏幕上的弧度角（0 = 屏幕右，PI/2 = 屏幕下）。
 # · apply_size() -> void —— 按 compact 重算图标边长、字号、描边粗细与行列间距。
 # · 属性：kind / wind_dir / wind_power / map_yaw / compact，外部可直接读写，含义见各自注释。
@@ -59,7 +61,7 @@ extends PanelContainer
 # 5. 所有文字都带黑色描边：叠加层压在浅色地形上时，没有描边几乎看不清字。
 #
 # ==================== 常量：天气种类（数值 = Weather.Kind） ====================
-# 这组数值**必须与 autoload Weather 的 Kind 一一对应**（weather.gd 的字典键序）：
+# 这组数值**必须与 weather.gd 的 Kind 一一对应**（0..5 是内置天气，自定义从 6 开始）：
 # 0 晴 / 1 多云 / 2 阴 / 3 雨 / 4 雷雨 / 5 大风。错位不会报错，只会"图标画的是雨、
 # 文字写的是晴"，非常难查；改天气枚举时这两个文件必须一起改。
 ## 0 = CLEAR 晴朗（画一轮带 8 道光芒的太阳）
@@ -95,10 +97,15 @@ const FONT_BIG := 14
 
 
 # ==================== 对外状态（由调用方写入 / 本控件读取） ====================
-## 当前天气编号，取值 0..5，含义见上方 KIND_* 常量。
+## 当前天气编号。内置 0..5，自定义天气从 6 开始（由 weather.gd 给出名称与图标种类）。
 ## 默认 0 = 晴朗：构造完成但 update_weather() 还没被调用时先按晴天画，避免出现空白框。
-## 注意：update_weather() 会做夹紧；外部若绕过它直接赋值，请自行保证取值在 0..5。
+## 注意：update_weather() 只夹紧下界（负值 -> 0），上界不再夹到 5 —— 否则自定义天气会被
+##   当成大风显示。图标 match 用 icon_kind（0..5），文字用 kind_name（可为空则查内置表）。
 var kind := KIND_CLEAR
+## ★ 本项目改动：调用方给出的天气中文名（自定义天气用）。空串 = 按内置 KIND_NAMES 查表。
+var kind_name := ""
+## ★ 本项目改动：图标种类（0..5）。-1 = 直接用 kind（内置天气的默认行为）。
+var icon_kind := -1
 ## 世界风向 (x, z)：x 对应世界 +X、z 对应世界 +Z，**不是屏幕坐标**。
 ## 只取方向、长度不参与运算，所以传单位向量即可。
 ## 默认 (1, 0) 表示东风（吹向 +X），与 Weather.wind_dir 的默认值保持一致。
@@ -269,10 +276,15 @@ func apply_size() -> void:
 ##   构造完成到首次调用之间，控件按默认值（晴朗 + 东风）显示。
 ## 注意：这里只刷新"数据 + 重绘"，不重建节点也不改主题，所以开销很小；
 ##   但也**不会**重新应用尺寸 —— compact 变了仍需单独调用 apply_size()。
-func update_weather(k: int, dir: Vector2, power: float, yaw: float) -> void:
-	# 先夹紧再存：KIND_NAMES 是定长数组，weather_label() 与图标的 match 都直接按编号取，
-	# 不夹的话越界编号会取到错的名字/图标甚至越界访问（自检脚本用 99 验证过这个夹紧）。
-	kind = clampi(k, 0, KIND_NAMES.size() - 1)
+## 参数 kind_name_override：天气中文名（自定义天气由 weather.gd 提供）；空串 = 查内置表。
+## 参数 icon_kind_override：图标种类 0..5；-1 = 直接用 kind（内置天气的默认行为）。
+func update_weather(k: int, dir: Vector2, power: float, yaw: float,
+		kind_name_override := "", icon_kind_override := -1) -> void:
+	# 只夹下界：内置 0..5 不变，自定义编号（>= 6）要原样保留，
+	# 名称与图标分别由 kind_name_override / icon_kind_override 决定，不再依赖 0..5 的定长表。
+	kind = maxi(k, 0)
+	kind_name = kind_name_override
+	icon_kind = icon_kind_override
 	# 零向量兜底：Weather 未绑定时 wind_dir 可能是 (0, 0)，那时 atan2(0, 0) 的角度不稳定，
 	# 风向标会平白指向屏幕右侧。阈值 0.0001 是向量**长度**（不是长度平方），
 	# 远小于任何合法风速，只用来识别这种退化输入。
@@ -306,6 +318,8 @@ func update_weather(k: int, dir: Vector2, power: float, yaw: float) -> void:
 ## 注意：kind 在 update_weather() 里已经夹紧过一次，这里再判一次范围是双保险，
 ##   因为 kind 是公开成员，外部可以绕过 update_weather() 直接赋值。
 func weather_label() -> String:
+	if not kind_name.is_empty():
+		return kind_name
 	# 双保险：kind 可能被外部直接赋成越界值，这里用"未知"兜底，避免数组索引越界。
 	return KIND_NAMES[kind] if kind >= 0 and kind < KIND_NAMES.size() else "未知"
 
@@ -369,7 +383,9 @@ class WeatherIcon extends Control:
 		var rain := Color(0.55, 0.75, 1.0, 1.0)
 		# int() + 动态属性 panel.kind：panel 的静态类型是 PanelContainer，静态检查看不到外层
 		# 的 kind，所以只能动态读；外面套 int() 是为了让 match 的键值类型稳定（避免 float 混入）。
-		match int(panel.kind):
+		# ★ 自定义天气（kind >= 6）由 icon_kind 指定一个 0..5 的内置图标，避免落到兜底分支。
+		var draw_kind := int(panel.icon_kind) if int(panel.icon_kind) >= 0 else int(panel.kind)
+		match int(draw_kind):
 			KIND_CLEAR:
 				draw_circle(c, s, sun)
 				# 八等分画光芒：角度 a 从 0 均匀铺满一圈，(cos, sin) 得到单位方向 d，

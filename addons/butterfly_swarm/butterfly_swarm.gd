@@ -1177,14 +1177,42 @@ func _apply_ground(ground_y: float) -> void:
 
 # ==================== 天气 / 风 ====================
 
+## 找天气节点（去掉 autoload 之后它是场景内节点）。
+## 查找顺序，与其它脚本保持同一套约定：
+##   ① **当前场景**根下的子节点 `Weather`（正式形态：main.tscn 的 Main/Weather）；
+##   ② /root/Weather（旧 autoload 兼容）；
+##   ③ 分组 `weather_system`（节点在 _enter_tree 里登记，不依赖节点名和具体脚本类型）。
+## ★ 必须先查当前场景：只查 /root 会在"节点挂在场景里"时返回 null，
+##   于是蝴蝶拿不到天气、永远走兜底常量。
+## 返回：找到的节点，或 null（单测里只挂一个蝴蝶节点时会走兜底常量）。
+## 注意：本函数只做查找、不改状态，可以安全地被 wind_now() / weather_now() 反复调用。
+func _weather_node() -> Node:
+	var t := scene_tree()
+	if t != null:
+		var cs := t.current_scene
+		if cs != null:
+			var direct := cs.get_node_or_null("Weather")
+			if direct != null:
+				return direct
+	var rt := scene_root()
+	if rt != null:
+		var legacy := rt.get_node_or_null("Weather")
+		if legacy != null:
+			return legacy
+	if t != null:
+		return t.get_first_node_in_group(&"weather_system")
+	return null
+
+
 ## 读当前风。返回结构（**契约**，Butterfly 与测试都按它读）：
 ##   {"dir": Vector2(世界 XZ 单位向量), "strength": float, "gust": float,
 ##    "turbulence": float, "speed": float, "source": String}
-## 来源优先级：风系统（已有算好的 cur_*，且它才是草/植被实际用的那份）-> `Weather` -> 内置兜底。
+## 来源优先级：风系统（已有算好的 cur_*，且它才是草/植被实际用的那份）->
+##   天气节点（main.tscn 的 `Weather`，分组 `weather_system`）-> 内置兜底。
 ##   风系统按两级找：root 下的旧 `Wind` 节点（去 autoload 之前的兼容）-> 分组 `wind_system`
 ##   （现役形态：scenes/main.tscn 里的 WindSystem 节点，它在 _ready 里 add_to_group）。
 ##   ⚠ 这里**故意不引用**项目的 `WindSystem` class_name：本 addon 要能独立复用（理由同文件头 preload 那段）。
-## 注意：风系统与 `Weather` 都可能不存在（例如单测里只挂一个节点），
+## 注意：风系统与天气节点都可能不存在（例如单测里只挂一个节点），
 ##   所以每一步都判空；三者都不在时给一套"微风"常量，保证蝴蝶永远有风可用（不会静止死）。
 func wind_now() -> Dictionary:
 	var rt := scene_root()
@@ -1210,7 +1238,7 @@ func wind_now() -> Dictionary:
 				"speed": float(w.get("cur_speed")) if w.get("cur_speed") is float else 1.4,
 				"source": "Wind",
 			}
-	var we := rt.get_node_or_null("Weather")
+	var we := _weather_node()
 	if we != null:
 		var wd: Variant = we.get("wind_dir")
 		var dir := Vector2(1, 0)
@@ -1241,22 +1269,26 @@ func _fallback_wind(source: String) -> Dictionary:
 ## 读当前天气（供 Butterfly 决策"要不要去躲"）。返回：
 ##   {"kind": int, "name": String, "wind": float, "gust": float, "rain": float,
 ##    "cloud": float, "source": String}
-## 没有 Weather 时返回一套"晴天"常量。
+## 没有天气节点时返回一套"晴天"常量。
 func weather_now() -> Dictionary:
 	var rt := scene_root()
 	if rt == null:
 		return _fallback_weather("no_tree")
-	var we := rt.get_node_or_null("Weather")
+	var we := _weather_node()
 	if we == null:
 		return _fallback_weather("fallback")
 	var kind := 0
 	if we.get("current") is int:
 		kind = int(we.get("current"))
 	var nm := ""
-	# Weather 自带 kind->中文名 的字典（KIND_NAMES），能读到就用它的
-	var names: Variant = we.get("KIND_NAMES")
-	if names is Dictionary and (names as Dictionary).has(kind):
-		nm = String((names as Dictionary)[kind])
+	# 优先调天气节点的 weather_name()（内置 + 自定义天气都覆盖）；老版本节点没有该方法时
+	# 再退回 kind->中文名字典 KIND_NAMES（只含内置 6 种）。
+	if we.has_method("weather_name"):
+		nm = str(we.call("weather_name"))
+	else:
+		var names: Variant = we.get("KIND_NAMES")
+		if names is Dictionary and (names as Dictionary).has(kind):
+			nm = String((names as Dictionary)[kind])
 	return {
 		"kind": kind,
 		"name": nm,

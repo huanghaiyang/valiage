@@ -78,8 +78,8 @@ class_name FogLayerDriver
 			clouds_resource._sync_fog_layer()
 
 # ==================== 天气接线 ====================
-# ★ 本项目已有 /root/Weather（风场/植被/雾都在读它的 wind_dir / wind / fog），这里同样接上：
-#   天气的"雾量" -> 雾浓度；天气的"风" -> 四层结构风速与风向（雾会随之飘）
+# ★ 本项目天气节点（main.tscn 的 "Weather"，分组 weather_system）提供 wind_dir / wind / fog，
+#   这里同样接上：天气的"雾量" -> 雾浓度；天气的"风" -> 四层结构风速与风向（雾会随之飘）
 @export var auto_weather : bool = true
 ## weather.wind = 1.0 对应的风速（m/s），与 fog_field.gd 保持一致
 @export var wind_speed_mps : float = 4.0
@@ -291,13 +291,17 @@ func _release_fog_scene_resources() -> void:
 
 func _bind_weather() -> void:
 	_setup_mask_path()
-	_weather = get_node_or_null("/root/Weather")
+	# ★ 本项目改动：天气改为 main.tscn 里的场景节点（分组 weather_system），不再是 autoload。
+	_weather = get_tree().get_first_node_in_group(&"weather_system")
 	if _weather == null:
-		print("FogLayerDriver: 没有 /root/Weather，天气接线跳过")
+		print("FogLayerDriver: 场景里还没有天气节点（weather_system），将在每帧懒查找")
 
 
 ## 每帧读天气：雾量 -> 浓度；风 -> 风向与四层风速
 func _apply_weather() -> void:
+	if _weather == null and is_inside_tree():
+		# 懒绑定：本节点可能早于天气节点进入场景树。
+		_weather = get_tree().get_first_node_in_group(&"weather_system")
 	if _weather == null or not auto_weather or clouds_resource == null:
 		return
 	var wd = _weather.get("wind_dir")

@@ -275,7 +275,7 @@ func _build() -> void:
 	_row(vbox, "mana", "魔法值")
 	# 精力值由玩家奔跑驱动消耗/恢复（vitals.gd::_tick_stamina），HUD 只是显示
 	_row(vbox, "stamina", "精力值")
-	# 舒适度由天气系统驱动（vitals.gd::comfort_target 读 /root/Weather 的 rain/wind/fog）
+	# 舒适度由天气系统驱动（vitals.gd::comfort_target 读天气节点 / 分组 weather_system 的 rain/wind/fog）
 	_row(vbox, "comfort", "舒适度")
 
 

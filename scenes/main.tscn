@@ -10,6 +10,7 @@
 [ext_resource type="Script" uid="uid://cqeuv1staxdps" path="res://scripts/ui/game_ui.gd" id="8_ui"]
 [ext_resource type="Script" uid="uid://cxpmrb7he55xh" path="res://scripts/ui/minimap.gd" id="9_minimap"]
 [ext_resource type="Script" uid="uid://clirnj1a6752e" path="res://scripts/wind.gd" id="9_windsys"]
+[ext_resource type="Script" uid="uid://dv8a27pupx6fl" path="res://scripts/world/weather.gd" id="9_weathersys"]
 [ext_resource type="Script" uid="uid://scie1w7vnhq0" path="res://scripts/world/features/spawn_point.gd" id="10_spawn"]
 [ext_resource type="Script" uid="uid://bat1f5j1msndx" path="res://scripts/world/features/terrain_platform.gd" id="11_platform"]
 [ext_resource type="Texture2D" uid="uid://b46r88ixa2w13" path="res://assets/textures/岩石杂草/textures/file_ph-assets_Textures_jpg_4k_rocky_terrain_03_rocky_terrain_03_diff_4k.jpg" id="12_ty1g6"]
@@ -506,6 +507,9 @@ script = ExtResource("1_main")
 
 [node name="WindSystem" type="Node" parent="." unique_id=6355302]
 script = ExtResource("9_windsys")
+
+[node name="Weather" type="Node" parent="."]
+script = ExtResource("9_weathersys")
 
 [node name="Terrain" type="Node3D" parent="." unique_id=1832025193]
 script = ExtResource("2_terrain")

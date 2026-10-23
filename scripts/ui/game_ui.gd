@@ -14,7 +14,7 @@
 #
 # 【所属系统】
 #   表现层（UI），是"输入 → 逻辑 → 显示"链路的最后一环：
-#     main.gd（输入与装配）→ Game / StaffSystem / Weather（状态）→ 本文件（显示）
+#     main.gd（输入与装配）→ Game / StaffSystem / 天气节点（状态）→ 本文件（显示）
 #   反向出口只有少数几个：main.set_tool() / main.undo() / main.player.play_action() /
 #   StaffSystem.equip() / main.call("_show_staff_hint", …)。
 #
@@ -23,7 +23,8 @@
 #       Game        —— Game.Tool 枚举、Game.current_tool、Game.biomass / Game.stone、
 #                      Game.tool_changed / biomass_changed / stone_changed、Game.get_tool_name()
 #       StaffSystem —— 法杖注册表 / 解锁 / 装备（本文件一律用 sys.call("…") 动态调用）
-#       Weather     —— Weather.wind / Weather.wind_dir / Weather.weather_name()
+#       Weather     —— 不是 autoload：main.tscn 的 "Weather" 节点（分组 weather_system），
+#                      本文件只读 wind / wind_dir，并调用 weather_name()
 #   · 外部信号（全部在 setup() 里连接）：
 #       Game.tool_changed            → _on_tool_changed（按钮高亮 + tooltip）
 #       Game.biomass_changed         → _on_biomass_changed
@@ -199,6 +200,9 @@ var staff_slot_icon: ColorRect
 ## _process() 每帧累加，累计到 0.2 s 才真正刷一次文本 ——
 ##   风力数值本身变化很慢，0.2 s 视觉上完全跟手，却能省掉每帧拼字符串 + Label 重排的开销。
 var _weather_accum := 0.0
+## ★ 本项目改动：Weather 不再是 autoload，而是 main.tscn 里的场景节点。
+##   这里懒加载 + 分组查找（"weather_system"），取不到就整块跳过天气文本。
+var _weather: Node = null
 
 ## 创造列表里的工具按钮表：每项 = [按钮文案, Game.Tool 枚举值]，数组顺序就是网格里的排布顺序。
 ## 注意：
@@ -1263,9 +1267,9 @@ func update_staff_slot() -> void:
 ## 刷新天气文本：天气名 + 风力数值 + 风力等级 + 风向箭头（两行）。
 ##
 ## 参数：无。返回值：无。副作用：写 weather_label.text。
-## 数据源：Weather autoload 的 wind（相对强度，约 0~1+）与 wind_dir（Vector2 单位方向，
-##   Weather 内部用 cos/sin 推进角度算出，见 weather.gd::_wind_direction_now()）；
-##   天气名来自 Weather.weather_name()。
+## 数据源：天气节点（main.tscn 的 "Weather"，分组 weather_system）的 wind（相对强度，约 0~1+）
+##   与 wind_dir（Vector2 单位方向，Weather 内部用 cos/sin 推进角度算出，
+##   见 weather.gd::_wind_direction_now()）；天气名来自 weather.weather_name()。
 ## 风力分级阈值（本文件自己定的）：>= 0.85 大风 / >= 0.5 有风 / >= 0.3 轻风 / 其余 微风。
 ## 风向：取 x/y 分量**绝对值较大的那一个轴**，映射成四向箭头 → ← ↓ ↑，
 ##   即只表达"大致朝哪边"，不给精确角度（文字写角度反而不好读）。
@@ -1275,9 +1279,14 @@ func update_staff_slot() -> void:
 func _update_weather_label() -> void:
 	if weather_label == null:
 		return
-	var w: float = float(Weather.wind)
+	# ★ 本项目改动：天气节点是场景节点，按分组懒查找（不依赖 /root 路径）。
+	if _weather == null:
+		_weather = get_tree().get_first_node_in_group(&"weather_system")
+	if _weather == null:
+		return
+	var w: float = float(_weather.get("wind"))
 	var arrow := "→"
-	var d: Vector2 = Weather.wind_dir
+	var d: Vector2 = _weather.get("wind_dir") if _weather.get("wind_dir") is Vector2 else Vector2(1.0, 0.0)
 	# 只按"分量绝对值大的那个轴"出四向箭头：风向本身是连续角度，
 	# 但屏幕上是一行文字，四向箭头比写角度直观得多（代价是丢失斜向细节，可接受）。
 	if absf(d.x) > absf(d.y):
@@ -1291,7 +1300,8 @@ func _update_weather_label() -> void:
 		level = "有风"
 	elif w >= 0.3:
 		level = "轻风"
-	weather_label.text = "%s\n风力 %.2f %s %s" % [Weather.weather_name(), w, level, arrow]
+	var weather_name_str := str(_weather.call("weather_name")) if _weather.has_method("weather_name") else "未知"
+	weather_label.text = "%s\n风力 %.2f %s %s" % [weather_name_str, w, level, arrow]
 
 
 ## 每帧回调：节流刷新天气与法杖装备格（本文件唯一的轮询逻辑）。

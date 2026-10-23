@@ -1,5 +1,5 @@
 # ============================================================================
-# weather.gd —— 天气系统（autoload 单例，注册名 "Weather"）
+# weather.gd —— 天气系统（main.tscn 里的场景节点 "Weather"）
 # ============================================================================
 # · 所属系统：世界表现层（天气 / 风 / 云 / 雨）。同层邻居：assets/shaders/
 #   vegetation_wind.gdshader（植被风摇）、assets/shaders/clouddome.gdshader（云穹顶）、
@@ -7,8 +7,11 @@
 # · 核心模型：**"状态机 + 连续参数"**。状态机只管 Kind（6 种天气）与过渡进度 blend，
 #   连续参数（wind / gust / turb / cloud / rain / fog / light）由新旧两个预设插值得到，
 #   再统一落到场景对象上。参考《辐射 76》的天气思路：风是独立可调维度。
-# · 注册：project.godot [autoload] Weather="*res://scripts/world/weather.gd"，
-#   所以任何脚本都能用全局名 Weather 访问（main.gd / vitals.gd / ui 都这么用）。
+# · 注册：project.godot [autoload] Weather 已**移除**，Weather 现为 main.tscn 里的场景节点
+#   （挂在 main 场景根下，脚本是 weather.gd）。任何脚本都能通过 get_tree()
+#   遍历 "weather_system" 分组找到它（本文件 _enter_tree 里 add_to_group）。
+#   需要"启动即能读"的读取方（butterfly_swarm 等）请在早期为空时回退内置常量，
+#   不要假设返回非 null（与之前"无 Weather autoload 也能跑"的契约一致）。
 #
 # 【对外接口】
 #   · 读状态：current（已生效的 Kind）/ target（目标 Kind）/ weather_name() /
@@ -24,7 +27,7 @@
 #     UI / 存档 / 任务系统预留的钩子），所以不要用"有没有人监听"来判断天气是否变化
 #
 # 【关键依赖】
-#   · autoload：无（本文件不反向依赖其它 autoload，只被别人单向读取）
+#   · 全局单例：无（本文件不反向依赖其它 autoload，只被别人单向读取）
 #   · 场景注入：_sun / _env / _rain_particles 全部来自 bind_world()；未调用时它们为
 #     null，本文件所有写入路径都会判空跳过 —— 也就是说"没装配 = 空转，不报错"
 #   · 资源路径："res://assets/shaders/clouddome.gdshader"（_ensure_clouds 里 load）
@@ -100,14 +103,23 @@ const PRESETS := {
 	Kind.WINDY:    {"wind": 0.95, "gust": 0.70, "turb": 0.65, "cloud": 0.35, "rain": 0.0, "fog": 0.05, "light": 0.90},
 }
 
+## ★ 本项目改动：自定义天气定义文件（由 addons/weather_composer 编辑器面板写入）。
+## 结构：{"version":1, "weathers":[{"id":6, "name":"梅雨", "params":{...}, "icon":3, "mix":{...}}]}
+## 文件不存在 / 解析失败时只使用内置 6 种天气，不报错（保证老场景照常启动）。
+const CUSTOM_DEFS_PATH := "res://data/weather/custom_weathers.json"
+## 本节点在场景树里登记的分组名。查找方式：get_tree().get_first_node_in_group("weather_system")。
+const GROUP := &"weather_system"
+## 连续参数的键名（_update_params / 自定义天气校验共用）。
+const PARAM_KEYS := ["wind", "gust", "turb", "cloud", "rain", "fog", "light"]
+
 # ==================== 状态：当前天气、目标天气与过渡控制 ====================
 ## 当前 / 目标天气
 ## 已生效的天气编号（Kind）。只有过渡满进度时（_process 里 blend>=1）才被赋成 target，
 ## 或是 set_weather(kind, force=true) 立刻同步。取值 0..5。
 ## ★ 过渡期间读它拿到的是**旧**天气 —— UI 若想显示"正在变成什么"，请读 target。
 var current: int = Kind.CLEAR
-## 目标天气编号（Kind）。连续参数正是在 PRESETS[current] 与 PRESETS[target] 之间插值，
-## 所以"过渡中"= current != target。取值 0..5。
+## 目标天气编号（Kind 或自定义编号）。连续参数正是在 _presets[current] 与 _presets[target]
+## 之间插值，所以"过渡中"= current != target。内置 0..5，自定义从 6 开始。
 var target: int = Kind.CLEAR
 ## 过渡进度（0..1）
 ## 过渡进度（0..1）：0 = 完全停在 current 的预设，1 = 已到达 target 的预设。
@@ -211,6 +223,17 @@ var _rng := RandomNumberGenerator.new()
 ## 距离下次自动换天气的倒计时（秒）。_ready 里先随机排一个，避免开局立刻变天。
 var _auto_timer := 0.0
 
+# ==================== 运行时天气注册表（内置 + 自定义） ====================
+## 运行时的"编号 -> 中文名 / 参数 / 图标"三张表。内置 6 种从常量复制而来，
+## 自定义天气由 reload_definitions() 从 CUSTOM_DEFS_PATH 合并进来。
+## ★ 不再直接读 KIND_NAMES / PRESETS：常量只作为内置数据的来源，运行期一律读这三张表。
+var _names: Dictionary = KIND_NAMES.duplicate()
+var _presets: Dictionary = PRESETS.duplicate(true)
+## 编号 -> 图标种类（0..5，用于小地图叠加层；自定义天气可选一个内置图标）。
+var _icons: Dictionary = {}
+## 全部天气编号，按升序排列（V 键循环、自动天气的相邻关系都按这个顺序）。
+var _ordered_ids: Array[int] = []
+
 # ==================== 场景引用与运行时资源（全部由 main 注入） ====================
 ## 场景引用（由 main 注入）
 ## 场景里的平行光（太阳）。由 bind_world() 注入，未装配时为 null（_apply_world 会跳过）。
@@ -257,7 +280,99 @@ var _sky_mat: ProceduralSkyMaterial = null
 var _wind_materials: Array[ShaderMaterial] = []
 
 # ==================== 生命周期与对外接口 ====================
-## 引擎回调：autoload 启动时执行一次（早于 main.gd 的 _ready —— autoload 先于主场景）。
+## 引擎回调：进入场景树时登记分组并载入天气定义（早于 _ready）。
+## 参数/返回值：无。
+## 副作用：① add_to_group("weather_system") —— 所有旧代码的 /root/Weather 查找都已改成
+##   按这个分组找；② reload_definitions() 把内置 6 种 + data/weather/custom_weathers.json
+##   的条目合并进运行时注册表。
+func _enter_tree() -> void:
+	add_to_group(GROUP)
+	reload_definitions()
+
+
+## 重建运行时天气注册表：内置常量 + 自定义 JSON。
+## 参数/返回值：无。
+## 副作用：覆盖 _names / _presets / _icons / _ordered_ids；若当前/目标编号在新表里不存在
+##   （例如自定义天气被删除、或文件被改坏），回退到晴朗并立刻结束过渡，避免 _update_params
+##   每帧读不到预设。
+## 调用时机：_enter_tree() 一次。编辑器面板保存 JSON 后，可对运行中的节点手动调用一次
+##   （编辑器里脚本不是 @tool，不会自动重载；需要重启游戏或在调试控制台调用）。
+func reload_definitions() -> void:
+	_names = KIND_NAMES.duplicate()
+	_presets = PRESETS.duplicate(true)
+	_icons.clear()
+	for id in PRESETS:
+		_icons[id] = id
+	for entry in _read_custom_defs():
+		if not (entry is Dictionary):
+			continue
+		var id := int((entry as Dictionary).get("id", -1))
+		# 编号必须是 >= 6 的整数且未被占用：内置 0..5 永远不允许被自定义覆盖。
+		if id <= Kind.WINDY or _presets.has(id):
+			push_warning("Weather: 忽略非法/重复的自定义天气编号 %d" % id)
+			continue
+		var params: Dictionary = (entry as Dictionary).get("params", {})
+		var clean := {}
+		for key in PARAM_KEYS:
+			clean[key] = float(params.get(key, 0.0))
+		_presets[id] = clean
+		_names[id] = str((entry as Dictionary).get("name", "自定义%d" % id))
+		# 图标只能是 0..5 的内置图标：越界夹紧，避免小地图 match 落到兜底分支。
+		_icons[id] = clampi(int((entry as Dictionary).get("icon", Kind.CLEAR)), Kind.CLEAR, Kind.WINDY)
+	_ordered_ids.clear()
+	for id in _presets:
+		_ordered_ids.append(int(id))
+	_ordered_ids.sort()
+	# 当前/目标失效时回退：否则 _update_params 会退到 CLEAR 但其 current 仍是旧编号，
+	# weather_name() 会显示"未知"、V 键循环也会从错误位置继续。
+	if not _presets.has(current):
+		current = Kind.CLEAR
+		blend = 1.0
+	if not _presets.has(target):
+		target = current
+		blend = 1.0
+
+
+## 读自定义天气文件。文件缺失或格式错误都返回空数组（只影响"新增天气"，不影响启动）。
+## 参数/返回值：无 / Array（元素期望是 Dictionary）。
+## 副作用：只读文件，不改注册表（合并逻辑在 reload_definitions）。
+func _read_custom_defs() -> Array:
+	if not FileAccess.file_exists(CUSTOM_DEFS_PATH):
+		return []
+	var f := FileAccess.open(CUSTOM_DEFS_PATH, FileAccess.READ)
+	if f == null:
+		push_warning("Weather: 无法打开 %s，自定义天气已忽略" % CUSTOM_DEFS_PATH)
+		return []
+	var text := f.get_as_text()
+	f.close()
+	var data: Variant = JSON.parse_string(text)
+	if data is Dictionary and (data as Dictionary).get("weathers") is Array:
+		return (data as Dictionary)["weathers"]
+	push_warning("Weather: %s 格式错误（缺少 weathers 数组），自定义天气已忽略" % CUSTOM_DEFS_PATH)
+	return []
+
+
+## 当前注册表里的全部天气编号（升序副本）。UI/调试工具可用来做完整循环。
+func weather_ids() -> Array[int]:
+	return _ordered_ids.duplicate()
+
+
+## 某个编号是否存在（内置或自定义）。
+func has_weather(kind: int) -> bool:
+	return _presets.has(kind)
+
+
+## 指定编号的中文名（内置或自定义）；编号非法时返回"未知"。
+func weather_name_of(kind: int) -> String:
+	return str(_names.get(kind, "未知"))
+
+
+## 指定编号用于小地图图标的种类（0..5）。自定义天气在创建时选定一个内置图标。
+func weather_icon_kind(kind: int) -> int:
+	return int(_icons.get(kind, Kind.CLEAR))
+
+
+## 引擎回调：节点进入场景树后执行一次。
 ## 参数：无。返回值：无。
 ## 副作用：① 设置 process_mode ② 随机化 _rng ③ 排出首次自动换天气的倒计时
 ##   ④ _apply_shader_params() 落地一次风参数。
@@ -297,7 +412,7 @@ func add_wind_material(m: ShaderMaterial) -> void:
 ## 参数 sun：场景里的 DirectionalLight3D（阳光写入目标 & 基准亮度来源），可为 null。
 ## 参数 env：场景里的 WorldEnvironment（环境光/雾/天空的写入目标），可为 null。
 ## 参数 rain_parent：雨粒子与云穹顶的挂载父节点。main.gd 传的是主场景自身，
-##   因此这两个节点是**场景节点**（随场景释放），autoload 只持有引用。
+##   因此这两个节点是**场景节点**（随场景释放），本天气节点只持有引用。
 ## 参数 wind_materials：各植被分类的风摇材质集合（vegetation.wind_materials()），
 ##   默认空数组 = 只清空旧列表、不登记新的。
 ## 返回值：无。
@@ -324,7 +439,7 @@ func bind_world(sun: DirectionalLight3D, env: WorldEnvironment, rain_parent: Nod
 		if m is ShaderMaterial:
 			_wind_materials.append(m as ShaderMaterial)
 	# 云穹顶在这里才创建（而不是 _ready）：_ready 时还没有 rain_parent，也没必要在
-	# autoload 启动期就建一个 900m 的网格。
+	# 场景刚加载、还没 bind_world 时就建一个 900m 的网格。
 	_ensure_clouds(rain_parent)
 	if _env != null and _env.environment != null:
 		var sk := _env.environment.sky
@@ -353,13 +468,14 @@ func bind_world(sun: DirectionalLight3D, env: WorldEnvironment, rain_parent: Nod
 ## 副作用：写 target（force 时同时写 current 与 blend）、末尾发 weather_changed(kind)。
 ## 调用时机：main.gd 解析 --weather=N（force=true）、main.gd 按 V 键 _cycle_weather()
 ##   （force=true）、本文件 _process 的自动换天气（force=false）。
-## ★ kind 越界（<0 或 >Kind.WINDY）时**静默 return**：不改状态、不发信号。main.gd 的
-##   --weather= 越界保护就是靠这个行为（那边还会用 KIND_NAMES.size() 先挡一次）。
-## ★ 上界写死成 Kind.WINDY：在枚举**末尾**追加新天气没问题，插在中间/前面就要同步改这里。
+## ★ 编号不存在（内置 0..5 之外、且不在自定义表里）时**静默 return**：不改状态、不发信号。
+##   main.gd 的 --weather= 越界保护就是靠这个行为（那边还会用 has_weather() 先挡一次）。
+## ★ 内置编号是 0..5；自定义天气从 6 开始（由 addons/weather_composer 面板生成），
+##   在注册表里按编号升序循环。
 ## ★ 设成与当前相同的天气同样会走一遍过渡并再发一次信号，不是"无变化"语义。
 ## 设置天气（带过渡）；force=true 立即生效
 func set_weather(kind: int, force := false) -> void:
-	if kind < 0 or kind > Kind.WINDY:
+	if not _presets.has(kind):
 		return
 	target = kind
 	# force 时把进度直接拉满（而不是从 0 开始跑 8 秒）：用于"启动指定天气/手动切换"这类
@@ -372,14 +488,12 @@ func set_weather(kind: int, force := false) -> void:
 	# 无论 kind 是否真变化都发：信号语义是"收到了一次切换请求"，不是"天气确实变了"。
 	weather_changed.emit(kind)
 
-## 当前天气的中文名（查 KIND_NAMES）。
-## 参数：无。返回值：current 对应的中文名；current 不是合法键时返回 "未知"（不崩）。
-## 副作用：无（纯读）。调用者：main.gd 的调试 print、UI 的天气标签。
+## 当前天气的中文名（查运行时注册表 _names）。
+## 参数：无。返回值：current 对应的中文名；current 不是合法编号时返回 "未知"（不崩）。
+## 副作用：无（纯读）。
 ## ★ 读的是 **current**（已生效），所以过渡期间返回的是旧天气名；想显示"正在变成什么"用 target。
-## 注意：ui/map_weather_overlay.gd 自带一份同名的中文表（它刻意不依赖 autoload），
-##   改 KIND_NAMES 的文案不会同步过去。
 func weather_name() -> String:
-	return KIND_NAMES.get(current, "未知")
+	return weather_name_of(current)
 
 # ==================== 每帧推进：自动换天气 / 过渡 / 参数落地 ====================
 ## 引擎回调：每帧执行（_ready 里设了 PROCESS_MODE_ALWAYS，所以暂停时也在跑）。
@@ -394,7 +508,7 @@ func weather_name() -> String:
 ##   ⑤ _apply_shader_params()：写植被风摇 uniform
 ## ★ ③ 必须在 ④⑤ 之前：否则每帧都会把上一帧的旧参数落地，画面慢一帧（过渡时肉眼可见）。
 ## ★ ④⑤ 每帧无条件执行（写入幂等）。所以"天气没变"时也有固定的每帧开销；
-##   未 bind_world() 时这些写入全被 null 判断短路，等于空转（autoload 启动期安全）。
+##   未 bind_world() 时这些写入全被 null 判断短路，等于空转（场景加载期安全）。
 func _process(delta: float) -> void:
 	# 自动换天气
 	if auto_change:
@@ -423,12 +537,14 @@ func _process(delta: float) -> void:
 
 ## 天气状态机：按"相邻天气更常见"的权重随机挑下一个天气。
 ## 参数：无（读 current 决定候选集）。
-## 返回值：Kind 里的某个编号（int）。返回值**没有再夹紧**，由 set_weather() 兜底校验。
+## 返回值：注册表里的某个编号（int）。返回值**没有再夹紧**，由 set_weather() 兜底校验。
 ## 副作用：消耗 _rng 的随机状态（一次 randi_range）。
 ## 调用时机：只由 _process 的自动换天气调用，且调用点已经保证 blend >= 1.0
 ##   （否则会以"旧天气"为起点挑候选，与玩家的观感不一致）。
+## ★ 本项目改动：内置 6 种沿用原来的相邻权重表；自定义天气（编号 > 5）额外获得"一票"，
+##   所以新增的天气能被自动天气轮到，但不会打乱内置天气之间的节奏。当前是自定义天气时，
+##   按注册表顺序在前后相邻两项之间来回（首尾视为相邻），保证总能回到内置天气。
 func _pick_next_weather() -> int:
-	# 简单权重：相邻天气更常见，避免突兀的暴风雨
 	# 权重实现就靠"重复元素"：CLEAR 行里 CLOUDY 出现两次 => 走多云 2/3、走大风 1/3。
 	# 用权重而不是"只能相邻一步"：这样偶尔能跳级（例如 WINDY 之后也可能回到 CLEAR），
 	# 但永远不会 CLEAR -> STORM 这种突兀跳变。
@@ -440,8 +556,22 @@ func _pick_next_weather() -> int:
 		Kind.RAIN: options = [Kind.OVERCAST, Kind.STORM]
 		Kind.STORM: options = [Kind.RAIN, Kind.OVERCAST]
 		Kind.WINDY: options = [Kind.CLEAR, Kind.CLOUDY]
-	# ★ 依赖"每个 match 分支都会给 options 赋值"这一不变量：一旦新增了 Kind 却没有对应的
-	#   match 分支，options 会保持空数组，这里 randi_range(0, -1) 直接抛错。
+	# 内置天气的基础上，把每个自定义天气各加一票（低概率出现在任意内置天气之后）。
+	for id in _ordered_ids:
+		if id > Kind.WINDY and not options.has(id):
+			options.append(id)
+	# 当前就是自定义天气（match 没有命中，options 为空）：在注册表里取前后相邻项。
+	if options.is_empty():
+		var idx := _ordered_ids.find(current)
+		var n := _ordered_ids.size()
+		# 注册表异常（为空 / 找不到当前项）时回退晴朗，避免下面 randi_range(0, -1) 抛错。
+		if idx < 0 or n == 0:
+			return Kind.CLEAR
+		if n == 1:
+			return current
+		var next := _ordered_ids[(idx + 1) % n]
+		var prev := _ordered_ids[(idx - 1 + n) % n]
+		options = [next, next, prev] if next != prev else [next]
 	return options[_rng.randi_range(0, options.size() - 1)]
 
 ## 在 from -> to 之间插值出当前连续参数（本文件的核心算法）。
@@ -455,10 +585,10 @@ func _pick_next_weather() -> int:
 ##   本函数是幂等的，每帧重复调用不会有累积漂移。
 ## 在 from -> to 之间插值出当前连续参数
 func _update_params(delta: float) -> void:
-	# 用 get() 而不是 PRESETS[current] 下标：current 万一不是合法键（外部乱赋值/版本不一致），
-	# 这里会回退到 CLEAR，而不是在字典取值处直接抛错。
-	var a: Dictionary = PRESETS.get(current, PRESETS[Kind.CLEAR])
-	var b: Dictionary = PRESETS.get(target, a)
+	# 用 get() 而不是 _presets[current] 下标：注册表被 reload（删掉了正在过渡的自定义天气）
+	# 时 current 可能已失效，这里会回退到 CLEAR，而不是在字典取值处直接抛错。
+	var a: Dictionary = _presets.get(current, _presets[Kind.CLEAR])
+	var b: Dictionary = _presets.get(target, a)
 	# current == target 时直接取 1.0：此时 a 与 b 是同一份预设，取 0 还是 1 结果相同，
 	# 但取 1 可以避免"blend 还是 0"（例如 force 之前的状态）时读到起点值。
 	var t: float = blend if current != target else 1.0
@@ -470,7 +600,7 @@ func _update_params(delta: float) -> void:
 	var wdir := _wind_direction_now(delta)
 	# 用"键名字符串列表 + match 落成员"的写法，而不是逐项写 7 遍 lerpf：
 	# 新增一个连续参数时只需改 PRESETS 与这个列表各一处（match 少一个分支会静默漏参数）。
-	for key in ["wind", "gust", "turb", "cloud", "rain", "fog", "light"]:
+	for key in PARAM_KEYS:
 		var va := float(a.get(key, 0.0))
 		var vb := float(b.get(key, va))
 		var v := lerpf(va, vb, t)
@@ -527,7 +657,7 @@ func _wind_direction_now(delta: float) -> Vector2:
 ## 注意事项：
 ##   · uniform 名必须与 assets/shaders/vegetation_wind.gdshader 完全一致；写错**不报错**，
 ##     只是那一项静默无效（这也是"代码全在、画面不动"最常见的假故障来源）。
-##   · 列表为空时直接 return —— autoload 启动期（_ready）就是这条路径，属正常。
+##   · 列表为空时直接 return —— _ready 阶段就是这条路径，属正常。
 ##   · 这里不判空元素：两个登记入口都已经过滤过 null。
 ## 把当前风参数写进植被共享材质：所有植被按同一风向摆动。
 ##
@@ -560,7 +690,7 @@ func _apply_shader_params() -> void:
 ##   所以画质档位对这几个字段的设置会被天气覆盖（settings.gd 头注释有同一记录）。
 ## ★ 设计原则：只做**乘算/插值**，不写死亮度（_base_sun_energy / _base_ambient 来自场景），
 ##   这样场景里手调的太阳与环境亮度仍然有意义。
-## ★ 所有分支都判空：未 bind_world() 时整函数空转（autoload 启动期安全）。
+## ★ 所有分支都判空：未 bind_world() 时整函数空转（场景加载期安全）。
 ## 应用到太阳/环境/雨
 func _apply_world() -> void:
 	if _sun != null:
@@ -662,7 +792,7 @@ func _ensure_clouds(parent: Node3D) -> void:
 	_clouds.mesh = sphere
 	_cloud_mat = ShaderMaterial.new()
 	# 用 load() 而不是文件级 preload：着色器只在真的要用穹顶时才需要读进来，
-	# 避免 autoload 启动期就去解析这个资源（推测：这是为了避免启动期无谓的资源加载）。
+	# 避免启动期就去解析这个资源（推测：这是为了避免启动期无谓的资源加载）。
 	_cloud_mat.shader = load("res://assets/shaders/clouddome.gdshader")
 	# 先给一份与着色器默认值相同的初始值，只是为了避免"uniform 未被设置"的中间态；
 	# 真正生效的参数由 _apply_world() 每帧覆盖，这里不需要跟着 PRESETS 走。
@@ -676,8 +806,8 @@ func _ensure_clouds(parent: Node3D) -> void:
 	# （推测）再给视锥剔除留一个"整个半径"的余量：这个网格巨大且每帧跟着相机移动，
 	# 保守的包围盒余量可以避免它在某些帧被整块剔除（代价只是剔除判定宽松一点）。
 	_clouds.extra_cull_margin = CLOUD_DOME_RADIUS
-	# 注意挂载点是 main 场景（rain_parent），不是 autoload —— 节点随场景释放，
-	# autoload 只保留引用；如果 main 被重复实例化而 bind_world 被再调一次，旧穹顶会随旧场景一起消失。
+	# 注意挂载点是 main 场景（rain_parent），不是常驻单例 —— 节点随场景释放，
+	# 天气节点只保留引用；如果 main 被重复实例化而 bind_world 被再调一次，旧穹顶会随旧场景一起消失。
 	parent.add_child(_clouds)
 
 ## 创建雨粒子节点（GPUParticles3D，名字 WeatherRain）。

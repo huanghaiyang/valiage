@@ -62,9 +62,9 @@ extends Resource
 @export var energy_gain := 0.16
 ## 低于这个能量值就落地停歇（BASK）。
 @export var rest_energy := 0.25
-## 风速超过这个值（0..1.5 量级的 Weather.wind）蝴蝶就去躲雨/避风（SHELTER）。
+## 风速超过这个值（0..1.5 量级，取天气节点的 wind）蝴蝶就去躲雨/避风（SHELTER）。
 @export var shelter_wind := 0.75
-## 雨量超过这个值（0..1 量级的 Weather.rain）蝴蝶就找遮蔽（SHELTER）。
+## 雨量超过这个值（0..1 量级，取天气节点的 rain）蝴蝶就找遮蔽（SHELTER）。
 @export var shelter_rain := 0.30
 ## 飞行时翅膀的虹彩强度（unity 自发光掠射项，见 butterfly_wings.gdshader 的 iridescence）。
 ## ★ 默认压得很低（0.16）：调高会把蝴蝶染成紫红、盖掉素材本身的蓝（真机实测过）。
