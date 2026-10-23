@@ -820,6 +820,70 @@ func erase_box(size: Vector3, shape_transform: Transform3D) -> void:
 	)
 
 
+## ★ 本项目改动：随机移除笔刷（"稀疏化"）。
+##   判定范围与 erase / erase_cylinder / erase_box 完全一致，区别是**不全删**：
+##   范围内每株草按 `probability` 掷一次骰子，命中才删。可以反复涂抹同一片区域，
+##   每次只削掉一部分 —— 手感和 airdraw（喷枪）一样是连续、渐进的。
+## 参数 probability：0~1 的删除概率（1 = 和橡皮完全一样）。
+func random_erase(pos: Vector3, radius: float, probability: float) -> void:
+	if multimesh == null or probability <= 0.0:
+		return
+	if not multimesh.get_aabb().intersects(AABB(pos - Vector3(radius, radius, radius), Vector3(radius, radius, radius) * 2)):
+		return
+	var p := clampf(probability, 0.0, 1.0)
+	_apply_erase_tool(func(array: Array[Transform3D]) -> int:
+			var num_to_erase := 0
+			for i in range(multimesh.instance_count):
+				var trans := multimesh.get_instance_transform(i)
+				if trans.origin.distance_to(pos) <= radius and randf() < p:
+					num_to_erase += 1
+				else:
+					array.append(trans)
+			return num_to_erase
+	)
+
+
+func random_erase_cylinder(rx: float, height: float, rz: float, shape_transform: Transform3D, probability: float) -> void:
+	if multimesh == null or probability <= 0.0:
+		return
+	var aabb := AABB(Vector3(-rx, -height / 2, -rz), Vector3(rx, height / 2, rz) * 2)
+	aabb = shape_transform * aabb
+	if not (global_transform * multimesh.get_aabb()).intersects(aabb):
+		return
+	var p := clampf(probability, 0.0, 1.0)
+	_apply_erase_tool(func(array: Array[Transform3D]) -> int:
+			var num_to_erase := 0
+			for i in range(multimesh.instance_count):
+				var trans := multimesh.get_instance_transform(i)
+				var point := global_transform * trans.origin * shape_transform
+				var r = (point.x * point.x) / (rx * rx) + (point.z * point.z) / (rz * rz)
+				if point.y >= -height and point.y <= height and r < 1 and randf() < p:
+					num_to_erase += 1
+				else:
+					array.append(trans)
+			return num_to_erase
+	)
+
+
+func random_erase_box(size: Vector3, shape_transform: Transform3D, probability: float) -> void:
+	if multimesh == null or probability <= 0.0:
+		return
+	var aabb := AABB(-size / 2, size)
+	if not (global_transform * multimesh.get_aabb()).intersects(shape_transform * aabb):
+		return
+	var p := clampf(probability, 0.0, 1.0)
+	_apply_erase_tool(func(array: Array[Transform3D]) -> int:
+			var num_to_erase := 0
+			for i in range(multimesh.instance_count):
+				var trans := multimesh.get_instance_transform(i)
+				if aabb.has_point(global_transform * trans.origin * shape_transform) and randf() < p:
+					num_to_erase += 1
+				else:
+					array.append(trans)
+			return num_to_erase
+	)
+
+
 ## ★ 本项目改动：给「草地实例」停靠面板用的只读接口。
 ##   面板只读取 MultiMesh 实例数据来统计数量 / 列出坐标，不修改任何东西。
 func get_instance_count() -> int:

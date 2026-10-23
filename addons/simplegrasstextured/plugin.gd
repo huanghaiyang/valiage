@@ -50,7 +50,9 @@ enum TOOL {
 	NONE,
 	PENCIL,
 	AIRBRUSH,
-	ERASER
+	ERASER,
+	## ★ 本项目改动：随机移除（稀疏化）笔刷 —— 在笔刷范围内按概率删实例
+	RANDOM_ERASE
 }
 
 enum TOOL_SHAPE {
@@ -153,6 +155,14 @@ var _custom_settings := [{
 		"hint": PROPERTY_HINT_RESOURCE_TYPE,
 		"hint_string": "Shortcut",
 		"default": _create_shortcut(KEY_X),
+		"basic": true
+	},{
+		# ★ 本项目改动：随机移除工具快捷键
+		"name": "SimpleGrassTextured/Shortcuts/random_erase_tool",
+		"type": TYPE_OBJECT,
+		"hint": PROPERTY_HINT_RESOURCE_TYPE,
+		"hint_string": "Shortcut",
+		"default": _create_shortcut(KEY_R),
 		"basic": true
 	},{
 		"name": "SimpleGrassTextured/Shortcuts/radius_increment",
@@ -258,6 +268,8 @@ func _enter_tree() -> void:
 	_gui_toolbar.button_airbrush.toggled.connect(_on_button_airbrush_toggled)
 	_gui_toolbar.button_pencil.toggled.connect(_on_button_pencil_toggled)
 	_gui_toolbar.button_eraser.toggled.connect(_on_button_eraser_toggled)
+	# ★ 本项目改动：随机移除工具按钮
+	_gui_toolbar.button_random_erase.toggled.connect(_on_button_random_erase_toggled)
 	_gui_toolbar.edit_slope_range.value_changed.connect(_on_edit_slope_range_changed)
 	_gui_toolbar.edit_scale.value_changed.connect(_on_edit_scale_value_changed)
 	_gui_toolbar.edit_rotation.value_changed.connect(_on_edit_rotation_value_changed)
@@ -462,6 +474,9 @@ func _forward_3d_gui_input(viewport_camera: Camera3D, event: InputEvent) -> int:
 					get_undo_redo().create_action(_grass_selected.name + " Pencil tool")
 				elif _edit_tool == TOOL.ERASER:
 					get_undo_redo().create_action(_grass_selected.name + " Eraser tool")
+				elif _edit_tool == TOOL.RANDOM_ERASE:
+					# ★ 本项目改动：随机移除工具也走同一套撤销（undo_property 由下面统一登记）
+					get_undo_redo().create_action(_grass_selected.name + " Random erase tool")
 				else:
 					get_undo_redo().create_action(_grass_selected.name)
 				get_undo_redo().add_undo_property(_grass_selected, &"baked_height_map", _grass_selected.baked_height_map)
@@ -622,6 +637,9 @@ func set_tool(tool_name: String) -> void:
 			_edit_tool = TOOL.PENCIL
 		"eraser":
 			_edit_tool = TOOL.ERASER
+		# ★ 本项目改动：随机移除工具
+		"random_erase":
+			_edit_tool = TOOL.RANDOM_ERASE
 
 
 func set_tool_shape(tool_name: String, shape_name: String) -> void:
@@ -676,6 +694,9 @@ func _update_gui() -> void:
 			_grass_selected.sgt_tool_shape["pencil"] = TOOL_SHAPE.CYLINDER
 		if not _grass_selected.sgt_tool_shape.has("eraser"):
 			_grass_selected.sgt_tool_shape["eraser"] = TOOL_SHAPE.SPHERE
+		# ★ 本项目改动：随机移除工具默认球体（与橡皮一致）
+		if not _grass_selected.sgt_tool_shape.has("random_erase"):
+			_grass_selected.sgt_tool_shape["random_erase"] = TOOL_SHAPE.SPHERE
 		_gui_toolbar.slider_radius.value = _grass_selected.sgt_radius
 		_gui_toolbar.slider_density.value = _grass_selected.sgt_density
 		_gui_toolbar.edit_scale.value = _grass_selected.sgt_scale
@@ -715,14 +736,18 @@ func _update_pointer() -> void:
 		TOOL.ERASER:
 			tool_name = "eraser"
 			_pointer_rotate = false
+		# ★ 本项目改动：随机移除工具（指针形状与橡皮一致）
+		TOOL.RANDOM_ERASE:
+			tool_name = "random_erase"
+			_pointer_rotate = false
 	match _grass_selected.sgt_tool_shape[tool_name]:
 		TOOL_SHAPE.SPHERE:
-			if _edit_tool == TOOL.ERASER:
+			if _edit_tool == TOOL.ERASER or _edit_tool == TOOL.RANDOM_ERASE:
 				_pointer_rotate = true
 			_pointer_depth = _edit_radius
 			_pointer_decal.set_texture(Decal.TEXTURE_ALBEDO, _pointer_img_circle)
 		TOOL_SHAPE.CYLINDER:
-			if _edit_tool == TOOL.ERASER:
+			if _edit_tool == TOOL.ERASER or _edit_tool == TOOL.RANDOM_ERASE:
 				_pointer_rotate = true
 			_pointer_depth = DEFAULT_POINTER_DEPTH
 			_pointer_decal.set_texture(Decal.TEXTURE_ALBEDO, _pointer_img_circle)
@@ -730,7 +755,7 @@ func _update_pointer() -> void:
 			_pointer_depth = 1000000
 			_pointer_decal.set_texture(Decal.TEXTURE_ALBEDO, _pointer_img_circle)
 		TOOL_SHAPE.BOX:
-			if _edit_tool == TOOL.ERASER:
+			if _edit_tool == TOOL.ERASER or _edit_tool == TOOL.RANDOM_ERASE:
 				_pointer_rotate = true
 			_pointer_depth = _edit_radius
 			_pointer_decal.set_texture(Decal.TEXTURE_ALBEDO, _pointer_img_rect)
@@ -1145,6 +1170,15 @@ func _on_button_eraser_toggled(pressed : bool) -> void:
 	_update_pointer()
 
 
+## ★ 本项目改动：随机移除工具按钮
+func _on_button_random_erase_toggled(pressed : bool) -> void:
+	if pressed:
+		_edit_tool = TOOL.RANDOM_ERASE
+	elif _edit_tool == TOOL.RANDOM_ERASE:
+		_edit_tool = TOOL.NONE
+	_update_pointer()
+
+
 func _on_slider_radius_value_changed(value : float) -> void:
 	_edit_radius = value
 	_update_pointer()
@@ -1155,7 +1189,8 @@ func _on_slider_radius_value_changed(value : float) -> void:
 
 func _on_slider_density_value_changed(value : float) -> void:
 	_edit_density = value
-	if _grass_selected != null:
+	# ★ 本项目改动：随机移除工具下，密度滑块表示"删除概率"，不能写回草节点的 sgt_density
+	if _grass_selected != null and _edit_tool != TOOL.RANDOM_ERASE:
 		_grass_selected.sgt_density = value
 
 
@@ -1243,6 +1278,7 @@ func _on_set_tool(value : TOOL) -> void:
 		_gui_toolbar.button_airbrush.button_pressed = true
 		_gui_toolbar.button_pencil.button_pressed = false
 		_gui_toolbar.button_eraser.button_pressed = false
+		_gui_toolbar.button_random_erase.button_pressed = false
 		_gui_toolbar.set_density_modulate(Color.WHITE)
 	elif _edit_tool == TOOL.PENCIL:
 		_pointer_decal.modulate = Color.YELLOW
@@ -1251,6 +1287,7 @@ func _on_set_tool(value : TOOL) -> void:
 		_gui_toolbar.button_airbrush.button_pressed = false
 		_gui_toolbar.button_pencil.button_pressed = true
 		_gui_toolbar.button_eraser.button_pressed = false
+		_gui_toolbar.button_random_erase.button_pressed = false
 		_gui_toolbar.set_density_modulate(Color(1, 1, 1, 0.25))
 	elif _edit_tool == TOOL.ERASER:
 		_pointer_decal.modulate = Color.RED
@@ -1259,7 +1296,18 @@ func _on_set_tool(value : TOOL) -> void:
 		_gui_toolbar.button_airbrush.button_pressed = false
 		_gui_toolbar.button_pencil.button_pressed = false
 		_gui_toolbar.button_eraser.button_pressed = true
+		_gui_toolbar.button_random_erase.button_pressed = false
 		_gui_toolbar.set_density_modulate(Color(1, 1, 1, 0.25))
+	elif _edit_tool == TOOL.RANDOM_ERASE:
+		# ★ 本项目改动：橙色指针区分橡皮的红；密度滑块复用为"删除概率"
+		_pointer_decal.modulate = Color(1.0, 0.55, 0.15)
+		_gui_toolbar.slider_density.editable = true
+		_gui_toolbar.button_density.disabled = false
+		_gui_toolbar.button_airbrush.button_pressed = false
+		_gui_toolbar.button_pencil.button_pressed = false
+		_gui_toolbar.button_eraser.button_pressed = false
+		_gui_toolbar.button_random_erase.button_pressed = true
+		_gui_toolbar.set_density_modulate(Color.WHITE)
 	if _grass_selected != null:
 		_pointer_decal.visible = _edit_tool != TOOL.NONE
 	else:
@@ -1365,5 +1413,21 @@ func _eval_brush() -> void:
 				_grass_selected.erase_box(Vector3(_edit_radius, _edit_radius, _edit_radius) * 2, _pointer_decal.global_transform)
 			TOOL_SHAPE.BOX_INF_H:
 				_grass_selected.erase_box(Vector3(_edit_radius, 1000000, _edit_radius) * 2, _pointer_decal.global_transform)
+	elif _edit_tool == TOOL.RANDOM_ERASE:
+		# ★ 本项目改动：随机移除（稀疏化）。
+		#   密度滑块（1~200）复用为"每株的删除概率 %"：200 = 100%，25 = 12.5%。
+		#   每 100 ms（_evaluate_draw_time）触发一次，反复涂抹同一区域 -> 密度逐步下降。
+		var p := clampf(_edit_density / 200.0, 0.005, 1.0)
+		match _grass_selected.sgt_tool_shape["random_erase"]:
+			TOOL_SHAPE.SPHERE:
+				_grass_selected.random_erase(_position_draw - _grass_selected.global_position, _edit_radius, p)
+			TOOL_SHAPE.CYLINDER:
+				_grass_selected.random_erase_cylinder(_edit_radius, _pointer_depth, _edit_radius, _pointer_decal.global_transform, p)
+			TOOL_SHAPE.CYLINDER_INF_H:
+				_grass_selected.random_erase_cylinder(_edit_radius, 1000000, _edit_radius, _pointer_decal.global_transform, p)
+			TOOL_SHAPE.BOX:
+				_grass_selected.random_erase_box(Vector3(_edit_radius, _edit_radius, _edit_radius) * 2, _pointer_decal.global_transform, p)
+			TOOL_SHAPE.BOX_INF_H:
+				_grass_selected.random_erase_box(Vector3(_edit_radius, 1000000, _edit_radius) * 2, _pointer_decal.global_transform, p)
 	if _grass_selected.multimesh != null:
 		_gui_toolbar.label_stats.text = "Count: " + str(_grass_selected.multimesh.instance_count)

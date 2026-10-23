@@ -75,6 +75,9 @@ var _v_cont :HBoxContainer = null
 ## ★ 本项目改动：笔刷分类控件（代码构建，同上理由）
 var _category_option :OptionButton = null
 var _category_cont :HBoxContainer = null
+## ★ 本项目改动：随机移除工具按钮（代码构建，避免手写 toolbar.tscn 的 unique_id）
+var button_random_erase :Button = null
+var _random_erase_options :MenuButton = null
 ## ★ 本项目改动：同步守卫（OptionButton 无 select_no_signal，用 bool 挡住 set_current_grass 里的回写）
 var _syncing := false
 
@@ -110,6 +113,8 @@ func _ready() -> void:
 	_build_v_controls()
 	# ★ 本项目改动：笔刷分类控件，紧跟在 V 字控件后面
 	_build_category_controls()
+	# ★ 本项目改动：随机移除工具按钮，插在"橡皮"组后面
+	_build_random_erase_controls()
 
 
 func _unhandled_input(event :InputEvent) -> void:
@@ -135,9 +140,12 @@ func set_plugin(plugin :EditorPlugin) -> void:
 	button_airbrush.shortcut = plugin.get_custom_setting("SimpleGrassTextured/Shortcuts/airbrush_tool")
 	button_pencil.shortcut = plugin.get_custom_setting("SimpleGrassTextured/Shortcuts/pencil_tool")
 	button_eraser.shortcut = plugin.get_custom_setting("SimpleGrassTextured/Shortcuts/eraser_tool")
+	# ★ 本项目改动：随机移除工具（按钮 + 快捷键 + 右键形状菜单）
+	button_random_erase.shortcut = plugin.get_custom_setting("SimpleGrassTextured/Shortcuts/random_erase_tool")
 	button_airbrush.gui_input.connect(_on_button_tool_gui_input.bind(button_airbrush, _airbrush_options))
 	button_pencil.gui_input.connect(_on_button_tool_gui_input.bind(button_pencil, _pencil_options))
 	button_eraser.gui_input.connect(_on_button_tool_gui_input.bind(button_eraser, _eraser_options))
+	button_random_erase.gui_input.connect(_on_button_tool_gui_input.bind(button_random_erase, _random_erase_options))
 	_shortcut_radius_inc = plugin.get_custom_setting("SimpleGrassTextured/Shortcuts/radius_increment")
 	_shortcut_radius_dec = plugin.get_custom_setting("SimpleGrassTextured/Shortcuts/radius_decrement")
 	_shortcut_density_inc = plugin.get_custom_setting("SimpleGrassTextured/Shortcuts/density_increment")
@@ -157,6 +165,14 @@ func set_plugin(plugin :EditorPlugin) -> void:
 	_eraser_options.get_popup().add_radio_check_item("Infinite vertical box", MENU_SHAPE_ID.TOOL_SHAPE_BOX_INF_H)
 	_eraser_options.get_popup().about_to_popup.connect(_on_tool_options_about_to_popup.bind(_eraser_options))
 	_eraser_options.get_popup().id_pressed.connect(_on_sgt_shape_menu_pressed.bind("eraser", _eraser_options.get_popup()))
+	# ★ 本项目改动：随机移除工具的形状菜单（与橡皮一致：5 种形状）
+	_random_erase_options.get_popup().add_radio_check_item("Sphere", MENU_SHAPE_ID.TOOL_SHAPE_SPHERE)
+	_random_erase_options.get_popup().add_radio_check_item("Cylinder", MENU_SHAPE_ID.TOOL_SHAPE_CYLINDER)
+	_random_erase_options.get_popup().add_radio_check_item("Infinite vertical cylinder", MENU_SHAPE_ID.TOOL_SHAPE_CYLINDER_INF_H)
+	_random_erase_options.get_popup().add_radio_check_item("Box", MENU_SHAPE_ID.TOOL_SHAPE_BOX)
+	_random_erase_options.get_popup().add_radio_check_item("Infinite vertical box", MENU_SHAPE_ID.TOOL_SHAPE_BOX_INF_H)
+	_random_erase_options.get_popup().about_to_popup.connect(_on_tool_options_about_to_popup.bind(_random_erase_options))
+	_random_erase_options.get_popup().id_pressed.connect(_on_sgt_shape_menu_pressed.bind("random_erase", _random_erase_options.get_popup()))
 	_on_theme_changed()
 
 
@@ -207,6 +223,8 @@ func set_current_grass(grass) -> void:
 				_update_shape_menu_from_grass(_pencil_options.get_popup(), _grass_selected.sgt_tool_shape[tool_name])
 			"eraser":
 				_update_shape_menu_from_grass(_eraser_options.get_popup(), _grass_selected.sgt_tool_shape[tool_name])
+			"random_erase":
+				_update_shape_menu_from_grass(_random_erase_options.get_popup(), _grass_selected.sgt_tool_shape[tool_name])
 
 
 func set_density_modulate(color: Color) -> void:
@@ -284,6 +302,34 @@ func _on_category_option_item_selected(index: int) -> void:
 	if _category_option == null:
 		return
 	category_changed.emit(_category_option.get_item_id(index))
+
+
+## ★ 本项目改动：随机移除工具按钮。
+##   代码构建（不手写 toolbar.tscn 的 unique_id），位置插在"橡皮"组后面、ButtonMore 之前。
+##   交互与 airdraw（喷枪）一致：按住左键，在笔刷范围内对每株草按概率掷骰子删除。
+func _build_random_erase_controls() -> void:
+	if button_random_erase != null:
+		return
+	var cont := HBoxContainer.new()
+	cont.name = "HBoxContainerRandomErase"
+	cont.add_theme_constant_override("separation", 0)
+	button_random_erase = Button.new()
+	button_random_erase.name = "ButtonRandomErase"
+	button_random_erase.tooltip_text = "随机移除工具：按住左键在笔刷范围内按概率删实例\n（密度滑块 = 删除概率 %，200 = 全删；右键切换笔刷形状）"
+	button_random_erase.theme_type_variation = &"FlatButton"
+	button_random_erase.toggle_mode = true
+	cont.add_child(button_random_erase)
+	_random_erase_options = MenuButton.new()
+	_random_erase_options.name = "RandomEraseOptions"
+	_random_erase_options.theme_type_variation = &"FlatMenuButton"
+	_random_erase_options.flat = false
+	_random_erase_options.visible = false
+	cont.add_child(_random_erase_options)
+	add_child(cont)
+	# 插到"橡皮"组（HBoxContainer3）之后，也就是 ButtonMore 之前
+	var eraser_cont := get_node_or_null("HBoxContainer3")
+	if eraser_cont != null:
+		move_child(cont, eraser_cont.get_index() + 1)
 
 
 func _create_slider(label :String, min_value :float, max_value :float, step :float, value :float = 0.0) -> EditorSpinSlider:
@@ -387,6 +433,9 @@ func _on_theme_changed() -> void:
 		_airbrush_options.icon = load("res://addons/simplegrasstextured/images/sgt_icon_arrow_up.svg")
 		_pencil_options.icon = load("res://addons/simplegrasstextured/images/sgt_icon_arrow_up.svg")
 		_eraser_options.icon = load("res://addons/simplegrasstextured/images/sgt_icon_arrow_up.svg")
+		# ★ 本项目改动：随机移除工具图标（复用橡皮图标表示"删除"）
+		button_random_erase.icon = load("res://addons/simplegrasstextured/images/sgt_icon_eraser.svg")
+		_random_erase_options.icon = load("res://addons/simplegrasstextured/images/sgt_icon_arrow_up.svg")
 		%IconSlope.icon = load("res://addons/simplegrasstextured/images/sgt_icon_slope.svg")
 		%IconRadius.icon = load("res://addons/simplegrasstextured/images/sgt_icon_radius.svg")
 		%IconDensity.icon = load("res://addons/simplegrasstextured/images/sgt_icon_density.svg")
@@ -398,6 +447,9 @@ func _on_theme_changed() -> void:
 		_airbrush_options.icon = load("res://addons/simplegrasstextured/images/sgt_icon_arrow_up_dark.svg")
 		_pencil_options.icon = load("res://addons/simplegrasstextured/images/sgt_icon_arrow_up_dark.svg")
 		_eraser_options.icon = load("res://addons/simplegrasstextured/images/sgt_icon_arrow_up_dark.svg")
+		# ★ 本项目改动：随机移除工具图标（复用橡皮图标表示"删除"）
+		button_random_erase.icon = load("res://addons/simplegrasstextured/images/sgt_icon_eraser_dark.svg")
+		_random_erase_options.icon = load("res://addons/simplegrasstextured/images/sgt_icon_arrow_up_dark.svg")
 		%IconSlope.icon = load("res://addons/simplegrasstextured/images/sgt_icon_slope_dark.svg")
 		%IconRadius.icon = load("res://addons/simplegrasstextured/images/sgt_icon_radius_dark.svg")
 		%IconDensity.icon = load("res://addons/simplegrasstextured/images/sgt_icon_density_dark.svg")

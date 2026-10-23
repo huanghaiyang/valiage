@@ -2051,7 +2051,8 @@ sgt_slope = Vector2(0, 45)
 sgt_tool_shape = {
 "airbrush": 1,
 "eraser": 0,
-"pencil": 1
+"pencil": 1,
+"random_erase": 0
 }
 metadata/_custom_type_script = "uid://2juaclm8gc1n"
 metadata/SimpleGrassTextured = "2.0.5"
@@ -2077,7 +2078,8 @@ sgt_slope = Vector2(0, 45)
 sgt_tool_shape = {
 "airbrush": 1,
 "eraser": 0,
-"pencil": 1
+"pencil": 1,
+"random_erase": 0
 }
 metadata/_custom_type_script = "uid://2juaclm8gc1n"
 metadata/SimpleGrassTextured = "2.0.5"
@@ -2111,6 +2113,7 @@ metadata/sgt_external_id = "g0_bf7c89c7"
 
 [node name="小黄花笔刷" type="MultiMeshInstance3D" parent="." unique_id=612807907]
 material_override = SubResource("ShaderMaterial_xaipn")
+custom_aabb = AABB(-38.390022, 1, -46.735794, 65.68488, 0, 70.650116)
 multimesh = ExtResource("48_ids8r")
 script = ExtResource("19_jscy8")
 mesh_planes = 3
@@ -2180,7 +2183,8 @@ sgt_slope = Vector2(0, 45)
 sgt_tool_shape = {
 "airbrush": 1,
 "eraser": 0,
-"pencil": 1
+"pencil": 1,
+"random_erase": 0
 }
 metadata/_custom_type_script = "uid://2juaclm8gc1n"
 metadata/SimpleGrassTextured = "2.0.5"
@@ -2212,12 +2216,12 @@ brush_field = SubResource("Resource_0loja")
 metadata/_custom_type_script = "uid://8puj086uohoa"
 
 [node name="ButterflySwarm" type="Node3D" parent="." unique_id=1643124523]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -13.2, -2.7337873, -21)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -3.8031864, -2.7337873, -11.5924835)
 script = ExtResource("55_ro3en")
 sprites = Array[Texture2D]([ExtResource("56_od4ux"), ExtResource("57_xhfw6"), ExtResource("58_1epgm"), ExtResource("59_152kg"), ExtResource("60_r4e17"), ExtResource("61_y57op"), ExtResource("62_mlv25"), ExtResource("63_a82wo"), ExtResource("64_xljpf"), ExtResource("65_j4bwh"), ExtResource("66_ksmap"), ExtResource("67_ygd8o"), ExtResource("68_2s0kr"), ExtResource("69_xaipn"), ExtResource("70_ndrjj"), ExtResource("71_ih3m7"), ExtResource("72_11yus"), ExtResource("73_b6ruc"), ExtResource("74_155or"), ExtResource("75_vtx2l")])
 count = 40
-region_size = Vector3(12, 1, 12)
-region_offset = Vector3(0, 4.878399, 0)
+region_size = Vector3(48, 1, 48)
+region_offset = Vector3(0, 3.6337874, 0)
 autofit_region = true
 dihedral_min_deg = 8.0
 size_m = 0.43999999999999995
