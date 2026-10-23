@@ -244,7 +244,7 @@ func start_cast() -> void:
 		# 到期/首次 → 打标记 ✓（两个都打：布尔给 vitals 判定 ✓ 时间戳给"不可重复"判定 ✓）
 		_player.set_meta("gold_guard", true)
 		_player.set_meta("gold_guard_until", now_ms + int(total_time * 1000.0))
-		print("[金色守护] 护盾生效 ✓ 100% 抵挡（整体 %.1fs = 汇聚 %.2f + 护盾 + 碎裂 %.1f）" % [
+		print("[金色守护] 护盾生效 ✓ 100%% 抵挡（整体 %.1fs = 汇聚 %.2f + 护盾 + 碎裂 %.1f）" % [
 				total_time, gather_time, shatter_time])
 	# ★★ 扣蓝（用户需求 ✓ 单次 20）：照 flame_scorch 的写法 ✓
 	#   先看余额（Mana.try_spend 在不足时会把蓝扣到 0 再返回 false ✗ → 必须先判 ✓）

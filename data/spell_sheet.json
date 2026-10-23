@@ -156,6 +156,19 @@
       "fade_time": 0.9,
       "total_time": 10.0,
       "note": "一次性：前摇 0 / 耗蓝 20（单次）/ 总体 10.0s（护盾 9.1 + 碎裂 0.9，抵挡覆盖全程 10s）/ 100% 抵挡；生效期间同一目标不可重复施放"
+    },
+    "invisibility": {
+      "name": "隐身",
+      "one_shot": true,
+      "mana_cost": 10,
+      "mana_per_sec": 0,
+      "cast_climb": 0.0,
+      "cast_veil": 0.0,
+      "cast_time": 0.0,
+      "duration": 60.0,
+      "fade_time": 0.0,
+      "total_time": 60.0,
+      "note": "一次性：前摇 0 / 单次耗蓝 10 / 持续 60s；生效期间可再次施放刷新（剩余时间清零、重新计时 60s）；角色与随身物品半透明"
     }
   }
 }

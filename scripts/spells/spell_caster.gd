@@ -65,11 +65,14 @@ const SPELLS := {
 	"flame_advance": preload("res://scripts/spells/flame_advance.gd"),
 	"gold_body": preload("res://scripts/spells/gold_body.gd"),
 	"water_heal": preload("res://scripts/spells/water_heal.gd"),
+	"invisibility": preload("res://scripts/spells/invisibility.gd"),
 }
 # 注册表小抄（按各视觉脚本的实际实现核对，改动术法时可对照）：
 #   需要选点进圈(has_targeting)：blue_tornado / flame_advance / flame_scorch
 #     其中只有 flame_advance 提供 cast_sector（中轴 + 半角 -> 扇形），其余走 cast_at（圆心 + 半径）
 #   一次性法术(wants_cast_anim)：flame_scorch / water_heal —— 动作没演完不收起施法姿势
+#   invisibility 没有视觉节点：效果宿主挂在角色下（invisibility_effect.gd），
+#     共享 jet 只负责"每次按下 -> refresh"，切法术时 jet 被释放也不影响 60s 计时
 #   flame_jet / fire_tornado 只有基础三件：按住期间持续演，松手停，不参与选点
 
 
