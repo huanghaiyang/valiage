@@ -278,6 +278,13 @@ UV = UV * vec2(flutter_u, flutter_v) * tex_scale + tex_offset;
 @export_node_path("Node3D") var threat_path: NodePath
 @export var tuning: ButterflyTuning
 
+# ---- 调试：飞行轨迹（默认全关，零开销/零残留）----
+@export var show_trails := false              # 关掉时释放所有 Trail 节点与材质
+@export_range(0.5, 30.0, 0.5) var trail_seconds := 6.0
+@export_range(0.01, 0.5, 0.01) var trail_sample_s := 0.05
+@export var trail_color := Color(0.45, 0.85, 1.0, 0.9)
+@export_range(0.002, 0.2, 0.002) var trail_width_m := 0.02
+
 func rebuild() -> void
 func set_active(v: bool) -> bool
 func respawn_all() -> void
@@ -296,6 +303,9 @@ func wind_now() -> Dictionary               # {dir: Vector2(世界 XZ), strength
 func weather_now() -> Dictionary            # {kind, name, wind, gust, rain, cloud, source}
 func stats() -> Dictionary                  # 测试/调试用只读快照
 ```
+
+> 轨迹开关的传播：5 个 `trail_*` 导出的 setter 都调用 `_apply_trails()`，
+> 它把参数转交给每只蝴蝶的 `Butterfly.set_trail()`；`_build()` 末尾也会调一次（重建后保持状态）。
 
 ### 网格结构（`Butterfly.build_unit_quad()`）
 
@@ -326,8 +336,20 @@ var crop: Rect2i                             # PNG 上的不透明包围盒
 
 func setup(tex: Texture2D, crop_rect: Rect2i, rng: RandomNumberGenerator, t: ButterflyTuning) -> void
 func step_ai(delta: float, swarm: Node3D, wind: Dictionary, bounds: AABB) -> void
-func stats() -> Dictionary
+func set_trail(on: bool, seconds := 6.0, interval := 0.05,
+        color := Color(0.45, 0.85, 1.0, 0.9), width_m := 0.02) -> void
+func stats() -> Dictionary                   # 含 trail_on / trail_points
 ```
+
+* **轨迹绘制约定**（`set_trail()` + `_sample_trail()` + `_rebuild_trail()`）：
+  - `Trail` 是 `top_level = true` 的 `MeshInstance3D` + `ImmediateMesh`，顶点存**世界坐标**
+    （蝴蝶节点带 0.22 缩放/旋转，直接挂在下面会被变换扭曲）；
+  - 用 `PRIMITIVE_TRIANGLES` 拼**面向相机的细带**（每段两条三角形），不用 1px 线；
+  - 每顶点 `surface_set_color()`，alpha 从尾部 0 渐变到头部 `color.a`；
+  - 采样按 `interval` 累加，点数上限 `ceil(seconds/interval)+1`，超出淘汰最旧点；
+  - `Trail` 必须带 `meta["batch"] = false`（与蝴蝶 `visual` 相同，防止被 `prop_merge` 烘死）；
+  - 关闭时 `queue_free()` 并清空引用与点数组（**延迟释放**，断言需查 `is_queued_for_deletion()`）；
+  - `spawn()` 会清空轨迹，避免重生后拖出一条跨场景长线。
 
 * AI 至少要有：**巡飞(wander+噪声)**、**趋花/趋目标(seek)**、**同群分离(separation)**、
   **风向漂移(风把蝴蝶吹偏)**、**边界回弹(不飞出区域)**、**避地(不钻地)**、

@@ -217,6 +217,24 @@ func scene_root() -> Window:
 		rim_dark = v
 		_request_rebuild()
 
+# ==================== ★ 飞行速度（基础运动参数）====================
+# ★ 用户诉求原话："目前蝴蝶飞行速度过快，减半，将相关参数暴露出来，在UI上显示"。
+#   所以这一组放在检查器最前面（在行为参数之前），三个值都能直接看到、直接调：
+#     · speed_max   巡飞/趋花的最高速度
+#     · accel       加速度上限（手感"跟手"程度）
+#     · perch_speed 停歇/落花时朝落脚点靠拢的速度
+#   ★ 默认值都已按用户要求**减半**（2.2 -> 1.1、1.2 -> 0.6），accel 保持 1.8
+#     （加速度本身不产生"飞太快"的观感，且减半会让起飞变得拖沓）。
+#   节点上的值会覆盖 tuning 资源里的同名键（见 GROUP_OVERRIDE_KEYS）。
+@export_group("飞行速度 Speed")
+## 最大水平飞行速度（米/秒）。默认 1.1 = 原 2.2 的一半。
+## 真实蝴蝶约 1~2 m/s；1.1 在沙盒里既看得见动感，又不会一闪而过。
+@export_range(0.1, 8.0, 0.05) var speed_max := 1.1
+## 加速度上限（米/秒²）：越大越"神经质"、越小越飘。1.8 ≈ 1 秒到全速。
+@export_range(0.1, 10.0, 0.05) var accel := 1.8
+## 停歇/汲水/落花时朝落脚点靠拢的速度（米/秒）。默认 0.6 = 原 1.2 的一半。
+@export_range(0.05, 6.0, 0.05) var perch_speed := 0.6
+
 # ==================== ★ 飞行行为（移动生态学：CRW / Lévy / ARS）====================
 # ★★ 为什么这些要**提到节点上**而不是只留在 tuning 资源里 ★★
 #   用户诉求原话："暴露参数到检查器面板"。
@@ -317,6 +335,38 @@ func scene_root() -> Window:
 @export_range(16, 8192, 16) var sgt_perch_max_points := 512
 ## 调试：打印本次扫描到的花笔刷数 / 落脚点数（排查"蝴蝶从不停留"）。
 @export var debug_sgt_perch := false
+@export_group("")
+# ==================== 调试：飞行轨迹辅助线 ====================
+# ★ 用途：肉眼看清"每只蝴蝶到底怎么飞"（CRW 的小转角/大转角、ARS 打转、趋花路线、
+#   边缘回弹）。默认**关闭**：关闭时每只蝴蝶连节点和材质都不创建 —— 零残留、零开销。
+#   打开后每只蝴蝶有一条 camera-facing 的细带（不是 1px 线，远处也看得见），
+#   尾部按时间渐隐；轨迹保存在 **世界空间**，所以蝴蝶自身 0.22 的缩放不会影响它。
+@export_group("调试 Debug · 飞行轨迹")
+## 显示每只蝴蝶最近一段的飞行轨迹。开关立即生效（不重建蝴蝶）。
+@export var show_trails := false:
+	set(v):
+		show_trails = v
+		_apply_trails()
+## 轨迹保留时长（秒）：越长线越长。点数 ≈ 时长 / 采样间隔。
+@export_range(0.5, 30.0, 0.5) var trail_seconds := 6.0:
+	set(v):
+		trail_seconds = maxf(0.5, v)
+		_apply_trails()
+## 采样间隔（秒）：0.05 = 每秒 20 个点。调大更省、线更折。
+@export_range(0.01, 0.5, 0.01) var trail_sample_s := 0.05:
+	set(v):
+		trail_sample_s = clampf(v, 0.01, 0.5)
+		_apply_trails()
+## 轨迹颜色（alpha 是头部透明度，尾部自动渐隐到 0）。
+@export var trail_color := Color(0.45, 0.85, 1.0, 0.9):
+	set(v):
+		trail_color = v
+		_apply_trails()
+## 轨迹带宽度（米，世界单位）。0.02 ≈ 2 cm；太粗会糊住蝴蝶本体。
+@export_range(0.002, 0.2, 0.002) var trail_width_m := 0.02:
+	set(v):
+		trail_width_m = clampf(v, 0.002, 0.2)
+		_apply_trails()
 @export_group("")
 # ==================== 行为总开关 ====================
 ## 总开关。关掉：**只隐藏蝴蝶子节点**并停止推进（不释放节点，打开即恢复）。
@@ -880,7 +930,7 @@ func _push_grass_slots(list: Array, slots: int) -> void:
 			wp = global_transform * b.position
 		pos[i] = wp
 		var v: Vector3 = b.get("velocity") if b.get("velocity") is Vector3 else Vector3.ZERO
-		vel[i] = clampf(v.length() / maxf(0.1, _tuning_num("speed_max", 2.2)), 0.0, 1.0)
+		vel[i] = clampf(v.length() / maxf(0.1, _tuning_num("speed_max", 1.1)), 0.0, 1.0)
 		# press：贴得越低越大。`root_wy` = 这个草实例所在高度的世界 y（近似取群组的
 		# 世界 y + 区域底），h = 蝴蝶高出它的米数。
 		var root_wy := global_position.y + floor_y
@@ -1015,6 +1065,7 @@ func _build() -> void:
 		_butterflies.append(b)
 		_rngs.append(r)
 	_apply_enabled()
+	_apply_trails()
 	_build_gizmo()
 	update_configuration_warnings()
 	if not Engine.is_editor_hint():
@@ -1842,7 +1893,7 @@ func live_count() -> int:
 ##   检查器里摆着、改了立刻生效才符合直觉；tuning 资源只用来覆盖**其余**项。
 func tuning_dict() -> Dictionary:
 	var d := {
-		"size_m": 0.22, "speed_max": 2.2, "accel": 1.8,
+		"size_m": 0.22, "speed_max": 1.1, "accel": 1.8,
 		"flap_hz": 8.5, "flap_hz_jitter": 2.5,
 		"dihedral_min": 6.0, "dihedral_max": 72.0,
 		"wander_jitter": 1.6, "wander_rate": 0.6,
@@ -1858,7 +1909,7 @@ func tuning_dict() -> Dictionary:
 		"flutter_amount": 0.05, "spawn_height_jitter": 0.6,
 		"flocking": true, "ground_avoid": true,
 		# ---- 防瞬移（落脚点限速靠拢 + 单帧位移上限）----
-		"perch_speed": 1.2, "perch_rearm_distance": 3.0, "max_step_factor": 1.6,
+		"perch_speed": 0.6, "perch_rearm_distance": 3.0, "max_step_factor": 1.6,
 		# ---- 移动生态学（CRW / Lévy / ARS）—— 修掉"直飞" ----
 		"heading_persistence": 0.72, "turn_scale_deg": 25.0,
 		"turn_heavy_p": 0.06, "turn_heavy_deg": 110.0,
@@ -1886,6 +1937,10 @@ func tuning_dict() -> Dictionary:
 	# ★ 群组属性覆盖（见函数注释）
 	d["ground_avoid"] = ground_avoid
 	d["size_m"] = size_m
+	# ★ 飞行速度（基础运动参数）：节点值优先（减半后的默认值 / 用户微调都从这里生效）
+	d["speed_max"] = speed_max
+	d["accel"] = accel
+	d["perch_speed"] = perch_speed
 	# ★ 飞行行为（移动生态学）：节点上的导出值覆盖 tuning 资源的同名键。
 	#   这样"在节点上调"和"用 .tres 统一手感"两条路都通，且**节点优先**（与 size_m 等一致）。
 	d["heading_persistence"] = heading_persistence
@@ -1944,6 +1999,8 @@ const GROUP_OVERRIDE_KEYS := [
 	"size_m", "dihedral_min", "dihedral_max", "flap_hz", "flap_hz_jitter",
 	"wing_camber", "wing_thickness", "wing_bend_y", "body_scale",
 	"edge_min_facing", "edge_min_deg", "rim_dark", "ground_avoid",
+	# 飞行速度（基础运动参数）
+	"speed_max", "accel", "perch_speed",
 	# 飞行行为（移动生态学 CRW / Lévy / ARS）
 	"heading_persistence", "turn_scale_deg", "turn_heavy_p", "turn_heavy_deg",
 	"levy_alpha", "step_time_s", "lateral_weave", "lateral_weave_hz",
@@ -2004,6 +2061,7 @@ func stats() -> Dictionary:
 		"enabled": enabled,
 		"built": _built,
 		"frames": _stepped_frames,
+		"show_trails": show_trails,
 		"sprites": sprites.size(),
 		"region": region_size,
 		"offset": region_offset,
@@ -2113,6 +2171,14 @@ func _apply_enabled() -> void:
 	for b in _butterflies:
 		if b != null and is_instance_valid(b):
 			b.visible = enabled
+
+
+## 把调试轨迹参数下发给每只蝴蝶（**立即生效，不重建**）。
+## 关闭时每只蝴蝶会释放自己的 "Trail" 子节点与材质，场景里不残留任何调试资源。
+func _apply_trails() -> void:
+	for b in _butterflies:
+		if b != null and is_instance_valid(b):
+			b.set_trail(show_trails, trail_seconds, trail_sample_s, trail_color, trail_width_m)
 
 
 ## 检查器里给出的配置警告（**这才是"配错了看得见"的地方**）。

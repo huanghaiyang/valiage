@@ -107,6 +107,26 @@ var _bounds := AABB(Vector3(-1, 0, -1), Vector3(2, 3, 2))
 var _clock := 0.0
 ## 调试用：本只蝴蝶累计飞行距离（米）。测试可用它证明"真的在飞"。
 var distance_travelled := 0.0
+# ==================== 飞行轨迹辅助线（调试） ====================
+# ★ 由 ButterflySwarm 的 `show_trails` 统一开关（见 `set_trail()`）。
+#   轨迹点存**世界坐标**，所以轨迹节点用 `top_level` 脱离蝴蝶自身的缩放（0.22）与旋转；
+#   关闭时不建任何节点/材质（零残留，不污染场景）。
+## 轨迹 MeshInstance3D（"Trail" 子节点）。
+var trail: MeshInstance3D = null
+## 轨迹网格：每加入一个采样点重建一次（20 Hz / 只，开销可忽略）。
+var trail_mesh: ImmediateMesh = null
+var _trail_on := false
+## 轨迹保留时长（秒）与采样间隔（秒）。
+var _trail_seconds := 6.0
+var _trail_interval := 0.05
+## 轨迹颜色（alpha 是"头部"透明度，尾部自动渐隐到 0）。
+var _trail_color := Color(0.45, 0.85, 1.0, 0.9)
+## 轨迹带宽度（米，世界单位）。
+var _trail_width := 0.02
+## 已采样的轨迹点（世界坐标，最旧在前）。
+var _trail_pts := PackedVector3Array()
+## 采样计时器（秒）：累加到 _trail_interval 才记一个点。
+var _trail_accum := 0.0
 ## 低频噪声的内部相位（见 _signed_noise）。每只独立，所以整群的"飘"不同步。
 var _noise_phase := 0.0
 
@@ -639,7 +659,7 @@ func spawn(bounds: AABB, start_state: int = State.CRUISE) -> void:
 	# 高度再夹一次：spawn_height_jitter 可能把它顶出区域
 	p.y = clampf(p.y, bounds.position.y + 0.15, bounds.position.y + maxf(0.2, bounds.size.y - 0.05))
 	position = p
-	velocity = _random_dir() * rng.randf_range(0.3, 1.0) * _num("speed_max", 2.2) * 0.5
+	velocity = _random_dir() * rng.randf_range(0.3, 1.0) * _num("speed_max", 1.1) * 0.5
 	heading = velocity.normalized() if velocity.length_squared() > 0.0001 else Vector3(0, 0, 1)
 	_flap_phase = rng.randf_range(0.0, TAU)
 	energy = rng.randf_range(0.6, 1.0)
@@ -653,12 +673,175 @@ func spawn(bounds: AABB, start_state: int = State.CRUISE) -> void:
 	_last_sgt_perch = Vector3(1.0e9, 0.0, 0.0)
 	_rearm_sgt_perch()
 	_sync_transform(0.0)
+	# 轨迹辅助线：重生后从新位置重新开始画（旧路径已没有意义）
+	_trail_pts.clear()
+	_trail_accum = 0.0
+	if trail_mesh != null:
+		trail_mesh.clear_surfaces()
+	if _trail_on:
+		_trail_pts.append(_trail_world_pos())
 
 
 ## 随机水平方向（单位向量）。y 分量恒 0：漫游不想让蝴蝶自己上下乱窜。
 func _random_dir() -> Vector3:
 	var a := rng.randf_range(0.0, TAU)
 	return Vector3(cos(a), 0.0, sin(a))
+
+
+# ==================== 飞行轨迹辅助线 ====================
+
+## 配置/开关这只蝴蝶的飞行轨迹线（由 ButterflySwarm 的调试参数统一驱动）。
+## 参数：
+##   on       —— true = 创建并显示；false = 立即释放 "Trail" 子节点与网格。
+##   seconds  —— 保留时长（秒），决定线的长度。
+##   interval —— 采样间隔（秒）。0.01~0.5；变了会清空旧点（旧点按旧间隔采的）。
+##   color    —— 线色；alpha 乘在头部，尾部自动渐隐。
+##   width_m  —— 带宽（米，世界单位）。用面向相机的细带画，避免 1px 线看不清。
+## 副作用：增删 "Trail" 子节点；改 _trail_* 状态。
+func set_trail(on: bool, seconds := 6.0, interval := 0.05,
+		color := Color(0.45, 0.85, 1.0, 0.9), width_m := 0.02) -> void:
+	var new_interval := clampf(interval, 0.01, 0.5)
+	if _trail_on and not is_equal_approx(new_interval, _trail_interval):
+		_trail_pts.clear()
+	_trail_on = on
+	_trail_seconds = maxf(0.5, seconds)
+	_trail_interval = new_interval
+	_trail_color = color
+	_trail_width = clampf(width_m, 0.002, 0.2)
+	_trail_accum = 0.0
+	if not _trail_on:
+		if trail != null and is_instance_valid(trail):
+			trail.queue_free()
+		trail = null
+		trail_mesh = null
+		_trail_pts.clear()
+		return
+	var created := false
+	if trail == null or not is_instance_valid(trail):
+		_create_trail()
+		created = true
+	if created or _trail_pts.is_empty():
+		_trail_pts.clear()
+		_trail_pts.append(_trail_world_pos())
+	_rebuild_trail()
+
+
+## 创建 "Trail" 子节点（只在 set_trail 打开且尚无节点时调用）。
+func _create_trail() -> void:
+	trail = MeshInstance3D.new()
+	trail.name = "Trail"
+	trail_mesh = ImmediateMesh.new()
+	trail.mesh = trail_mesh
+	# ★ top_level：轨迹顶点是**世界坐标**，必须断开蝴蝶自身的缩放/旋转/位移
+	trail.top_level = true
+	# 与翅膀一样：不允许被 prop_merge 合批（合批会把动态网格冻结）
+	trail.set_meta("batch", false)
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.vertex_color_use_as_albedo = true
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	trail.material_override = m
+	trail.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(trail)
+	trail.global_transform = Transform3D.IDENTITY
+
+
+## 本只蝴蝶当前的世界坐标（轨迹点用）。树外退回本地坐标（此时也不会有真实渲染）。
+func _trail_world_pos() -> Vector3:
+	if is_inside_tree():
+		return to_global(Vector3.ZERO)
+	return position
+
+
+## 取当前相机的世界坐标（面向相机的带子需要它）。无相机（无头）时给一个"上方"兜底。
+func _trail_camera_pos() -> Vector3:
+	if is_inside_tree():
+		var vp := get_viewport()
+		if vp != null:
+			var cam := vp.get_camera_3d()
+			if cam != null:
+				return cam.global_position
+	return position + Vector3(0.0, 10.0, 0.0)
+
+
+## 每个采样周期往轨迹里加一个点，并按当前窗口重建网格。
+## 参数 delta：帧间隔（秒）。
+## 副作用：改 _trail_pts / _trail_accum / trail_mesh 的 surface。
+func _sample_trail(delta: float) -> void:
+	if not _trail_on or trail_mesh == null or trail == null or not is_instance_valid(trail):
+		return
+	_trail_accum += delta
+	if _trail_accum < _trail_interval:
+		return
+	_trail_accum = 0.0
+	_trail_pts.append(_trail_world_pos())
+	# 点数上限按"时长 / 间隔"算，+1 是首尾两个端点
+	var max_pts := maxi(2, int(ceil(_trail_seconds / _trail_interval)) + 1)
+	while _trail_pts.size() > max_pts:
+		_trail_pts.remove_at(0)
+	_rebuild_trail()
+
+
+## 重建轨迹网格：每段画一条**面向相机的细带**（比 1px 线更清楚），沿时间渐隐。
+## 参数 无。副作用：清空并重写 trail_mesh 的 surface。
+##
+## ★ 必须"先攒顶点、再开 surface"：蝴蝶停歇/落花时采样点几乎完全重合，
+##   所有段都会被退化判定跳过；此时若先 surface_begin() 再 surface_end()，
+##   Godot 会报 "No vertices were added, surface can't be created"。
+func _rebuild_trail() -> void:
+	if trail_mesh == null:
+		return
+	trail_mesh.clear_surfaces()
+	var n := _trail_pts.size()
+	if n < 2:
+		return
+	var cam := _trail_camera_pos()
+	var half := _trail_width * 0.5
+	var verts := PackedVector3Array()
+	var cols := PackedColorArray()
+	for i in range(n - 1):
+		var a := _trail_pts[i]
+		var b := _trail_pts[i + 1]
+		var seg := b - a
+		if seg.length_squared() < 1.0e-10:
+			continue
+		# 带子方向 = 线段 × 视线（面向相机）；退化时改用 UP 兜底
+		var side := seg.cross((cam - a).normalized())
+		if side.length_squared() < 1.0e-10:
+			side = seg.cross(Vector3.UP)
+		if side.length_squared() < 1.0e-10:
+			continue
+		side = side.normalized() * half
+		var ta := float(i) / float(n - 1)
+		var tb := float(i + 1) / float(n - 1)
+		var ca := Color(_trail_color.r, _trail_color.g, _trail_color.b, _trail_color.a * ta)
+		var cb := Color(_trail_color.r, _trail_color.g, _trail_color.b, _trail_color.a * tb)
+		var a0 := a - side
+		var a1 := a + side
+		var b0 := b - side
+		var b1 := b + side
+		# 两个三角形（a0,a1,b1）与（a0,b1,b0）；cull_disabled，绕序无所谓
+		verts.append(a0)
+		verts.append(a1)
+		verts.append(b1)
+		verts.append(a0)
+		verts.append(b1)
+		verts.append(b0)
+		cols.append(ca)
+		cols.append(ca)
+		cols.append(cb)
+		cols.append(ca)
+		cols.append(cb)
+		cols.append(cb)
+	# 一个可画段都没有（整只蝴蝶静止）→ 不建 surface，避免上面的报错
+	if verts.is_empty():
+		return
+	trail_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
+	for k in verts.size():
+		trail_mesh.surface_set_color(cols[k])
+		trail_mesh.surface_add_vertex(verts[k])
+	trail_mesh.surface_end()
 
 
 # ==================== 每帧主循环 ====================
@@ -704,6 +887,23 @@ func advance(delta: float, bounds: AABB, wind: Dictionary = {}, weather: Diction
 
 	# ---- ① 状态决策（只在计时器到点时重新决策，避免每帧翻状态） ----
 	_update_state(delta, weather, extra)
+
+	# ---- ①b ★ 花上接近段：专用推进（**禁止倒飞**）----
+	# 为什么必须单独一条分支（用户反馈："蝴蝶在飞向花朵时，禁止倒飞"）：
+	#   旧实现让蝴蝶照常走下面的完整积分（风拖曳 / CRW 航向 / 分离力都会改速度），
+	#   再由 `_sync_transform()` 沿"到花"的直线**额外滑移**一段。
+	#   于是当速度方向与"到花"方向相反（被风吹/正在转弯）时，身体朝一个方向、
+	#   位置却往另一个方向滑 —— 视觉上就是**倒着飞**。
+	#   现在接近段只做两件事：
+	#     ① 以有限角速度把头转向花（不会瞬间掉头、也不会反着飞）；
+	#     ② 只把"朝向在目标方向上的投影"用于前进（夹角大时原地转弯，**位移永不背离花**）。
+	#   同时跳过风/边界/分离等外力，避免它们再把蝴蝶推离目标（超时仍由状态机兜底）。
+	if _sgt_rest and not _sgt_arrived:
+		_advance_flower_approach(delta)
+		_update_visual_params(delta, wind, weather)
+		_sync_transform(delta)
+		_sample_trail(delta)
+		return
 
 	# ---- ② 各状态贡献的"主动力" ----
 	match state:
@@ -773,6 +973,8 @@ func advance(delta: float, bounds: AABB, wind: Dictionary = {}, weather: Diction
 	# ---- ⑦ 贴图/视觉参数与变换 ----
 	_update_visual_params(delta, wind, weather)
 	_sync_transform(delta)
+	# ---- ⑦b 飞行轨迹辅助线（调试；默认关闭，关闭时这里是空转）----
+	_sample_trail(delta)
 
 
 ## 状态机：决定"现在该干什么"。
@@ -1023,7 +1225,7 @@ func _force_seek_or_cruise(delta: float, bounds: AABB, extra: Dictionary) -> Vec
 	# ---- ② Lévy 步长 + 速度目标 ----
 	# ARS 时速度压低（在花丛里飞得慢而黏）
 	var speed_scale := _num("ars_speed_scale", 0.55) if _ars_active else 1.0
-	var want_speed := clampf(_crw_step_len / step_time, 0.25, 1.0) * _num("speed_max", 2.2) * speed_scale
+	var want_speed := clampf(_crw_step_len / step_time, 0.25, 1.0) * _num("speed_max", 1.1) * speed_scale
 	f += _crw_heading * maxf(0.0, want_speed - velocity.dot(_crw_heading)) * 3.2
 	# ---- ③ 侧向摆动：绕上行轴做小幅正弦摆 ----
 	var weave := _num("lateral_weave", 0.55)
@@ -1135,7 +1337,7 @@ func _force_seek_or_cruise(delta: float, bounds: AABB, extra: Dictionary) -> Vec
 ## 返回值：米。长步上限取 4 倍基准，避免偶发极端值把蝴蝶"甩"到区域边界。
 func _levy_step() -> float:
 	var alpha := clampf(_num("levy_alpha", 1.6), 1.05, 3.0)
-	var base := maxf(0.15, _num("speed_max", 2.2) * 0.35)   # 基准步长 ~0.77 m
+	var base := maxf(0.15, _num("speed_max", 1.1) * 0.35)   # 基准步长 ~0.39 m
 	var u := clampf(rng.randf(), 1e-6, 0.999999)
 	var l := base * pow(1.0 - u, -1.0 / (alpha - 1.0))
 	# ARS 时把长步砍掉大半：在资源附近不该"一飞而去"
@@ -1230,6 +1432,62 @@ func _force_perch(delta: float) -> Vector3:
 	# 强阻尼 + 弹簧：视觉上就是"贴住了"
 	velocity *= clampf(1.0 - delta * 4.0, 0.0, 1.0)
 	return to * 6.0 - velocity * 3.0
+
+
+## ★ 花上接近段（`_sgt_rest && !_sgt_arrived`）的专用推进：**禁止倒飞**。
+## 为什么不能沿用普通积分（见 advance() ①b 的说明）：
+##   普通积分里风拖曳/CRW/分离力会随意改速度方向，再叠加"朝落脚点滑移"，
+##   两者反向时就是用户看到的"身体朝前、位置往后"的倒飞。
+## 这里改为**纯朝向驱动**：
+##   ① 以 `FLOWER_APPROACH_TURN_RAD_S` 的角速度把 heading 转向花（不会瞬间掉头）；
+##   ② 只沿 heading 在"到花"方向上的**投影**前进 -> 位移与目标方向的点积恒 >= 0。
+## 参数 delta：帧间隔（秒）。
+## 副作用：改 heading / position / velocity / energy / distance_travelled / accel_now。
+## 注意：到达花顶（<0.3 m）由 `_update_state()` 判定并切到停留段，不在这里处理。
+const FLOWER_APPROACH_TURN_RAD_S := 6.283185  # 360°/s：半秒最多转半圈
+
+
+func _advance_flower_approach(delta: float) -> void:
+	# 接近途中能量照常回升（与 _force_perch 同口径；普通分支在接近段被跳过了）
+	energy = clampf(energy + _num("energy_gain", 0.16) * delta, 0.0, 1.0)
+	accel_now = Vector3.ZERO
+	var to := _perch - position
+	var dist := to.length()
+	if dist <= 0.0005:
+		velocity = Vector3.ZERO
+		return
+	var want := to / dist
+	var cur := heading if heading.length_squared() > 1e-6 else want
+	heading = _turn_towards(cur, want, FLOWER_APPROACH_TURN_RAD_S * delta)
+	# ★ 关键：只走"朝向在目标方向上的投影"，夹角大时先原地转、位移绝不背离花。
+	var along := maxf(0.0, heading.dot(want))
+	var speed := maxf(0.05, _num("perch_speed", 0.6))
+	var step := minf(dist, speed * delta * along)
+	var before := position
+	position += want * step
+	# 速度同步成"本帧真实位移/时间"：俯仰（pitch_per_speed）与扑翼视觉都靠它
+	velocity = (position - before) / delta
+	distance_travelled += before.distance_to(position)
+
+
+## 把单位向量 `from` 朝 `to` 旋转，单次最多 `max_rad` 弧度（限角速度转向）。
+## 参数 from/to：方向向量（会归一化）；max_rad：本次允许的最大转角（弧度）。
+## 返回值：转好后的单位向量；两者反平行时自动换用 UP/RIGHT 作为转轴，避免叉积退化。
+func _turn_towards(from: Vector3, to: Vector3, max_rad: float) -> Vector3:
+	var f := from.normalized()
+	var t := to.normalized()
+	if f.length_squared() < 0.5 or t.length_squared() < 0.5:
+		return t
+	var ang := f.angle_to(t)
+	if ang <= max_rad or ang < 0.0001:
+		return t
+	var axis := f.cross(t)
+	if axis.length_squared() < 1e-6:
+		# 正相反（180°）：叉积为零，换一个不与 f 共线的轴来转
+		axis = f.cross(Vector3.UP)
+		if axis.length_squared() < 1e-6:
+			axis = f.cross(Vector3.RIGHT)
+	return f.rotated(axis.normalized(), max_rad).normalized()
 
 
 ## 避风避雨（SHELTER）的力：往区域的**低处/背风侧**钻，并压低速度。
@@ -1555,6 +1813,10 @@ func _sync_transform(delta: float) -> void:
 	var to_perch := _perch - position
 	var d_perch := to_perch.length()
 	if state == State.BASK or state == State.DRINK:
+		# ★ 花上"接近段"的位移已由 `_advance_flower_approach()` 按"朝向投影"推进（禁止倒飞），
+		#   这里再沿直线滑一次就等于**双份位移**，且会把方向拉回"背离朝向"的旧行为 —— 直接跳过。
+		if _sgt_rest and not _sgt_arrived:
+			return
 		# ★ 二次兜底：落脚点离得太远就**重新就近落脚**（而不是长途跋涉/瞬移过去）。
 		#   触发场景：`_perch` 被换区域/换种子后的残留值、或 `respawn_all()` 后忘了清。
 		#   没有这条，蝴蝶会以 `perch_speed` 一路直线"飞"回几米外的旧落脚点，看着像瞬移。
@@ -1571,7 +1833,7 @@ func _sync_transform(delta: float) -> void:
 			velocity = Vector3.ZERO
 		elif d_perch > 0.0005:
 			# 限速靠拢：每秒最多 perch_speed 米，落地过程看得见
-			var max_step := maxf(0.05, _num("perch_speed", 1.2)) * delta
+			var max_step := maxf(0.05, _num("perch_speed", 0.6)) * delta
 			if d_perch <= max_step:
 				position = _perch
 				velocity = Vector3.ZERO
@@ -1732,7 +1994,7 @@ func _wind_strength(wind: Dictionary) -> float:
 
 ## 本帧速度上限：风速越大越难控（gust_penalty），雨里略慢，停歇时几乎不动。
 func _speed_cap(weather: Dictionary) -> float:
-	var base := maxf(0.05, _num("speed_max", 2.2))
+	var base := maxf(0.05, _num("speed_max", 1.1))
 	if state == State.BASK or state == State.DRINK:
 		return base * 0.12
 	if state == State.SHELTER:
@@ -1791,4 +2053,7 @@ func stats() -> Dictionary:
 		"sgt_rest": _sgt_rest,
 		# ★ 是否**已经落在花顶**（false = 还在飞向花的路上）
 		"sgt_arrived": _sgt_arrived,
+		# 轨迹辅助线（调试）：是否开启 / 当前采样点数
+		"trail_on": _trail_on,
+		"trail_points": _trail_pts.size(),
 	}

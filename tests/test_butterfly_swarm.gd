@@ -17,6 +17,7 @@ extends McpTestSuite
 ##   ⑥ ButterflySwarm：树外 new() 后直接 rebuild()、live_count/stats、每只 crop 与
 ##      素材 bbox 一致、每只独立 ShaderMaterial、set_active 总开关、宽松素材入口
 ##      set_sprite_textures/add_sprite_textures、scene_tree/scene_root 兜底
+##   ⑦ 飞行轨迹辅助线：默认关闭零残留、打开后采样/网格/世界坐标、点数上限、关闭即释放
 ##
 ## ★ 环境约定（踩过的坑，别改）
 ##   · 单只蝴蝶挂在 Engine.get_main_loop().root 下的 _McpTest 容器里。完全树外调
@@ -1051,16 +1052,17 @@ func test_grass_interaction_writes_sgt_uniforms() -> void:
 			% [sw._grass_mats.size(), float(press[0]), float(press2[0])])
 
 
-## ★★ 飞行行为 / 草交互参数必须**暴露到检查器面板**，且节点值必须**优先于 tuning 资源** ★★
+## ★★ 飞行速度 / 飞行行为 / 草交互参数必须**暴露到检查器面板**，且节点值必须**优先于 tuning 资源** ★★
 ##
 ## 用户诉求原话："暴露参数到检查器面板"。以前这十几个参数只存在于 `ButterflyTuning`
 ## （一个可选 Resource），选中蝴蝶群节点时**根本看不到** —— 想调"别直飞"都不知道调哪儿。
 ## 这条测试守两件事：
-##   ① 这 17 个键在节点上是 `@export`（检查器可见）且落在正确的折叠分组里；
+##   ① 这 20 个键在节点上是 `@export`（检查器可见）且落在正确的折叠分组里；
 ##   ② `tuning_dict()` 里**节点值赢**（实测踩过：资源合并写在后面，把节点刚设的值又盖回去，
 ##      表现就是"在面板上调了没反应"）。
 func test_behavior_exports_visible_and_override_tuning() -> void:
 	var want := [
+		"speed_max", "accel", "perch_speed",
 		"heading_persistence", "turn_scale_deg", "turn_heavy_p", "turn_heavy_deg",
 		"levy_alpha", "step_time_s", "lateral_weave", "lateral_weave_hz",
 		"area_restricted_search", "ars_radius_m", "ars_turn_scale_deg", "ars_speed_scale",
@@ -1090,6 +1092,10 @@ func test_behavior_exports_visible_and_override_tuning() -> void:
 	assert_eq(miss, [], "这些参数必须都暴露到检查器（缺 %s）" % str(miss))
 	assert_true(groups.has("飞行行为 Flight · CRW Lévy ARS"), "应有分组「飞行行为」")
 	assert_true(groups.has("草交互 Grass (sgt)"), "应有分组「草交互」")
+	assert_true(groups.has("飞行速度 Speed"), "应有分组「飞行速度」")
+	for k in ["speed_max", "accel", "perch_speed"]:
+		assert_eq(String(in_group.get(k, "")), "飞行速度 Speed",
+				"%s 应落在「飞行速度」组（实际 %s）" % [k, in_group.get(k, "")])
 	for k in ["heading_persistence", "levy_alpha", "ars_radius_m"]:
 		assert_eq(String(in_group.get(k, "")), "飞行行为 Flight · CRW Lévy ARS",
 				"%s 应落在「飞行行为」组（实际 %s）" % [k, in_group.get(k, "")])
@@ -1104,10 +1110,13 @@ func test_behavior_exports_visible_and_override_tuning() -> void:
 	res.set("heading_persistence", 0.11)
 	res.set("levy_alpha", 2.9)
 	res.set("grass_bend_height", 0.22)
+	res.set("speed_max", 0.33)
 	sw.tuning = res
 	var d: Dictionary = sw.tuning_dict()
 	assert_true(absf(float(d.get("heading_persistence", -1)) - 0.72) < 1e-6,
 			"节点值应覆盖资源（期望 0.72，实际 %.2f）" % float(d.get("heading_persistence", -1)))
+	assert_true(absf(float(d.get("speed_max", -1)) - 1.1) < 1e-6,
+			"speed_max 应为节点默认值 1.1（实际 %.2f）" % float(d.get("speed_max", -1)))
 	assert_true(absf(float(d.get("levy_alpha", -1)) - 1.6) < 1e-6,
 			"levy_alpha 应为节点值 1.6（实际 %.2f）" % float(d.get("levy_alpha", -1)))
 	assert_true(absf(float(d.get("grass_bend_height", -1)) - 1.15) < 1e-6,
@@ -1122,7 +1131,7 @@ func test_behavior_exports_visible_and_override_tuning() -> void:
 	var d3: Dictionary = sw.tuning_dict()
 	assert_true(absf(float(d3.get("wander_jitter", -1)) - 4.25) < 1e-6,
 			"资源特有的键仍应生效（wander_jitter 期望 4.25，实际 %.2f）" % float(d3.get("wander_jitter", -1)))
-	print("[蝴蝶测试] 参数暴露：%d 个键在检查器可见（分组「飞行行为」+「草交互」）｜ 节点值优先于资源 ✓"
+	print("[蝴蝶测试] 参数暴露：%d 个键在检查器可见（分组「飞行速度」+「飞行行为」+「草交互」）｜ 节点值优先于资源 ✓"
 			% want.size())
 
 
@@ -1134,7 +1143,7 @@ func test_behavior_exports_visible_and_override_tuning() -> void:
 ##   于是蝴蝶每次进入 BASK 都会**朝原点以 ~15 m/s 跳过去**（每帧把剩余距离砍掉 1/4，
 ##   实测在 5 米外时单帧位移 ≈ 1.25 m，视觉上就是"闪一下换位置"）。
 ## 修法：① 状态机进 BASK 时先把 `_perch` 兜底成当前位置；
-##      ② 靠拢改成**限速**（perch_speed，默认 1.2 m/s）；
+##      ② 靠拢改成**限速**（perch_speed，默认 0.6 m/s）；
 ##      ③ 落脚点离得太远（> perch_rearm_distance）就就近重置；
 ##      ④ 积分后统一加一道**单帧位移上限**，把任何来源的异常位移降级为"快速移动"。
 func test_no_teleport_during_flight() -> void:
@@ -1369,6 +1378,99 @@ func test_gather_cycle_scatter_and_regroup() -> void:
 	b3.free()
 	b.free()
 	b2.free()
+
+
+## ★ 飞行轨迹辅助线（调试）：
+##   ① 默认关闭 -> 不建 Trail 子节点/网格（零残留）；
+##   ② 打开后按采样间隔累计点、网格有 surface、末点贴近蝴蝶**世界坐标**（不是被 0.22 缩放）；
+##   ③ 点数受 `trail_seconds / trail_sample_s` 上限约束；
+##   ④ 关闭后子节点排队释放；群组 `show_trails` 开关立即生效且不重建。
+func test_flight_trails_visualization() -> void:
+	var paths := BFLY_IO.list_butterfly_paths()
+	var tex := load(String(paths[0])) as Texture2D
+	var crop := BFLY_IO.detect_bbox(String(paths[0]))
+	var bounds := AABB(Vector3(-6, 0.4, -6), Vector3(12, 3, 12))
+	var tuning := {"size_m": 0.22, "flap_hz": 8.0, "energy_drain": 0.0}
+	var dt := 1.0 / 60.0
+
+	# ① 默认关闭
+	var b = _new_butterfly()
+	b.setup(tex, crop, _rng(41), tuning)
+	b.spawn(bounds)
+	for i in range(120):
+		b.advance(dt, bounds, {}, {}, [], {})
+	assert_eq(b.get_node_or_null("Trail"), null, "默认关闭时不应有 Trail 子节点")
+	assert_eq(b.trail, null, "默认关闭时 trail 应为 null")
+
+	# ② 打开：采样点 + 网格 + 世界坐标
+	b.set_trail(true, 4.0, 0.05, Color(0.5, 0.9, 1.0, 0.8), 0.02)
+	assert_ne(b.get_node_or_null("Trail"), null, "打开后应有 Trail 子节点")
+	assert_ne(b.trail_mesh, null, "打开后应有 ImmediateMesh")
+	assert_true(int(b.stats()["trail_points"]) >= 1, "打开后应立刻有一个起点")
+	for i in range(120):
+		b.advance(dt, bounds, {}, {}, [], {})
+	var npts := int(b.stats()["trail_points"])
+	assert_gt(npts, 30, "2 秒应采样到 >30 点（实际 %d）" % npts)
+	assert_eq(b.trail_mesh.get_surface_count(), 1, "轨迹网格应有 1 个 surface")
+	var last: Vector3 = b._trail_pts[b._trail_pts.size() - 1]
+	var world: Vector3 = b.to_global(Vector3.ZERO)
+	assert_true(last.distance_to(world) < 0.5,
+			"轨迹末点应贴近蝴蝶世界坐标（差 %.3f m）" % last.distance_to(world))
+
+	# ②b 静止（采样点全部重合）时不能建空 surface：
+	#    否则 Godot 会报 "No vertices were added, surface can't be created"。
+	#    真实触发场景：蝴蝶在花上停歇不动，采样点几乎完全一样。
+	b._trail_pts.clear()
+	for i in range(5):
+		b._trail_pts.append(b.to_global(Vector3.ZERO))
+	b._rebuild_trail()
+	assert_eq(b.trail_mesh.get_surface_count(), 0,
+			"静止（采样点重合）时不应创建空 surface")
+
+	# ③ 点数上限：1 秒窗口 / 0.05 间隔 -> 最多 21 点
+	b.set_trail(true, 1.0, 0.05)
+	for i in range(600):
+		b.advance(dt, bounds, {}, {}, [], {})
+	var capped := int(b.stats()["trail_points"])
+	assert_true(capped <= 21, "1 秒窗口点数应 ≤21（实际 %d）" % capped)
+
+	# ④ 关闭：引用清空 + 子节点排队释放
+	b.set_trail(false)
+	var tn: Node = b.get_node_or_null("Trail")
+	assert_true(tn == null or tn.is_queued_for_deletion(), "关闭后 Trail 应已排队释放")
+	assert_eq(b.trail, null, "关闭后 trail 应为 null")
+	b.free()
+
+	# ⑤ 群组开关：立即生效，不重建
+	var sw = SWARM.new()
+	track(sw)
+	sw.sgt_perch_enabled = false
+	if _holder != null:
+		_holder.add_child(sw)
+	sw.set_sprite_textures([tex])
+	sw.count = 3
+	sw.region_size = Vector3(4, 2, 4)
+	sw.rebuild()
+	assert_eq(sw.stats().get("show_trails"), false, "show_trails 默认应为 false")
+	sw.show_trails = true
+	assert_eq(_count_visible_trails(sw), 3,
+			"打开后每只蝴蝶都应有 Trail（实际 %d）" % _count_visible_trails(sw))
+	sw.show_trails = false
+	assert_eq(_count_visible_trails(sw), 0,
+			"关闭后不应有 Trail 残留（实际 %d）" % _count_visible_trails(sw))
+	print("[蝴蝶测试] 轨迹：2 秒采样 %d 点 ｜ 1 秒窗口 %d 点（≤21）｜ 群组开关即时生效" % [npts, capped])
+
+
+## 数一个蝴蝶群里"还活着"的 Trail 子节点数（queue_free 延迟，必须看 queued 标记）。
+func _count_visible_trails(sw) -> int:
+	var n := 0
+	for c in (sw as Node).get_children():
+		if c.get_script() != BFLY:
+			continue
+		var t: Node = c.get_node_or_null("Trail")
+		if t != null and not t.is_queued_for_deletion():
+			n += 1
+	return n
 
 
 ## ★ 批量加素材 API（用户在检查器里点的就是这些）：
