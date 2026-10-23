@@ -650,12 +650,40 @@ func _push_grass_slots(list: Array, slots: int) -> void:
 	for m in _grass_mats:
 		if m == null or not is_instance_valid(m):
 			continue
-		m.set_shader_parameter("sgt_butterfly_pos", pos)
-		m.set_shader_parameter("sgt_butterfly_vel", vel)
-		m.set_shader_parameter("sgt_butterfly_press", press)
-		m.set_shader_parameter("sgt_butterfly_radius", radius)
-		m.set_shader_parameter("sgt_butterfly_bend", bend)
-		m.set_shader_parameter("sgt_butterfly_count", n)
+		_set_grass_uniform(m, &"sgt_butterfly_pos", pos)
+		_set_grass_uniform(m, &"sgt_butterfly_vel", vel)
+		_set_grass_uniform(m, &"sgt_butterfly_press", press)
+		_set_grass_uniform(m, &"sgt_butterfly_radius", radius)
+		_set_grass_uniform(m, &"sgt_butterfly_bend", bend)
+		_set_grass_uniform(m, &"sgt_butterfly_count", n)
+
+
+## 写一个草材质 uniform（**编辑器/运行时走不同通道**）。
+## 参数 m：草材质；param：uniform 名；value：值（与 `set_shader_parameter` 同类型）。
+## 返回值：无。
+##
+## ★★ 为什么编辑器里不能直接 `set_shader_parameter` ★★
+##   main.tscn 里的草材质是**内联 `[sub_resource]`**（`material_override` 引用）。
+##   `ShaderMaterial.set_shader_parameter()` 会做两件事：
+##     ① 把值写进 Resource 自己的 `param_cache` —— 这是**保存场景时被序列化的那份数据**；
+##     ② `emit_changed()` —— 让编辑器把场景标脏。
+##   于是每帧写一次"蝴蝶瞬时状态"，每次 Ctrl+S 就把**当时那一帧的 pos/vel/press**
+##   固化进 main.tscn（用户反馈："每次保存场景这三个值都在变"）。
+##   编辑器里改走 `RenderingServer.material_set_param()` 直接写材质 RID：
+##   GPU 侧参数照常生效（预览里蝴蝶照样压草），但 Resource 的 `param_cache` 保持原样
+##   -> 场景不再被污染、也不再被无谓地标脏。
+##   运行时没有保存场景这回事，用回 `set_shader_parameter`（可被 `get_shader_parameter` 回读，
+##   测试与调试都依赖这个可回读性）。
+func _set_grass_uniform(m: ShaderMaterial, param: StringName, value: Variant) -> void:
+	if not Engine.is_editor_hint():
+		m.set_shader_parameter(param, value)
+		return
+	var rid := m.get_rid()
+	if rid.is_valid():
+		RenderingServer.material_set_param(rid, param, value)
+	else:
+		# 极端兜底：拿不到 RID 时宁可让预览失效，也不污染场景
+		pass
 
 
 ## 读草交互的插槽数（容错：tuning 里可能是 int 而不是 float）。
