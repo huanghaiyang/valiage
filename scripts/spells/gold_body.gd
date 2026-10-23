@@ -59,6 +59,11 @@ const SHARD_SHADER := "res://assets/shaders/gold_shard.gdshader"
 const NOISE_TEX := "res://assets/textures/法术特效/Noise1_tiled.png"
 ## 单个碎片的外形贴图（四角星），只在 _build_shards() 里给 StandardMaterial3D 当 albedo。
 const SHARD_TEX := "res://assets/textures/法术特效/kenney/particle-pack/star_04.png"
+## 体表 overlay 分层链：多个长时法术（金膜 / 水膜 …）同时贴在同一批网格上时，
+## 各自 attach/detach 自己那一层，互不覆盖（详见 body_overlay_chain.gd 顶部说明）。
+const CHAIN := preload("res://scripts/spells/body_overlay_chain.gd")
+## 金膜在分层链里的层名（按法术种类取）。同一种法术的新一发会替换掉旧那层。
+const OVERLAY_KEY := "gold_body"
 
 # ==================== 可调参数（默认值会被数值表覆盖） ====================
 ## 下面这批 @export 只是"离线默认值"（没有 data/spell_sheet.json 时也能跑起来），
@@ -124,11 +129,14 @@ var _film: ShaderMaterial = null
 var _aura: MeshInstance3D = null
 ## 罩壳专用的薄膜材质：body_strength 压到接近 0、rim_strength 提高 → 只留一圈边缘发光。
 var _aura_mat: ShaderMaterial = null
-## 覆盖前的备份表，元素形如 { "mi": MeshInstance3D, "prev": 该网格原本的 material_overlay }。
-## 为什么不能"结束时就地清成 null"：角色网格**原本可能已经挂着别的 overlay**（其它状态特效/染色），
-## 一律清空会顺手把别人的效果抹掉，所以必须逐个还原原值（见 _cleanup / _exit_tree）。
+## 本次贴膜的网格清单，元素形如 { "mi": MeshInstance3D }。
+## ★ 不再自己备份 prev：金膜现在是**分层链**里的一层（见 CHAIN），结束时只摘掉自己那层，
+##   其它法术（水膜等）还活着的层由链条自动保留/重连 → 不会互相覆盖，也不会提前还原。
 ## 每次 _build_film() 追加、_cleanup() / _exit_tree() 里 clear()。
-var _mesh_prev: Array[Dictionary] = []      ## {mi, prev}
+var _mesh_prev: Array[Dictionary] = []      ## {mi}
+## 本次护盾的 `gold_guard` 标记是不是**本实例**打上的。
+## ★ 用于防止"重复施放被拒绝的实例"在销毁时把别人还生效的标记清掉。
+var _owns_guard := false
 ## "因没蓝而中断"的标志，对外由 ran_out_of_mana() 返回，供 caster / UI 统一提示。
 ## ⚠ 实际取值：mana_per_sec 默认 0、数值表里也是 0 → Mana.spend_rate(delta, 0.0) 内部走
 ##   try_spend(0) → amount <= 0 直接返回 true → 本变量一直是 false。
@@ -190,8 +198,8 @@ func setup(player: Node3D, staff: Node3D) -> void:
 ##   只在"碎裂走完"时还原是不够的：换法术会让这个节点直接被 queue_free，
 ##   那时角色身上会**永久留着一层金膜**（实测踩过：上一个测试实例释放后金膜还在）。
 ## 参数 / 返回值：无（引擎回调，节点离开场景树时调用）。
-## 副作用：清掉角色的 `gold_guard` meta（并打日志）；把 _mesh_prev 里备份的每个网格
-##   material_overlay 还原成原值，然后清空备份表。
+## 副作用：清掉**本实例打上的** `gold_guard` meta（并打日志）；把 _mesh_prev 里的每个网格
+##   从分层链上摘掉本实例那一层，然后清空备份表。
 ## 注意：这里**不**手动释放 _aura / _shards —— 本节点正在被销毁，子节点会跟着一起回收；
 ##   正常走完碎裂时由 _cleanup() 负责处理它们。
 func _exit_tree() -> void:
@@ -199,13 +207,14 @@ func _exit_tree() -> void:
 	#   放在这里最稳 ✓：无论正常碎裂结束 ✓ 还是换法术/场景退出被 queue_free ✓ 都会执行 ✓
 	#   这里**故意只清布尔** `gold_guard`、不清时间戳 `gold_guard_until`：
 	#   时间戳到点会自动失效，是"某条清理路径没走到"时的兜底（设计说明见 start_cast 顶部）。
-	if _player != null and is_instance_valid(_player) and _player.has_meta("gold_guard"):
+	# ★ 只有本实例真正打过标记时才清：切换术法后玩家可能再次选中金色守护，
+	#   此时会新建一个"因护盾未到期而被拒绝"的实例；它销毁时若无条件清标记，
+	#   会把**上一个实例**还生效的 100% 抵挡提前抹掉（实测：金盾在切术法后失效）。
+	if _owns_guard and _player != null and is_instance_valid(_player) and _player.has_meta("gold_guard"):
 		_player.remove_meta("gold_guard")
 		print("[金色守护] 护盾结束 ✓ 已清除标记（现在可以再次施放）")
-	for d in _mesh_prev:
-		var mi = d["mi"]
-		if mi != null and is_instance_valid(mi):
-			(mi as MeshInstance3D).material_overlay = d["prev"]
+	_owns_guard = false
+	_detach_film()
 	_mesh_prev.clear()
 
 
@@ -261,6 +270,7 @@ func start_cast() -> void:
 				_player.remove_meta("gold_guard")
 			return
 	_life_t = 0.0                                   # ★ 开始计时（到 total_time 自动结束 ✓）
+	_owns_guard = true                              # 标记由本实例打上 → 只有本实例有权清除
 	casting = true
 	if _state == ST_OFF or _state == ST_SHATTER:
 		_build_film()                      # 贴薄膜（reveal=0，先不可见）
@@ -298,6 +308,24 @@ func stop_cast() -> void:
 ##   而"被拒绝施放"（已有护盾 / 没蓝）的实例从头到尾都是 false → caster 当场释放它。
 func is_casting() -> bool:
 	return casting
+
+
+## 特效整体是否还"活着"（含**碎裂阶段**：此时 casting 已是 false，但金膜还在一块块消失）。
+## 供 spell_caster._sweep_instances() 判断能否回收：只认 is_casting() 的话，
+## 碎裂刚一开始（9.1s）实例就会被 queue_free，碎裂动画直接消失。
+func is_effect_alive() -> bool:
+	return _state != ST_OFF
+
+
+## 把本实例的金膜从分层链上摘掉（只摘自己那一层，水膜等其它层自动重连）。
+## 调用时机：_cleanup()（碎裂走完）与 _exit_tree()（被直接释放）；网格已释放时静默跳过。
+func _detach_film() -> void:
+	for d in _mesh_prev:
+		# 先 is_instance_valid 再转型：场景退出时网格可能已释放，直接 as 会报 cast a freed object
+		var v = d.get("mi")
+		if not is_instance_valid(v):
+			continue
+		CHAIN.detach(v as MeshInstance3D, OVERLAY_KEY, _film)
 
 
 ## 统一接口：本发术法是否因为法力不足而中断（供 caster / UI 统一提示"没蓝了"）。
@@ -418,7 +446,7 @@ func _begin_shatter() -> void:
 ## 副作用：
 ##   · 清掉角色 meta `gold_guard`（`gold_guard_until` **故意保留**，理由见 start_cast 顶部注释）；
 ##   · _state 回到 ST_OFF（此后 _process 的 match 直接 return，但计时与跟随仍在跑）；
-##   · 用 _mesh_prev 的备份逐个还原角色网格的 material_overlay，然后清空备份表；
+##   · 用 _mesh_prev 的网格清单把本实例那一层从分层链上摘掉，然后清空备份表；
 ##   · queue_free 掉金色罩壳 _aura 并置 null；把 _shards 停掉发射（**不释放**，它要长期复用）；
 ##   · reveal / dissolve 归零（_film 是复用材质，不归零的话下一轮施法一开始就是"碎完"的样子）。
 ## 调用时机：ST_SHATTER 里 k2 >= 1.0 时；_exit_tree() 是它的兜底（实例被直接 queue_free 的场景）。
@@ -427,14 +455,13 @@ func _cleanup() -> void:
 	# ★★ 效果真正结束 → **立刻清掉抵挡标记** ✓（用户需求 ✓）
 	#   放在这里最稳 ✓：碎裂演完的状态机收尾一定会调用它 ✓
 	#   （`_exit_tree()` 里也清一次 ✓ 双保险 ✓ 换法术/退出场景也不会残留 ✓）
-	if _player != null and is_instance_valid(_player) and _player.has_meta("gold_guard"):
+	#   同样只清本实例打上的标记（理由见 _exit_tree）。
+	if _owns_guard and _player != null and is_instance_valid(_player) and _player.has_meta("gold_guard"):
 		_player.remove_meta("gold_guard")
 		print("[金色守护] 效果结束 ✓ 已清除抵挡标记（可以再次施放）")
+	_owns_guard = false
 	_state = ST_OFF
-	for d in _mesh_prev:
-		var mi = d["mi"]
-		if mi != null and is_instance_valid(mi):
-			(mi as MeshInstance3D).material_overlay = d["prev"]
+	_detach_film()
 	_mesh_prev.clear()
 	if _aura != null and is_instance_valid(_aura):
 		_aura.queue_free()
@@ -520,7 +547,8 @@ func _set_shard_mode(m: int) -> void:
 ## 把金色薄膜逐个贴到角色的网格上（material_overlay，不动物体自己的材质），
 ## 同时量出角色高度，用来自动定金色罩壳的大小。
 ## 参数 / 返回值：无。
-## 副作用：给角色的每个 MeshInstance3D 设 material_overlay = _film（原值先备份进 _mesh_prev）；
+## 副作用：把金膜作为一层 attach 到角色的每个 MeshInstance3D（走 body_overlay_chain，
+##   与水膜等其它长时法术叠加共存；网格清单记进 _mesh_prev）；
 ##   量到高度后在角色竖直中点新建 SphereMesh 罩壳（_aura + _aura_mat）并 add_child 到本节点。
 ## 细节：_film 只在第一次调用时创建、之后复用（不会一轮轮泄漏材质资源）；罩壳则每轮重建，由 _cleanup() 回收。
 ## 失败路径：shader 加载失败或 _player 失效时，都会在**碰任何网格之前**提前 return，
@@ -547,10 +575,10 @@ func _build_film() -> void:
 	var lo := 1e9
 	var hi := -1e9
 	for mi in meshes:
-		# 先备份再覆盖：角色网格上原本可能已经挂着别的 overlay（其它状态特效 / 染色），
-		# 结束时必须还原成原值而不是一律置空，否则会顺手把别人的效果抹掉（见 _cleanup / _exit_tree）。
-		_mesh_prev.append({"mi": mi, "prev": mi.material_overlay})
-		mi.material_overlay = _film
+		# ★ 走分层链：金膜只是其中一层，不覆盖也不备份别人的膜
+		#   （水膜等其它长时法术同时存在时，各层靠 next_pass 叠加，见 body_overlay_chain.gd）。
+		_mesh_prev.append({"mi": mi})
+		CHAIN.attach(mi, OVERLAY_KEY, _film)
 		if mi.mesh != null:
 			var aabb := mi.mesh.get_aabb()
 			var xf := mi.global_transform

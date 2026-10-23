@@ -162,8 +162,13 @@ func _target_transparency() -> float:
 func _apply_transparency(t: float) -> void:
 	for id in _ledger.keys():
 		var e: Dictionary = _ledger[id]
-		var mi := e.get("mi") as MeshInstance3D
-		if mi != null and is_instance_valid(mi):
+		# ★ 先 is_instance_valid 再转型：场景退出时网格可能已被释放，
+		#   直接 `as MeshInstance3D` 一个已释放对象会报 "Trying to cast a freed object"。
+		var v = e.get("mi")
+		if not is_instance_valid(v):
+			continue
+		var mi := v as MeshInstance3D
+		if mi != null:
 			mi.transparency = t
 
 
@@ -219,8 +224,12 @@ func _finish() -> void:
 func _restore() -> void:
 	for id in _ledger.keys():
 		var e: Dictionary = _ledger[id]
-		var mi := e.get("mi") as MeshInstance3D
-		if mi != null and is_instance_valid(mi):
+		# 同 _apply_transparency：已释放的网格不能直接 as 转型，否则报 cast a freed object
+		var v = e.get("mi")
+		if not is_instance_valid(v):
+			continue
+		var mi := v as MeshInstance3D
+		if mi != null:
 			mi.transparency = float(e.get("prev_trans", 0.0))
 			mi.cast_shadow = int(e.get("prev_shadow", GeometryInstance3D.SHADOW_CASTING_SETTING_ON))
 	_ledger.clear()

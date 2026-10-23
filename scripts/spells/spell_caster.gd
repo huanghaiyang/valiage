@@ -467,7 +467,14 @@ func _sweep_instances() -> void:
 		var n := x as Node3D
 		if n == null or not is_instance_valid(n):
 			continue
-		var busy := n.has_method("is_casting") and bool(n.call("is_casting"))
+		# ★ 优先用 is_effect_alive()：它把"碎裂 / 淡出"这类收尾阶段也算作还活着。
+		#   只认 is_casting() 的话，金色守护一进入碎裂（casting=false）就会被回收，
+		#   碎裂动画与薄膜消失直接丢掉。
+		var busy := false
+		if n.has_method("is_effect_alive"):
+			busy = bool(n.call("is_effect_alive"))
+		elif n.has_method("is_casting"):
+			busy = bool(n.call("is_casting"))
 		if busy:
 			left.append(n)          # 还在演 → 留着 ✓（绝不打断前一次施法 ✓）
 		else:
@@ -482,8 +489,9 @@ func _sweep_instances() -> void:
 ##
 ## 参数：无（读成员 selected / _player / _staff / jet / _jet_spell）。
 ## 返回值：无。
-## 副作用：可能对旧视觉调 stop_cast 并 queue_free，再 new 出新视觉挂到
-##   **玩家父节点**下，并调用它的 setup(_player, _staff)；更新 jet / _jet_spell。
+## 副作用：旧视觉若还在生效（is_effect_alive）则转交给 _cast_instances 继续演完，
+##   否则调 stop_cast 并 queue_free；再 new 出新视觉挂到 **玩家父节点**下，
+##   并调用它的 setup(_player, _staff)；更新 jet / _jet_spell。
 ## 时机：_process 每帧调用一次（位置在施法判定之前，保证这一帧用的就是新视觉）。
 ## 注意：
 ##   · selected 为空时**直接返回**，所以"施放后清空选中"不会拆掉共享视觉，
@@ -501,10 +509,19 @@ func _ensure_jet() -> void:
 		# 圆盘给的 id 不在 SPELLS 表里：只警告不崩，保持旧视觉不动（便于热改法术表）
 		push_warning("[SpellCaster] 未注册的术法: " + selected)
 		return
-	# 换术法：停掉并释放上一个
+	# ★ 换术法：旧视觉**还在生效**时不能直接释放。
+	#   金色守护 / 流水治疗这类一次性的长时法术，真正演出的是共享 jet 自身；
+	#   直接 queue_free 会触发它的 _exit_tree（摘膜 / 清 `gold_guard` 标记）= 施放别的法术就把效果取消。
+	#   所以对声明了 is_effect_alive() 且仍为 true 的实例，转交给 _cast_instances：
+	#   它继续按自己的状态机演完，演完后由 _sweep_instances() 释放。
+	#   隐身没有 is_effect_alive（效果宿主挂在角色下，与 jet 无关）→ 照旧释放，不影响 60s 计时。
 	if jet != null and is_instance_valid(jet):
-		jet.call("stop_cast")
-		jet.queue_free()
+		var still := jet.has_method("is_effect_alive") and bool(jet.call("is_effect_alive"))
+		if still:
+			_cast_instances.append(jet)
+		else:
+			jet.call("stop_cast")
+			jet.queue_free()
 		jet = null
 	var j: Node3D = script.new()
 	j.name = "Spell_" + selected

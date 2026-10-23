@@ -56,6 +56,11 @@ const NOISE_TEX := "res://assets/textures/法术特效/T_VFX_Noise_9.PNG"
 const SHEET := preload("res://scripts/spells/spell_sheet.gd")
 ## 本术法在数值表里的 id（也是施法器查表/实例化的键）。改名必须同步改 data/spell_sheet.json。
 const SHEET_ID := "water_heal"
+## 体表 overlay 分层链：与金色守护等长时法术同时贴在同一批网格上时，
+## 各自 attach/detach 自己那一层，互不覆盖、也不会提前还原（详见 body_overlay_chain.gd）。
+const CHAIN := preload("res://scripts/spells/body_overlay_chain.gd")
+## 水膜在分层链里的层名（按法术种类取）。同一种法术的新一发会替换掉旧那层。
+const OVERLAY_KEY := "water_heal"
 
 # ★ 数值全部来自 data/spell_sheet.json（改表即可，不用改代码）。
 #   下面的默认值只是表缺失时的兜底。
@@ -130,7 +135,9 @@ var _player: Node3D = null
 ## 体表水膜材质（全局一份，贴到角色所有网格的 material_overlay 上）。由 _apply_film() 懒创建，
 ## 之后所有参数统一走 _setp()；为 null 表示尚未装配（或着色器缺失，此时设参静默失败）。
 var _mat: ShaderMaterial = null
-var _mesh_prev: Array[Dictionary] = []     ## {mi, prev}
+## 本次贴膜用到的角色网格（元素 { "mi": MeshInstance3D }）。
+## ★ 不备份 prev：水膜是分层链里的一层，结束时只 detach 自己那层，金色守护等其它层自动保留。
+var _mesh_prev: Array[Dictionary] = []     ## {mi}
 ## 上一次施法是否因**蓝不足**而失败（true = 没发动）。施法器读 ran_out_of_mana() 播"没蓝"反馈；
 ## 每次 start_cast() 开头会重置为 false，即使中途 return 也不会残留上一轮的值。
 var _ran_out := false
@@ -241,7 +248,7 @@ func _warmup() -> void:
 	if meshes.is_empty():
 		return
 	for mi in meshes:
-		_mesh_prev.append({"mi": mi, "prev": mi.material_overlay})
+		_mesh_prev.append({"mi": mi})
 	_update_body_box()                          # 顺带 _build_profile()
 	_build_surface_profile()                    # 贵：扫顶点（这一步放到启动期）
 	# 网格也先建好（形状只取决于曲面表 + 身高，与位置无关）
@@ -285,6 +292,12 @@ func stop_cast() -> void:
 ## 返回值：true = 特效还在生效；false = 完全空闲。
 ## 调用时机：施法器 / UI 随时可读；本函数无副作用、不改任何状态。
 func is_casting() -> bool:
+	return _state != ST_OFF
+
+
+## 特效整体是否还"活着"（与本术法同义：淡出阶段也算，必须等水膜淡完才允许回收）。
+## 供 spell_caster._sweep_instances() 统一判断。
+func is_effect_alive() -> bool:
 	return _state != ST_OFF
 
 
@@ -422,7 +435,7 @@ func _cleanup() -> void:
 
 
 ## 还原并释放本次施法产生的一切。由 _cleanup()（正常结束）或 _exit_tree()（换法术 / 退场景）调用。
-## 副作用：① 逐个把角色网格的 material_overlay 还原成 _mesh_prev 里记录的旧值，然后清空 _mesh_prev；
+## 副作用：① 逐个把本实例那一层从体表分层链上 detach（金色守护等其它层自动保留），然后清空 _mesh_prev；
 ##   ② 回收两条实体水带（_free_streams）；③ 释放水汽与水珠节点并置 null；④ 置 _drops_on = false。
 ## 注意：这是**必须**执行的收尾 —— 漏掉 overlay 还原，角色身上会永久粘一层水膜（实测踩过）；
 ##   函数本身幂等（_mesh_prev 清空后重复调用无副作用），因此 _cleanup() 与 _exit_tree() 都调用它。
@@ -430,7 +443,7 @@ func _restore() -> void:
 	for d in _mesh_prev:
 		var mi = d["mi"]
 		if mi != null and is_instance_valid(mi):
-			(mi as MeshInstance3D).material_overlay = d["prev"]
+			CHAIN.detach(mi as MeshInstance3D, OVERLAY_KEY, _mat)
 	_mesh_prev.clear()
 	_free_streams()          # 实体水带也要一起回收
 	if _mist != null and is_instance_valid(_mist):
@@ -485,13 +498,13 @@ func _apply_film() -> void:
 		var meshes: Array[MeshInstance3D] = []
 		_gather_meshes(_player, meshes)
 		for mi in meshes:
-			_mesh_prev.append({"mi": mi, "prev": mi.material_overlay})
+			_mesh_prev.append({"mi": mi})
 	# ★ 贴膜必须**每次都做**：预热已经填好了 _mesh_prev，若把贴膜放在
 	#   "仅在 _mesh_prev 为空时"的分支里，预热之后水膜就永远贴不上了（实测踩过）。
 	for d in _mesh_prev:
 		var mi2 = d["mi"]
 		if mi2 != null and is_instance_valid(mi2):
-			(mi2 as MeshInstance3D).material_overlay = _mat
+			CHAIN.attach(mi2 as MeshInstance3D, OVERLAY_KEY, _mat)
 	_update_body_box()
 	# ★ 必须**先有真实曲面表、再建水带**（否则第一帧会用 AABB 兜底：方方正正且偏大）。
 	#   正常情况下表已在 _warmup() 算好；这里只做冷启动兜底。
