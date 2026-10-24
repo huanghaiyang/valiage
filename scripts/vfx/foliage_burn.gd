@@ -55,18 +55,24 @@ const NOISE := "res://assets/textures/法术特效/Noise1_tiled.png"
 									  ##   或 shader 是 tree_burn_keep* ✓ → 走这个时长 ✓
 @export var ash_time_tree := 8.0      ## ★ 树烧完后的消失时长（同样更慢 ✓）
 ## ★★★ 崩毁（用户需求 ✓）：树木**烧透 + 焦黑停留**之后，用这段时间崩解消失 ✓
-##   0 = 不崩（旧行为：焦黑树架永久留下）；> 0 = 枝条从上到下脱落 + 高度序崩碎
+##   0 = 不崩（旧行为：焦黑树架永久留下）；> 0 = 枝条从上到下脱落 + 翻滚落地躺平
 ##   只对木质目标（tree_burn_keep*）生效；草/灌木仍走 ash 淡出 ✓
 @export var collapse_time := 4.0
 ## ★ 枝条脱落窗口占 collapse_time 的比例（0.7 = 前 70% 时间内 L5→L1 依次脱落）
 @export var branch_fall_window := 0.7
 ## 枝条（含碎枝）掉落重力（米/秒²）
 @export var branch_gravity := 12.0
-## 枝条落地后崩碎消失所需时间（秒）——用 shader 的 crumble 高度序逐层削掉
-@export var branch_crumble_time := 0.8
-## 枝条落地后静置多久才开始崩碎（秒）
+## 枝条落地后**缓慢缩小消失**所需时间（秒）
+@export var branch_shrink_time := 1.5
+## 枝条落定（翻滚结束 → 压到地面上躺平）所用时间（秒）
 @export var branch_rest_time := 0.25
-## ★ 树木本体消失后，枝条继续落地/崩碎的收尾时长（秒）
+## 枝条下落时的翻滚时长（秒）：从竖直翻到 ≈90°（横躺）用这么久
+@export var branch_rotate_time := 0.45
+## 枝条落地后被压扁的比例（0.45 = 竖向压到原来的 45%）
+##   ★ 为什么要压扁：真树枝落到地上会互相挤压/折断，树冠摊成一堆；
+##     整层网格是刚体，只旋转 90° 的话仍是一个"立着的大块"，不像躺在地上 ✗
+@export var branch_crush := 0.45
+## ★ 树木本体消失后，枝条继续落地/缩小的收尾时长（秒）
 ##   没有这段的话，"崩毁到顶"的同帧会把还在半空的枝条一起藏掉 → 突然消失 ✗
 @export var debris_linger := 2.5
 @export var char_hold := 0.7          ## 全焦黑后停留
@@ -177,21 +183,27 @@ var _is_tree := false
 ##   全部状态在**控制器局部坐标**里算（控制器被摆到目标位置）。
 var _sec_meshes: Array[MeshInstance3D] = []   ## 原枝条节点（按 L5→L1 排序）
 var _sec_dups: Array[MeshInstance3D] = []     ## 脱落后的替身（挂在控制器下）
-var _sec_mat_idx: Dictionary = {}             ## 燃烧材质副本 -> 段索引（写各自 crumble）
+var _sec_mats: Dictionary = {}                ## 枝条的燃烧材质副本（命中 = 属于脱落段，crumble 恒为 0）
 var _sec_t := PackedFloat32Array()            ## 计划脱落时刻（相对崩毁开始，秒）
-var _sec_state := PackedByteArray()           ## 0=待脱落 1=下落 2=落地静置 3=崩碎 4=结束
-var _sec_crumble := PackedFloat32Array()      ## 该枝条的崩碎进度（只写它自己的材质）
-var _sec_rest := PackedFloat32Array()         ## 落地静置剩余时间
-var _sec_angle := PackedFloat32Array()        ## 累计翻转角
-var _sec_spin := PackedFloat32Array()         ## 翻转角速度
-var _sec_axis := PackedVector3Array()         ## 翻转轴（水平切向 → 向外倒）
-var _sec_center := PackedVector3Array()       ## 当前网格中心（控制器局部）
-var _sec_vel := PackedVector3Array()          ## 中心速度
-var _sec_basis: Array[Basis] = []             ## 脱离瞬间的局部 basis
-var _sec_mesh_center := PackedVector3Array()  ## 网格 AABB 中心（mesh 局部）
-var _sec_aabb: Array[AABB] = []               ## 网格 AABB（判落地用）
-var _sec_full := PackedFloat32Array()         ## 该段"整根抠光"所需的 crumble 值（按它自己的高度区间缩放）
-## ★ 崩毁到顶后的枝条收尾阶段：树木本体已隐藏，等枝条落定/崩碎再真正 _finish
+var _sec_state := PackedByteArray()           ## 0=待脱落 1=下落 2=落定 3=缩小消失 4=结束
+var _sec_rest := PackedFloat32Array()         ## 落定/缩小阶段已用时间
+var _sec_vel := PackedFloat32Array()          ## 下落速度（向下为正，米/秒）
+var _sec_drop := PackedFloat32Array()         ## 已下落距离（米）
+var _sec_floor := PackedFloat32Array()        ## 落到底需要下落的距离（米）
+var _sec_basis: Array[Basis] = []             ## 枝条的局部 basis（含主场景树的缩放）
+var _sec_origin := PackedVector3Array()       ## 枝条原始局部原点
+var _sec_pivot := PackedVector3Array()        ## 旋转支点（= 枝条包围盒中心，近似树干连接处）
+## ★★ 下落旋转（用户要求 ✓：掉落过程中带旋转，最终横躺在地面上）
+var _sec_axis: Array[Vector3] = []            ## 随机水平旋转轴（单位向量）
+var _sec_angle := PackedFloat32Array()        ## 已转过的角度（弧度）
+var _sec_spin := PackedFloat32Array()         ## 角速度（弧度/秒）
+var _sec_target := PackedFloat32Array()       ## 目标转角（≈90° → 原本竖着的枝条层摊平成横躺）
+var _sec_pts: Array[PackedVector3Array] = []  ## 采样顶点（控制器局部、原始姿态；用于算躺平高度）
+var _sec_land_b: Array[Basis] = []            ## 落定后的最终 basis
+var _sec_land_o := PackedVector3Array()       ## 落定后的最终 origin
+var _sec_land_y := PackedFloat32Array()       ## 落定后 origin.y 的目标值（让枝条整体躺在地面上）
+var _sec_shrink_pivot := PackedVector3Array() ## 缩小支点（落地后地面上的水平中心）
+## ★ 崩毁到顶后的枝条收尾阶段：树木本体已隐藏，等枝条落定/缩小完再真正 _finish
 var _collapse_tail := false
 var _tail_time := 0.0
 ## 本控制器专用的随机源（_ready 里 randomize）。
@@ -1152,7 +1164,7 @@ func _process(delta: float) -> void:
 	var ash := 0.0
 	var crumble := 0.0
 	# ★★ 树（保留型）走**崩毁**时间轴（用户需求 ✓）：停留期结束后 collapse_time 秒内
-	#   **L5→L1 枝条从上到下依次脱落**，落地的枝条再按高度序崩碎消失 ✓
+	#   **L5→L1 枝条从上到下依次脱落**，落地的枝条完全着地后再缓慢缩小消失 ✓
 	#   叶片用 ash 提前散尽（crumble×2.2 → 崩到约 45% 时叶子已全没了 ✓）
 	#   collapse_time = 0 时退回旧行为（ash_time_tree 灰化，焦黑树架保留）
 	var collapsing := _is_tree and collapse_time > 0.0
@@ -1177,21 +1189,17 @@ func _process(delta: float) -> void:
 				sm2.set_shader_parameter("burn", burn)
 				sm2.set_shader_parameter("ash", ash)
 				# ★ 崩毁进度只写给带 crumble 的树着色器（草/灌木的 shader 没有这个 uniform）
-				#   ★ 枝条用**自己的** crumble（落地后才开始崩碎；未脱落/下落中保持完整）
+				#   ★ 脱落枝条**恒为 0**：它们靠落地后缩放消失，不能被 shader 提前抠掉
 				if _is_tree and sm2.shader != null:
 					var sp2 := String(sm2.shader.resource_path)
 					if sp2.contains("tree_burn_keep") or sp2.contains("tree_leaves_burn"):
-						var cv := crumble
-						var sec_i: int = int(_sec_mat_idx.get(sm2, -1))
-						if sec_i >= 0 and sec_i < _sec_crumble.size():
-							cv = _sec_crumble[sec_i]
-						sm2.set_shader_parameter("crumble", cv)
+						sm2.set_shader_parameter("crumble", 0.0 if _sec_mats.has(sm2) else crumble)
 				# ★ 每帧同步天气风：副本不在风系统的材质名单里，不抄就会"一烧就不摆"
 				_copy_wind_params(si)
 	elif _mat != null:
 		_mat.set_shader_parameter("burn", burn)
 		_mat.set_shader_parameter("ash", ash)
-	# ★ 崩毁枝条：L5→L1 按高度顺序依次脱落 → 自由落体 → 落地静置 → 原地崩碎消失
+	# ★ 崩毁枝条：L5→L1 依次脱落 → 边下落边翻滚 → 落地压平躺好 → 缓慢缩小消失
 	if collapsing:
 		_update_collapse_sections(delta, _t - burn_time - char_hold)
 	_update_sparks(delta, burn)
@@ -1199,7 +1207,7 @@ func _process(delta: float) -> void:
 	# ★ 树看 crumble 到顶（而非 ash）—— ash 只是叶片提前散尽的伴随量
 	if collapsing:
 		if crumble >= 1.0:
-			# ★★ 时间轴（用户要求 ✓）：树体先消失，但枝条还要继续落地/崩碎 ✓
+			# ★★ 时间轴（用户要求 ✓）：树体先消失，但枝条还要继续落地/缩小 ✓
 			#    没有这段的话，"崩毁到顶"的同帧会把半空中的枝条一起藏掉 → 突兀 ✓
 			if not _collapse_tail:
 				_collapse_tail = true
@@ -1244,35 +1252,41 @@ func _update_sparks(delta: float, burn: float) -> void:
 
 # ==================== 崩毁枝条（树干烧透后 L5→L1 依次脱落） ====================
 ## ★ 用户需求：**不要小方块** ✓ 直接用树本身的 Bark_Branch_L* 网格当碎块 —
-##   掉下来的就是真实枝条；落地后再用 shader 的高度序 crumble 原地崩碎消失 ✓
+##   掉下来的就是真实枝条；**完全落地后缓慢缩小消失** ✓
 ##   顺序：L5（最高）→ L1（最低），从上到下 ✓
 ## 段状态（_sec_state 里存这些值）
 const SEC_WAIT := 0
 const SEC_FALL := 1
 const SEC_REST := 2
-const SEC_CRUMBLE := 3
+const SEC_SHRINK := 3
 const SEC_DEAD := 4
 
 
 ## 登记要脱落的枝条（名字以 Bark_Branch_L 开头），按 L5→L1 排序并排好脱落时刻。
 ## 只在"树木 + 开启崩毁"时有意义；其它目标一律留空 → 崩毁仍走原来的高度序。
+## 同时用**顶点高度分位**算出每段"离地多远"（AABB 有少量离群顶点的枝条不能直接用它）。
 func _build_collapse_sections() -> void:
 	_sec_meshes.clear()
 	_sec_dups.clear()
-	_sec_mat_idx.clear()
+	_sec_mats.clear()
 	_sec_t.resize(0)
 	_sec_state.resize(0)
-	_sec_crumble.resize(0)
 	_sec_rest.resize(0)
+	_sec_vel.resize(0)
+	_sec_drop.resize(0)
+	_sec_floor.resize(0)
+	_sec_basis.clear()
+	_sec_origin.resize(0)
+	_sec_pivot.resize(0)
+	_sec_axis.clear()
 	_sec_angle.resize(0)
 	_sec_spin.resize(0)
-	_sec_axis.resize(0)
-	_sec_center.resize(0)
-	_sec_vel.resize(0)
-	_sec_basis.clear()
-	_sec_mesh_center.resize(0)
-	_sec_aabb.clear()
-	_sec_full.resize(0)
+	_sec_target.resize(0)
+	_sec_pts.clear()
+	_sec_land_b.clear()
+	_sec_land_o.resize(0)
+	_sec_land_y.resize(0)
+	_sec_shrink_pivot.resize(0)
 	if not _is_tree or collapse_time <= 0.0:
 		return
 	for mi in _meshes:
@@ -1288,45 +1302,77 @@ func _build_collapse_sections() -> void:
 		return
 	_sec_t.resize(n)
 	_sec_state.resize(n)
-	_sec_crumble.resize(n)
 	_sec_rest.resize(n)
+	_sec_vel.resize(n)
+	_sec_drop.resize(n)
+	_sec_floor.resize(n)
+	_sec_basis.resize(n)
+	_sec_origin.resize(n)
+	_sec_pivot.resize(n)
+	_sec_dups.resize(n)
+	_sec_axis.resize(n)
 	_sec_angle.resize(n)
 	_sec_spin.resize(n)
-	_sec_axis.resize(n)
-	_sec_center.resize(n)
-	_sec_vel.resize(n)
-	_sec_basis.resize(n)
-	_sec_mesh_center.resize(n)
-	_sec_aabb.resize(n)
-	_sec_full.resize(n)
-	_sec_dups.resize(n)
+	_sec_target.resize(n)
+	_sec_pts.resize(n)
+	_sec_land_b.resize(n)
+	_sec_land_o.resize(n)
+	_sec_land_y.resize(n)
+	_sec_shrink_pivot.resize(n)
 	# ★ 脱落窗口：collapse_time 的前 branch_fall_window 比例内，L5→L1 均匀散开
 	var window := maxf(collapse_time * clampf(branch_fall_window, 0.05, 1.0), 0.01)
 	for i in range(n):
 		var mi := _sec_meshes[i]
 		_sec_t[i] = float(i) / maxf(n - 1.0, 1.0) * window
 		_sec_state[i] = SEC_WAIT
-		_sec_crumble[i] = 0.0
 		_sec_rest[i] = 0.0
-		_sec_angle[i] = 0.0
+		_sec_vel[i] = 0.0
+		_sec_drop[i] = 0.0
 		_sec_dups[i] = null
+		_sec_pts[i] = PackedVector3Array()
+		# ★ 翻滚参数：随机水平轴 + 约 90° 的目标转角
+		#   为什么是 90°：L1~L5 是**竖着铺满整个树冠**的枝条层，
+		#   绕水平轴翻 90° 后它的竖向尺寸换成横向尺寸 → 正好摊平成"横躺在地面上"✓
+		var axis_ang := _rng.randf_range(0.0, TAU)
+		_sec_axis[i] = Vector3(cos(axis_ang), 0.0, sin(axis_ang))
+		_sec_target[i] = _rng.randf_range(1.42, 1.56)          # 81°~89°
+		_sec_angle[i] = 0.0
+		_sec_spin[i] = _sec_target[i] / maxf(branch_rotate_time * _rng.randf_range(0.85, 1.15), 0.05)
 		if mi == null or mi.mesh == null:
-			_sec_full[i] = 1.0
+			_sec_floor[i] = 0.03
 			continue
-		# 各面的燃烧材质副本 → 段索引（_process 按段写它自己的 crumble）
+		# 各面的燃烧材质副本登记为"脱落段" → _process 让它们 crumble 恒为 0
+		#   （枝条靠**缩放**消失，不能在半空就被 shader 抠掉 ✓）
 		for s in range(mi.mesh.get_surface_count()):
 			var sm := mi.get_surface_override_material(s) as ShaderMaterial
 			if sm != null:
-				_sec_mat_idx[sm] = i
-		# ★ 每段"整根抠光"所需的 crumble：shader 的 discard 条件是 hk > 1 - crumble
-		#   （hk = VERTEX.y / height_ref，height_ref = 该网格 AABB 顶部）。
-		#   枝条本身悬在半空（AABB 底不是 0）→ 必须按它自己的高度区间缩放，
-		#   否则 crumble 还没到 1 就已经整根被抠光了 ✗
-		var ab: AABB = mi.mesh.get_aabb()
-		var top := ab.position.y + ab.size.y
-		if mi.has_meta("burn_height_ref"):
-			top = float(mi.get_meta("burn_height_ref"))
-		_sec_full[i] = clampf(1.0 - ab.position.y / maxf(top, 0.01), 0.15, 1.0)
+				_sec_mats[sm] = true
+		var m0 := global_transform.affine_inverse() * mi.global_transform
+		_sec_basis[i] = m0.basis
+		_sec_origin[i] = m0.origin
+		# 旋转支点 = 该层枝条包围盒中心（近似树干连接处）→ 像从树干上翻倒下来
+		_sec_pivot[i] = m0 * mi.mesh.get_aabb().get_center()
+		# ★ 采样顶点（控制器局部、原始姿态）：落地判定与"躺平高度"都要用它。
+		#   不能用 AABB 最低点 ✗：枝条网状展开后总有零星顶点垂到地面以下（如 -2.2），
+		#   用最低点会判成"一开始就已经落地" → 枝条原地不动就消失 ✗（用户实测 ✓）
+		var pts := PackedVector3Array()
+		var arr := mi.mesh.surface_get_arrays(0)
+		if arr.size() > 0:
+			var vs: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+			var stride := maxi(1, vs.size() / 360)
+			for vi in range(0, vs.size(), stride):
+				pts.append(m0 * vs[vi])
+		_sec_pts[i] = pts
+		# ★ 落地距离：取顶点高度的 **5% 分位**（控制器局部）
+		var floor_y := 0.03
+		if not pts.is_empty():
+			var ys := PackedFloat32Array()
+			ys.resize(pts.size())
+			for k in range(pts.size()):
+				ys[k] = pts[k].y
+			ys.sort()
+			floor_y = maxf(ys[clampi(int(ys.size() * 0.05), 0, ys.size() - 1)], 0.03)
+		_sec_floor[i] = floor_y
 
 
 ## 让第 i 段枝条脱离树干：复制一份**真实枝条网格**挂到控制器下，原节点隐藏。
@@ -1341,10 +1387,6 @@ func _detach_section(i: int) -> void:
 	# 原枝条在场景里没有自己的变换、顶点是**树空间**坐标 → 用它自己的 global_transform
 	# 乘上控制器逆变换，得到"控制器局部"的摆放（会带上主场景树的缩放 ✓）
 	var m0 := global_transform.affine_inverse() * mi.global_transform
-	var aabb: AABB = mi.mesh.get_aabb()
-	var mc := aabb.get_center()
-	var basis0 := m0.basis
-	var center := m0.origin + basis0 * mc
 	var dup := MeshInstance3D.new()
 	dup.name = "Fallen_%s" % String(mi.name)
 	dup.mesh = mi.mesh
@@ -1354,32 +1396,23 @@ func _detach_section(i: int) -> void:
 		if om == null:
 			continue
 		dup.set_surface_override_material(s, om)
-		# ★ 脱离后不再跟风摆（否则整根枝条会在空中"自己扭"）
+		# ★ 脱离后不再跟风摆（否则整层枝条会在空中"自己扭"）
 		var sm := om as ShaderMaterial
 		if sm != null and sm.shader != null:
 			sm.set_shader_parameter("wind_enabled", false)
-	dup.transform = Transform3D(basis0, m0.origin)
+	dup.transform = m0
 	add_child(dup)
 	mi.visible = false
 	_sec_dups[i] = dup
-	_sec_basis[i] = basis0
-	_sec_mesh_center[i] = mc
-	_sec_center[i] = center
-	_sec_aabb[i] = aabb
-	# 倒向：绕"水平切向轴"转 → 枝条顶端朝树外倒下
-	var out := Vector3(center.x, 0.0, center.z)
-	if out.length_squared() < 1e-4:
-		out = Vector3(_rng.randf_range(-1.0, 1.0), 0.0, _rng.randf_range(-1.0, 1.0))
-	out = out.normalized()
-	_sec_axis[i] = Vector3(out.z, 0.0, -out.x).normalized()
+	_sec_basis[i] = m0.basis
+	_sec_origin[i] = m0.origin
+	_sec_vel[i] = 0.0
+	_sec_drop[i] = 0.0
 	_sec_angle[i] = 0.0
-	_sec_spin[i] = _rng.randf_range(0.6, 1.6)
-	_sec_vel[i] = out * _rng.randf_range(0.05, 0.35) \
-			+ Vector3(0.0, -_rng.randf_range(0.1, 0.4), 0.0)
 	_sec_state[i] = SEC_FALL
 
 
-## 每帧推进崩毁枝条：待脱落 →（到点）脱离 → 自由落体 → 落地静置 → 原地崩碎消失。
+## 每帧推进崩毁枝条：待脱落 →（到点）脱离 → 边下落边翻滚 → 落地躺平 → 缓慢缩小消失。
 ## 参数 delta：帧间隔（秒）；elapsed：距崩毁开始的秒数。返回：无。
 ## 注意：所有运动都在**控制器局部坐标**里算（控制器就在树根处、无旋转缩放）。
 func _update_collapse_sections(delta: float, elapsed: float) -> void:
@@ -1399,57 +1432,90 @@ func _update_collapse_sections(delta: float, elapsed: float) -> void:
 		if dup == null or not is_instance_valid(dup):
 			_sec_state[i] = SEC_DEAD
 			continue
-		# 当前姿态：绕 **AABB 中心**旋转（枝条的 AABB 中心在高处，绕节点原点转会甩飞）
-		var nb := Basis(_sec_axis[i], _sec_angle[i]) * _sec_basis[i]
-		var origin := _sec_center[i] - nb * _sec_mesh_center[i]
 		if st == SEC_FALL:
-			_sec_vel[i].y -= branch_gravity * delta
-			var drag := clampf(1.0 - 0.9 * delta, 0.0, 1.0)
-			_sec_vel[i].x *= drag
-			_sec_vel[i].z *= drag
-			_sec_center[i] += _sec_vel[i] * delta
-			_sec_angle[i] += _sec_spin[i] * delta
-			nb = Basis(_sec_axis[i], _sec_angle[i]) * _sec_basis[i]
-			origin = _sec_center[i] - nb * _sec_mesh_center[i]
-			# 落地：用 AABB 8 角点旋转后的最低点判，避免"插进地里"或"悬空"
-			var low := _lowest_y(nb, origin, _sec_aabb[i])
-			if low <= 0.0:
-				origin.y -= low
-				_sec_center[i] = origin + nb * _sec_mesh_center[i]
-				_sec_vel[i] = Vector3.ZERO
-				_sec_spin[i] = 0.0
-				_sec_rest[i] = branch_rest_time
-				_sec_state[i] = SEC_REST
+			# ★ 物理下落：重力加速下降 + 绕**水平轴**翻滚（像从树干上翻倒下来）
+			_sec_vel[i] += branch_gravity * delta
+			_sec_drop[i] += _sec_vel[i] * delta
+			_sec_angle[i] = minf(_sec_angle[i] + _sec_spin[i] * delta, _sec_target[i])
+			var nb := Basis(_sec_axis[i], _sec_angle[i]) * _sec_basis[i]
+			var piv := _sec_pivot[i]
+			# 绕支点旋转 → 支点本身仍随下落一起下降
+			var origin := piv - nb * piv - Vector3(0.0, _sec_drop[i], 0.0)
 			dup.transform = Transform3D(nb, origin)
+			# ★ 落地要两个条件都满足：① 降到预定高度 ② 已经翻到接近"横躺"
+			if _sec_drop[i] >= _sec_floor[i] and _sec_angle[i] >= _sec_target[i] - 0.002:
+				_sec_land_b[i] = nb
+				_sec_land_o[i] = origin
+				# ★ 躺平高度：按**旋转后**顶点 y 的 5% 分位归到地面 0
+				#   —— 少量细枝略沉到地面以下被地面挡住，肉眼正好是"树枝压在土上"✓
+				_sec_land_y[i] = -_quantile_y(nb, _sec_pts[i], 0.05)
+				_sec_vel[i] = 0.0
+				_sec_rest[i] = 0.0
+				_sec_state[i] = SEC_REST
 			continue
 		if st == SEC_REST:
-			_sec_rest[i] -= delta
-			dup.transform = Transform3D(nb, origin)
-			if _sec_rest[i] <= 0.0:
+			# ★ 落定：branch_rest_time 内从"翻滚姿态"平滑压到地面上
+			#   ① origin.y 落到躺平高度（避免落地瞬间跳一下）
+			#   ② 同时竖向压扁（枝条互相挤压/折断，树冠摊成一堆）
+			var rest_dur := maxf(branch_rest_time, 0.01)
+			_sec_rest[i] = minf(_sec_rest[i] + delta, rest_dur)
+			var k := _sec_rest[i] / rest_dur
+			var eased := k * k * (3.0 - 2.0 * k)
+			var crush := lerpf(1.0, clampf(branch_crush, 0.05, 1.0), eased)
+			var o := _sec_land_o[i]
+			o.y = lerpf(o.y, _sec_land_y[i], eased)
+			var squash := Basis().scaled(Vector3(1.0, crush, 1.0))
+			dup.transform = Transform3D(squash * _sec_land_b[i], Vector3(o.x, o.y * crush, o.z))
+			if k >= 1.0:
+				# 压扁后的姿态就是最终"躺平"姿态 → 缩小阶段从它开始
+				_sec_land_b[i] = squash * _sec_land_b[i]
+				_sec_land_o[i] = Vector3(o.x, o.y * crush, o.z)
 				_sec_rest[i] = 0.0
-				_sec_state[i] = SEC_CRUMBLE
+				_sec_shrink_pivot[i] = _ground_center(
+						_sec_land_b[i], _sec_land_o[i], _sec_pts[i])
+				_sec_state[i] = SEC_SHRINK
 			continue
-		# SEC_CRUMBLE：用该段**自己的** crumble 从枝条顶部往下 discard 掉
+		# SEC_SHRINK：已经**横躺在地面上**之后再缓慢缩小消失
 		_sec_rest[i] += delta
-		var p := clampf(_sec_rest[i] / maxf(branch_crumble_time, 0.01), 0.0, 1.0)
-		_sec_crumble[i] = _sec_full[i] * p
-		dup.transform = Transform3D(nb, origin)
-		if p >= 1.0:
-			_sec_crumble[i] = _sec_full[i]
+		var p := clampf(_sec_rest[i] / maxf(branch_shrink_time, 0.01), 0.0, 1.0)
+		var s := 1.0 - p
+		if s <= 0.002:
 			dup.visible = false
 			_sec_state[i] = SEC_DEAD
+			continue
+		# 绕地面支点缩放（支点 y = 0）→ 整体始终压在地面上，不会悬空/陷地
+		var land_b := _sec_land_b[i]
+		var land_o := _sec_land_o[i]
+		var piv2 := _sec_shrink_pivot[i]
+		dup.transform = Transform3D(land_b.scaled(Vector3.ONE * s),
+				piv2 + (land_o - piv2) * s)
 
 
-## 8 个 AABB 角点经 basis + origin 变换后的最低 y（判落地用）。
-func _lowest_y(basis: Basis, origin: Vector3, aabb: AABB) -> float:
-	var lowest := INF
-	for i in range(8):
-		var c := aabb.position + Vector3(
-				aabb.size.x if (i & 1) != 0 else 0.0,
-				aabb.size.y if (i & 2) != 0 else 0.0,
-				aabb.size.z if (i & 4) != 0 else 0.0)
-		lowest = minf(lowest, (origin + basis * c).y)
-	return lowest
+## 采样顶点按 basis 旋转后，y 的 q 分位值（判"枝条整体躺到地面上"用）。
+## 参数 basis：旋转后的姿态；pts：控制器局部采样顶点；q：分位（0~1）。
+func _quantile_y(basis: Basis, pts: PackedVector3Array, q: float) -> float:
+	if pts.is_empty():
+		return 0.0
+	var ys := PackedFloat32Array()
+	ys.resize(pts.size())
+	for i in range(pts.size()):
+		var p := pts[i]
+		ys[i] = basis.x.y * p.x + basis.y.y * p.y + basis.z.y * p.z
+	ys.sort()
+	return ys[clampi(int(ys.size() * q), 0, ys.size() - 1)]
+
+
+## 落地后枝条在**地面上**的水平中心（缩小支点；y 固定为 0）。
+func _ground_center(basis: Basis, origin: Vector3, pts: PackedVector3Array) -> Vector3:
+	if pts.is_empty():
+		return Vector3(origin.x, 0.0, origin.z)
+	var sx := 0.0
+	var sz := 0.0
+	for p in pts:
+		var w := basis * p + origin
+		sx += w.x
+		sz += w.z
+	return Vector3(sx / pts.size(), 0.0, sz / pts.size())
 
 
 ## 所有崩毁枝条都结束了吗？（收尾判断用；没有枝条时视为已结束）
