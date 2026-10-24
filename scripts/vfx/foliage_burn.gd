@@ -1,4 +1,4 @@
-extends Node3D
+﻿extends Node3D
 ## 植被燃烧控制器 —— 把「burn_foliage」材质贴到一株花草树木上，并跑完整段燃烧：
 ##   ① 斑点扩大（burn 0->1）② 焦黑停留 ③ 灰化消失（ash 0->1，然后隐藏）
 ##
@@ -756,6 +756,9 @@ func _drive_multimesh_burn(bt: float, hold: float, at: float) -> bool:
 		var mmi := e["mmi"] as MultiMeshInstance3D
 		if mmi == null or not is_instance_valid(mmi) or mmi.multimesh == null:
 			continue
+		# ★ 已经彻底结束的实例不要每帧重复写同一个颜色（长时挂机时会白烧一整片算力）✗
+		if bool(e.get("done", false)):
+			continue
 		var lt: float = _t - float(e["delay"])
 		var b := 0.0
 		var a := 0.0
@@ -763,35 +766,49 @@ func _drive_multimesh_burn(bt: float, hold: float, at: float) -> bool:
 			b = clampf(lt / maxf(bt, 0.01), 0.0, 1.0)
 			if lt > bt + hold:
 				a = clampf((lt - bt - hold) / maxf(at, 0.01), 0.0, 1.0)
-		if a >= 1.0:
-			# ★ 烧透之后怎么办 —— 三种取舍得说清：
-			#   · 清零           -> 草"瞬间又冒出来"（用户反馈过：消失又出现）
-			#   · 永久保持烧毁   -> 同一位置第二次烧就"没草可烧"，看着像没效果
-			#     （用户反馈过：连变黑都没有了 —— 多半就是上一轮烧掉的还没恢复）
-			#   所以默认：先保持烧毁状态，再**缓缓长回来**（regrow_time 秒）。
-			if regrow_time <= 0.0:
-				mmi.multimesh.set_instance_custom_data(int(e["i"]),
-						Color(1.0, 1.0, float(e["phase"]), 0.0))     # 永久烧毁
-				e["done"] = true
-			else:
-				if not e.has("done_t"):
-					e["done_t"] = _t
-				var rt: float = _t - float(e["done_t"])
-				if rt >= regrow_time:
-					mmi.multimesh.set_instance_custom_data(int(e["i"]),
-							Color(0.0, 0.0, float(e["phase"]), 0.0))  # 完全长回
-					e["done"] = true
-				else:
-					var k := rt / regrow_time
-					# ★ 长回阶段 **burn 固定为 0**：草是"正常的绿草在长大"，
-					#   不能还带着焦黑和火光（用户明确要求）。只用 ash 驱动缩放。
-					mmi.multimesh.set_instance_custom_data(int(e["i"]),
-							Color(0.0, 1.0 - k, float(e["phase"]), 0.0))
-					all_done = false
-		else:
+		if a < 1.0:
+			all_done = false
+			# ★★ 性能（用户实测"草地点燃卡"）：实例进度量化到 1/64（肉眼不可见），
+			#   只有跨档才真正写 MultiMesh —— 静置/保持阶段进度不变 → 一次都不写 ✓
+			#   老实现每帧对**每个**实例 set_instance_custom_data，几千株草就是几千次跨绑定调用 ✗
+			var qb := int(b * 64.0 + 0.5)
+			var qa := int(a * 64.0 + 0.5)
+			if int(e.get("qb", -1)) == qb and int(e.get("qa", -1)) == qa:
+				continue
+			e["qb"] = qb
+			e["qa"] = qa
 			mmi.multimesh.set_instance_custom_data(int(e["i"]),
 					Color(b, a, float(e["phase"]), 0.0))
-			all_done = false
+			continue
+		# ★ 烧透之后怎么办 —— 三种取舍得说清：
+		#   · 清零           -> 草"瞬间又冒出来"（用户反馈过：消失又出现）
+		#   · 永久保持烧毁   -> 同一位置第二次烧就"没草可烧"，看着像没效果
+		#     （用户反馈过：连变黑都没有了 —— 多半就是上一轮烧掉的还没恢复）
+		#   所以默认：先保持烧毁状态，再**缓缓长回来**（regrow_time 秒）。
+		if regrow_time <= 0.0:
+			mmi.multimesh.set_instance_custom_data(int(e["i"]),
+					Color(1.0, 1.0, float(e["phase"]), 0.0))     # 永久烧毁
+			e["done"] = true
+		else:
+			if not e.has("done_t"):
+				e["done_t"] = _t
+			var rt: float = _t - float(e["done_t"])
+			if rt >= regrow_time:
+				mmi.multimesh.set_instance_custom_data(int(e["i"]),
+						Color(0.0, 0.0, float(e["phase"]), 0.0))  # 完全长回
+				e["done"] = true
+			else:
+				all_done = false
+				var k := rt / regrow_time
+				# ★ 长回阶段 **burn 固定为 0**：草是"正常的绿草在长大"，
+				#   不能还带着焦黑和火光（用户明确要求）。只用 ash 驱动缩放。
+				#   同样做量化：只在"长回进度"跨档时写 ✓
+				var qk := int((1.0 - k) * 64.0 + 0.5)
+				if int(e.get("qk", -1)) == qk:
+					continue
+				e["qk"] = qk
+				mmi.multimesh.set_instance_custom_data(int(e["i"]),
+						Color(0.0, 1.0 - k, float(e["phase"]), 0.0))
 	return all_done
 
 
@@ -875,7 +892,10 @@ func _apply_in_shader_burn() -> void:
 				top = ab.position.y + ab.size.y
 			if top > 0.05:
 				dup.set_shader_parameter("height_ref", top)
-				print("[燃烧] 自动量高 ✓ height_ref = %.2f 米（%s）" % [top, mi.name])
+				# ★ 性能：整棵树 20+ 个网格 × 每个 surface 都打印一次，点燃瞬间刷屏很贵 ✗
+				#   只在 debug_burn 打开时输出 ✓
+				if debug_burn:
+					print("[燃烧] 自动量高 ✓ height_ref = %.2f 米（%s）" % [top, mi.name])
 			dup.set_shader_parameter("burn", 0.0)
 			dup.set_shader_parameter("ash", 0.0)
 			dup.set_shader_parameter("burn_phase", _phase)
@@ -1041,10 +1061,17 @@ func _collect_surface_points() -> void:
 	_surface.clear()
 	var want := maxi(spark_count * 6, 24)
 	for mi in _meshes:
+		# ★ 性能（用户实测点燃卡顿）：采样点够用了就别再碰后面的网格 ✗
+		#   surface_get_arrays() 会把整个 surface 的顶点全量拷一份（几十万顶点），
+		#   预算已满还继续取数组纯属浪费 ✓
+		if _surface.size() >= want:
+			break
 		if mi.mesh == null:
 			continue
 		var xf := mi.global_transform
 		for s in range(mi.mesh.get_surface_count()):
+			if _surface.size() >= want:
+				break
 			var arrays := mi.mesh.surface_get_arrays(s)
 			if arrays.is_empty():
 				continue
@@ -1139,6 +1166,9 @@ func _build_sparks() -> void:
 func _process(delta: float) -> void:
 	if _done or _target == null or not is_instance_valid(_target):
 		return
+	# ★ 崩毁枝条拆分：点燃后按帧预算补完（不占点燃那一帧），崩毁前早已就绪 ✓
+	if not _cs_ready:
+		_step_collapse_sections()
 	_t += delta
 	if _t < 0.0:
 		return
@@ -1209,7 +1239,8 @@ func _process(delta: float) -> void:
 		_mat.set_shader_parameter("burn", burn)
 		_mat.set_shader_parameter("ash", ash)
 	# ★ 崩毁枝条：L5→L1 依次脱落 → 边下落边翻滚 → 落地压平躺好 → 缓慢缩小消失
-	if collapsing:
+	#   ★ 拆分还没补完时（极罕见，正常 18 s 的燃烧期早就够）先不推进，等它就绪 ✓
+	if collapsing and _cs_ready:
 		_update_collapse_sections(delta, _t - burn_time - char_hold)
 	_update_sparks(delta, burn)
 	# 只有"叠加层/材质内建 burn"两条路线会走到这里收尾；逐实例路线已在上面 return。
@@ -1285,6 +1316,10 @@ func _branch_level(n: String) -> int:
 ## ★ 为什么必须拆：Bark_Branch_L5 这种一层在场景里只有**一个**网格 → 整层是一个刚体，
 ##   不拆的话同层所有枝条会同时掉、同时崩（用户实测反馈"L5 是同时掉落崩毁的，不合理"）。
 ## 只在"树木 + 开启崩毁"时有意义；其它目标一律留空 → 崩毁仍走原来的高度序。
+## ★★ 性能（用户实测"树点燃的那一刻非常卡"）：整树 462 根枝条的拆分一次性做完要 ~100 ms
+##   （主要耗在逐根 add_surface_from_arrays）→ **不能卡在点燃那一帧** ✗
+##   而这些拆分结果要到 burn_time（默认 18 s）之后崩毁才用得上 ✓
+##   → 这里只做"清表 + 排层"，真正的拆分交给 _process 每帧按预算补完（见 _step_collapse_sections）✓
 func _build_collapse_sections() -> void:
 	_sec_src.clear()
 	_sec_layer.resize(0)
@@ -1311,25 +1346,244 @@ func _build_collapse_sections() -> void:
 	_sec_land_o.resize(0)
 	_sec_shrink_pivot.resize(0)
 	_sec_spawned = false
+	_cs_layers.clear()
+	_cs_layer_i = 0
+	_cs_part_i = 0
+	_cs_layer_prepared = false
+	_cs_ready = false
+	_cs_arrays = []
+	_cs_groups.clear()
+	_cs_mat = null
 	if not _is_tree or collapse_time <= 0.0:
+		_cs_ready = true
 		return
-	var layers: Array[MeshInstance3D] = []
 	for mi in _meshes:
 		if mi == null or not is_instance_valid(mi):
 			continue
 		if String(mi.name).begins_with("Bark_Branch_L"):
-			layers.append(mi)
+			_cs_layers.append(mi)
 	# ★ 优先脱落顺序固定为 L5 → L4 → L3 → L2 → L1（按名字里的层号降序）
-	layers.sort_custom(func(a: MeshInstance3D, b: MeshInstance3D) -> bool:
+	_cs_layers.sort_custom(func(a: MeshInstance3D, b: MeshInstance3D) -> bool:
 		return _branch_level(String(a.name)) > _branch_level(String(b.name)))
-	for mi in layers:
-		_collect_layer_parts(mi)
+	if _cs_layers.is_empty():
+		_cs_ready = true
+		return
+	# 点燃这一帧只做第一小步（受预算限制），剩下的由 _process 逐帧补完
+	_step_collapse_sections()
+
+
+## 崩毁拆分的**增量构建**状态（index = 层 / 层内枝条）。
+## ★ 每帧只花 _cs_budget_usec 微秒，直到 _cs_ready = true；崩毁开始前一定早就完成 ✓
+var _cs_layers: Array[MeshInstance3D] = []
+var _cs_layer_i := 0
+var _cs_part_i := 0
+var _cs_layer_prepared := false
+var _cs_ready := false
+var _cs_arrays: Array = []                    ## 当前层的原始 surface arrays
+var _cs_groups: Array[PackedInt32Array] = []  ## 当前层拆出的每根枝条三角形表
+var _cs_m0 := Transform3D()
+var _cs_lv := 0
+var _cs_mat: Material = null
+var _cs_custom := 0
+
+## 每帧给崩毁拆分的时间预算（微秒）。60 fps 一帧 16.6 ms → 3.5 ms 占 ~21%，体感无感 ✓
+const CS_BUDGET_USEC := 3500
+
+
+## 按时间预算推进崩毁拆分；完成时排"层内随机"的脱落时刻并置 _cs_ready。
+func _step_collapse_sections(budget_usec: int = CS_BUDGET_USEC) -> void:
+	if _cs_ready:
+		return
+	var t0 := Time.get_ticks_usec()
+	while _cs_layer_i < _cs_layers.size():
+		if not _cs_layer_prepared:
+			if _prepare_layer_parts(_cs_layers[_cs_layer_i]):
+				_cs_layer_prepared = true
+			else:
+				_cs_layer_i += 1
+				_cs_part_i = 0
+				continue
+		while _cs_part_i < _cs_groups.size():
+			_make_layer_part(_cs_groups[_cs_part_i])
+			_cs_part_i += 1
+			if Time.get_ticks_usec() - t0 >= budget_usec:
+				return
+		# 本层拆完 → 换下一层（释放这一层的中间数组）
+		_cs_layer_i += 1
+		_cs_part_i = 0
+		_cs_layer_prepared = false
+		_cs_arrays = []
+		_cs_groups.clear()
+		_cs_mat = null
+	_finalize_collapse_times()
+
+
+## 预处理一整层：并查集把三角形按**连通分量**分组（每根枝条一组）。
+## 参数 mi：该层 MeshInstance3D。返回：true = 拆出了至少一根枝条。
+func _prepare_layer_parts(mi: MeshInstance3D) -> bool:
+	_cs_groups.clear()
+	_cs_arrays = []
+	if mi == null or not is_instance_valid(mi) or mi.mesh == null:
+		return false
+	if mi.mesh.get_surface_count() <= 0:
+		return false
+	_cs_arrays = mi.mesh.surface_get_arrays(0)
+	if _cs_arrays.is_empty():
+		return false
+	var verts: PackedVector3Array = _cs_arrays[Mesh.ARRAY_VERTEX]
+	if verts.is_empty():
+		return false
+	var tris: PackedInt32Array = _cs_arrays[Mesh.ARRAY_INDEX]
+	if tris.is_empty():
+		# 无索引网格：按 0,1,2 / 3,4,5 ... 当三角形
+		tris.resize(verts.size())
+		for i in range(verts.size()):
+			tris[i] = i
+	var vcount := verts.size()
+	var tcount := tris.size() / 3
+	# ★★ 并查集：共享顶点的三角形属于同一根枝条。
+	#   性能（实测）：原来每根三角形要 4 次 GDScript 函数调用 + Array[int] 装箱，
+	#   L3 一层就 24 ms ✗ → 改成 **PackedInt32Array + 完全内联 + 路径减半** ✓
+	var parent := PackedInt32Array()
+	parent.resize(vcount)
+	for i in range(vcount):
+		parent[i] = i
+	for ti in range(tcount):
+		var base := ti * 3
+		var a := tris[base]
+		var b := tris[base + 1]
+		var c := tris[base + 2]
+		while parent[a] != a:
+			parent[a] = parent[parent[a]]
+			a = parent[a]
+		while parent[b] != b:
+			parent[b] = parent[parent[b]]
+			b = parent[b]
+		if a != b:
+			parent[b] = a
+		while parent[c] != c:
+			parent[c] = parent[parent[c]]
+			c = parent[c]
+		if a != c:
+			parent[c] = a
+	# 统计每根枝条的三角形数（同时把每根三角形归到"槽号"）
+	var tri_root := PackedInt32Array()
+	tri_root.resize(tcount)
+	var slot_of := {}
+	var counts := PackedInt32Array()
+	for ti in range(tcount):
+		var a := tris[ti * 3]
+		while parent[a] != a:
+			parent[a] = parent[parent[a]]
+			a = parent[a]
+		tri_root[ti] = a
+		var slot: int = slot_of.get(a, -1)
+		if slot < 0:
+			slot = counts.size()
+			slot_of[a] = slot
+			counts.append(0)
+		counts[slot] += 1
+	# 按槽号算偏移，把三角形下标一次性铺进一个大数组，再切片（避免逐根数组反复复制 ✗）
+	var n_slot := counts.size()
+	var offsets := PackedInt32Array()
+	offsets.resize(n_slot + 1)
+	var acc := 0
+	for s in range(n_slot):
+		offsets[s] = acc
+		acc += counts[s]
+	offsets[n_slot] = acc
+	var cursor := PackedInt32Array()
+	cursor.resize(n_slot)
+	for s in range(n_slot):
+		cursor[s] = offsets[s]
+	var flat := PackedInt32Array()
+	flat.resize(tcount * 3)
+	for ti in range(tcount):
+		var slot2: int = slot_of[tri_root[ti]]
+		var at := cursor[slot2] * 3
+		cursor[slot2] += 1
+		var base2 := ti * 3
+		flat[at] = tris[base2]
+		flat[at + 1] = tris[base2 + 1]
+		flat[at + 2] = tris[base2 + 2]
+	for s in range(n_slot):
+		_cs_groups.append(flat.slice(offsets[s] * 3, offsets[s + 1] * 3))
+	_cs_lv = _branch_level(String(mi.name))
+	_cs_m0 = global_transform.affine_inverse() * mi.global_transform
+	_cs_mat = _make_part_material(mi)
+	# ★ fast-tree 风摆移植：CUSTOM0~2 是每顶点 4 个 float，必须显式声明 RGBA_FLOAT，
+	#   否则 add_surface_from_arrays 按默认 RGBA8 去要 PackedByteArray → surface 建不出来
+	_cs_custom = 0
+	if _cs_arrays[Mesh.ARRAY_CUSTOM0] != null:
+		_cs_custom |= (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT)
+	if _cs_arrays[Mesh.ARRAY_CUSTOM1] != null:
+		_cs_custom |= (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM1_SHIFT)
+	if _cs_arrays[Mesh.ARRAY_CUSTOM2] != null:
+		_cs_custom |= (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM2_SHIFT)
+	if _cs_arrays[Mesh.ARRAY_CUSTOM3] != null:
+		_cs_custom |= (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM3_SHIFT)
+	return not _cs_groups.is_empty()
+
+
+## 把一根枝条（三角形表）做成独立网格并登记到崩毁清单。
+## 参数 tri_idx：该根枝条的三角形索引（3 个顶点下标一组）。
+func _make_layer_part(tri_idx: PackedInt32Array) -> void:
+	var mi := _cs_layers[_cs_layer_i]
+	var m0 := _cs_m0
+	var part_arrays := _compact_arrays(_cs_arrays, tri_idx)
+	if part_arrays.is_empty():
+		return
+	var part := ArrayMesh.new()
+	part.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, part_arrays, [], {}, _cs_custom)
+	if part.get_surface_count() == 0:
+		return
+	var pv: PackedVector3Array = part_arrays[Mesh.ARRAY_VERTEX]
+	var ab := _aabb_of(pv)
+	# ★ 该根枝条要落多远才碰地 = 原始姿态下最低顶点离地高度（地面 = 控制器局部 y 0）
+	#   本来就有枝梢在地面以下 → 按 0 处理（原地翻倒，不再往下沉）✓
+	var low := INF
+	for v in pv:
+		low = minf(low, (m0 * v).y)
+	# ★ 旋转支点放在该根枝条的**下沿中心**：绕下沿翻倒 = 从被支撑处砸下来 ✓
+	#   绕中心转会有一半枝条往上甩 → 看起来像"突然往上一弹"✗（用户实测反馈）
+	var piv := Vector3(ab.get_center().x, ab.position.y, ab.get_center().z)
+	_sec_src.append(mi)
+	_sec_layer.append(_cs_lv)
+	_sec_part_mesh.append(part)
+	_sec_part_mat.append(_cs_mat)
+	_sec_dups.append(null)
+	_sec_state.append(SEC_WAIT)
+	_sec_t.append(0.0)
+	_sec_rest.append(0.0)
+	_sec_vel.append(0.0)
+	_sec_drop.append(0.0)
+	_sec_floor.append(maxf(low, 0.0))
+	_sec_basis.append(m0.basis)
+	_sec_origin.append(m0.origin)
+	_sec_pivot_local.append(piv)
+	_sec_pivot.append(m0 * piv)
+	_sec_pts.append(pv)
+	_sec_land_b.append(m0.basis)
+	_sec_land_o.append(m0.origin)
+	_sec_shrink_pivot.append(m0.origin)
+	# ★ 翻滚：随机水平轴 + 约 90°（树干上的枝条翻倒后正好横躺在地面上）✓
+	var axis_ang := _rng.randf_range(0.0, TAU)
+	_sec_axis.append(Vector3(cos(axis_ang), 0.0, sin(axis_ang)))
+	_sec_angle.append(0.0)
+	var tgt := _rng.randf_range(1.42, 1.56)          # 81°~89°
+	_sec_target.append(tgt)
+	_sec_spin.append(tgt / maxf(branch_rotate_time * _rng.randf_range(0.85, 1.15), 0.05))
+
+
+## 全部枝条拆完后：给每根排"层内随机"的脱落时刻，并放行崩毁。
+## ★ 脱落窗口：collapse_time 的前 branch_fall_window 比例内全部脱完。
+##   **按层分窗**（每层窗宽 ∝ 该层枝条数）→ 保证 L5 的所有枝条都比 L4 早，
+##   层的先后优先级不被随机破坏 ✓；层内每根再各取随机时刻 → 不再"整层同时掉"✓
+func _finalize_collapse_times() -> void:
+	_cs_ready = true
 	var n := _sec_state.size()
 	if n == 0:
 		return
-	# ★ 脱落窗口：collapse_time 的前 branch_fall_window 比例内全部脱完。
-	#   **按层分窗**（每层窗宽 ∝ 该层枝条数）→ 保证 L5 的所有枝条都比 L4 早，
-	#   层的先后优先级不被随机破坏 ✓；层内每根再各取随机时刻 → 不再"整层同时掉"✓
 	var window := maxf(collapse_time * clampf(branch_fall_window, 0.05, 1.0), 0.01)
 	var acc := 0.0
 	var i := 0
@@ -1343,105 +1597,6 @@ func _build_collapse_sections() -> void:
 			_sec_t[k] = acc + _rng.randf_range(0.0, span * 0.98)
 		acc += span
 		i = j
-
-
-## 把一整层枝条网格（如 Bark_Branch_L5）按**连通分量**拆成一根一根，逐根登记到崩毁清单。
-## 参数 mi：该层 MeshInstance3D。返回：无。
-## 注意：枝条网格是单 surface、顶点属性含 CUSTOM0~2（风摆权重）→ 拆分时原样搬运。
-func _collect_layer_parts(mi: MeshInstance3D) -> void:
-	if mi.mesh == null or mi.mesh.get_surface_count() <= 0:
-		return
-	var arrays := mi.mesh.surface_get_arrays(0)
-	if arrays.is_empty():
-		return
-	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-	if verts.is_empty():
-		return
-	var tris: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
-	if tris.is_empty():
-		# 无索引网格：按 0,1,2 / 3,4,5 ... 当三角形
-		tris.resize(verts.size())
-		for i in range(verts.size()):
-			tris[i] = i
-	# 并查集：共享顶点的三角形属于同一根枝条
-	# ★ 用 Array[int]（引用类型）而不是 PackedInt32Array：后者在函数参数里的
-	#   写回语义不可靠 → union 结果会丢，拆出来变成几千个退化小面 ✗
-	var parent: Array[int] = []
-	parent.resize(verts.size())
-	for i in range(verts.size()):
-		parent[i] = i
-	for t in range(0, tris.size() - 2, 3):
-		_uf_union(parent, tris[t], tris[t + 1])
-		_uf_union(parent, tris[t], tris[t + 2])
-	# 三角形按"根"分组（每根枝条一个三角形表）
-	var groups := {}
-	for t in range(0, tris.size() - 2, 3):
-		var r := _uf_find(parent, tris[t])
-		if not groups.has(r):
-			groups[r] = PackedInt32Array()
-		var tl: PackedInt32Array = groups[r]
-		tl.append(tris[t])
-		tl.append(tris[t + 1])
-		tl.append(tris[t + 2])
-		groups[r] = tl                    # Packed*Array 是值类型 → 取出来改完必须写回
-	var lv := _branch_level(String(mi.name))
-	var m0 := global_transform.affine_inverse() * mi.global_transform
-	var mat := _make_part_material(mi)
-	for key in groups.keys():
-		var part_arrays := _compact_arrays(arrays, groups[key])
-		if part_arrays.is_empty():
-			continue
-		var part := ArrayMesh.new()
-		# ★ fast-tree 风摆移植：CUSTOM0~2 是每顶点 4 个 float，必须显式声明 RGBA_FLOAT，
-		#   否则 add_surface_from_arrays 按默认 RGBA8 去要 PackedByteArray → surface 建不出来
-		var custom_flags := 0
-		if arrays[Mesh.ARRAY_CUSTOM0] != null:
-			custom_flags |= (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT)
-		if arrays[Mesh.ARRAY_CUSTOM1] != null:
-			custom_flags |= (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM1_SHIFT)
-		if arrays[Mesh.ARRAY_CUSTOM2] != null:
-			custom_flags |= (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM2_SHIFT)
-		if arrays[Mesh.ARRAY_CUSTOM3] != null:
-			custom_flags |= (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM3_SHIFT)
-		part.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, part_arrays, [], {}, custom_flags)
-		if part.get_surface_count() == 0:
-			continue
-		var pv: PackedVector3Array = part_arrays[Mesh.ARRAY_VERTEX]
-		var ab := _aabb_of(pv)
-		# ★ 该根枝条要落多远才碰地 = 原始姿态下最低顶点离地高度（地面 = 控制器局部 y 0）
-		#   本来就有枝梢在地面以下 → 按 0 处理（原地翻倒，不再往下沉）✓
-		var low := INF
-		for v in pv:
-			low = minf(low, (m0 * v).y)
-		# ★ 旋转支点放在该根枝条的**下沿中心**：绕下沿翻倒 = 从被支撑处砸下来 ✓
-		#   绕中心转会有一半枝条往上甩 → 看起来像"突然往上一弹"✗（用户实测反馈）
-		var piv := Vector3(ab.get_center().x, ab.position.y, ab.get_center().z)
-		_sec_src.append(mi)
-		_sec_layer.append(lv)
-		_sec_part_mesh.append(part)
-		_sec_part_mat.append(mat)
-		_sec_dups.append(null)
-		_sec_state.append(SEC_WAIT)
-		_sec_t.append(0.0)
-		_sec_rest.append(0.0)
-		_sec_vel.append(0.0)
-		_sec_drop.append(0.0)
-		_sec_floor.append(maxf(low, 0.0))
-		_sec_basis.append(m0.basis)
-		_sec_origin.append(m0.origin)
-		_sec_pivot_local.append(piv)
-		_sec_pivot.append(m0 * piv)
-		_sec_pts.append(pv)
-		_sec_land_b.append(m0.basis)
-		_sec_land_o.append(m0.origin)
-		_sec_shrink_pivot.append(m0.origin)
-		# ★ 翻滚：随机水平轴 + 约 90°（树干上的枝条翻倒后正好横躺在地面上）✓
-		var axis_ang := _rng.randf_range(0.0, TAU)
-		_sec_axis.append(Vector3(cos(axis_ang), 0.0, sin(axis_ang)))
-		_sec_angle.append(0.0)
-		var tgt := _rng.randf_range(1.42, 1.56)          # 81°~89°
-		_sec_target.append(tgt)
-		_sec_spin.append(tgt / maxf(branch_rotate_time * _rng.randf_range(0.85, 1.15), 0.05))
 
 
 ## 给一整层枝条做一份材质副本：**关掉风摆** + crumble 恒 0（靠缩放消失，不能被 shader 抠掉）。
@@ -1467,22 +1622,6 @@ func _make_part_material(mi: MeshInstance3D) -> Material:
 	return dup
 
 
-## 并查集查根。
-func _uf_find(parent: Array[int], x: int) -> int:
-	var r := x
-	while parent[r] != r:
-		r = parent[r]
-	return r
-
-
-## 并查集合并。
-func _uf_union(parent: Array[int], a: int, b: int) -> void:
-	var ra := _uf_find(parent, a)
-	var rb := _uf_find(parent, b)
-	if ra != rb:
-		parent[rb] = ra
-
-
 ## 顶点集合的包围盒。
 func _aabb_of(verts: PackedVector3Array) -> AABB:
 	if verts.is_empty():
@@ -1496,21 +1635,22 @@ func _aabb_of(verts: PackedVector3Array) -> AABB:
 
 
 ## 只保留 tri_idx 用到的顶点，重建一份紧凑的顶点属性数组（重复顶点合并到同一新下标）。
-## 写法参考 scripts/world/canopy_chunk_cull.gd（那边已踩过 TANGENT/CUSTOM 的 stride 坑）。
+## ★ 性能要点：**只按"用到的顶点表"复制**，不要对每根枝条再扫一遍整层顶点
+##   （那样是 O(枝条数 × 整层顶点数)，实测单棵树要 600 ms ✗）。
 func _compact_arrays(arrays: Array, tri_idx: PackedInt32Array) -> Array:
 	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 	var remap := PackedInt32Array()
 	remap.resize(verts.size())
 	remap.fill(-1)
+	var order := PackedInt32Array()           # 新下标 -> 原下标
 	var new_index := PackedInt32Array()
 	new_index.resize(tri_idx.size())
-	var used := 0
 	for i in range(tri_idx.size()):
 		var old := tri_idx[i]
 		var to := remap[old]
 		if to < 0:
-			to = used
-			used += 1
+			to = order.size()
+			order.append(old)
 			remap[old] = to
 		new_index[i] = to
 	var out: Array = []
@@ -1522,50 +1662,45 @@ func _compact_arrays(arrays: Array, tri_idx: PackedInt32Array) -> Array:
 		if a == Mesh.ARRAY_INDEX:
 			out[a] = new_index
 			continue
-		var built: Variant = _remap_attr(v, remap, used, verts.size())
+		var built: Variant = _remap_attr(v, order, verts.size())
 		if built == null:
 			return []
 		out[a] = built
 	return out
 
 
-## 把一种顶点属性数组按 remap 重排成 used 个元素。
+## 把一种顶点属性数组按 order（新下标 -> 原下标）压缩成紧凑数组。
 ## ★ 注意 stride：TANGENT / WEIGHTS / CUSTOM0..3 是**每顶点 4 个 float**，
 ##   BONES 是每顶点 4 个 int，其余是 1:1（按 1:1 处理会长度不匹配）。
 ## 参数 vcount：原网格顶点数（用来反推 stride）。
-func _remap_attr(v: Variant, remap: PackedInt32Array, used: int, vcount: int) -> Variant:
+func _remap_attr(v: Variant, order: PackedInt32Array, vcount: int) -> Variant:
+	var n_out := order.size()
 	if v is PackedVector3Array:
 		var src := v as PackedVector3Array
 		if src.size() != vcount:
 			return null
 		var dst := PackedVector3Array()
-		dst.resize(used)
-		for old in range(remap.size()):
-			var n := remap[old]
-			if n >= 0:
-				dst[n] = src[old]
+		dst.resize(n_out)
+		for n in range(n_out):
+			dst[n] = src[order[n]]
 		return dst
 	if v is PackedVector2Array:
 		var src2 := v as PackedVector2Array
 		if src2.size() != vcount:
 			return null
 		var dst2 := PackedVector2Array()
-		dst2.resize(used)
-		for old in range(remap.size()):
-			var n2 := remap[old]
-			if n2 >= 0:
-				dst2[n2] = src2[old]
+		dst2.resize(n_out)
+		for n in range(n_out):
+			dst2[n] = src2[order[n]]
 		return dst2
 	if v is PackedColorArray:
 		var src3 := v as PackedColorArray
 		if src3.size() != vcount:
 			return null
 		var dst3 := PackedColorArray()
-		dst3.resize(used)
-		for old in range(remap.size()):
-			var n3 := remap[old]
-			if n3 >= 0:
-				dst3[n3] = src3[old]
+		dst3.resize(n_out)
+		for n in range(n_out):
+			dst3[n] = src3[order[n]]
 		return dst3
 	if v is PackedFloat32Array:
 		var src4 := v as PackedFloat32Array
@@ -1573,12 +1708,12 @@ func _remap_attr(v: Variant, remap: PackedInt32Array, used: int, vcount: int) ->
 			return null
 		var stride := src4.size() / vcount
 		var dst4 := PackedFloat32Array()
-		dst4.resize(used * stride)
-		for old in range(remap.size()):
-			var n4 := remap[old]
-			if n4 >= 0:
-				for k in range(stride):
-					dst4[n4 * stride + k] = src4[old * stride + k]
+		dst4.resize(n_out * stride)
+		for n in range(n_out):
+			var o := order[n] * stride
+			var d := n * stride
+			for k in range(stride):
+				dst4[d + k] = src4[o + k]
 		return dst4
 	if v is PackedInt32Array:
 		var src5 := v as PackedInt32Array
@@ -1586,12 +1721,12 @@ func _remap_attr(v: Variant, remap: PackedInt32Array, used: int, vcount: int) ->
 			return null
 		var stride5 := src5.size() / vcount
 		var dst5 := PackedInt32Array()
-		dst5.resize(used * stride5)
-		for old in range(remap.size()):
-			var n5 := remap[old]
-			if n5 >= 0:
-				for k in range(stride5):
-					dst5[n5 * stride5 + k] = src5[old * stride5 + k]
+		dst5.resize(n_out * stride5)
+		for n in range(n_out):
+			var o5 := order[n] * stride5
+			var d5 := n * stride5
+			for k in range(stride5):
+				dst5[d5 + k] = src5[o5 + k]
 		return dst5
 	return null
 

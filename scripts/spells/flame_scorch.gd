@@ -715,7 +715,8 @@ func _find_vegetation() -> Array:
 			continue
 		if not _node_touches_circle(n as Node3D):
 			continue
-		var p := (n as Node3D).global_position
+		# ★ 距离只算一次：MultiMesh 的 _node_distance 要走块扫描（老实现这里会再扫一遍 ✗）。
+		#   有了 _scan_cache 之后重复调用也只会命中缓存，但少算一次总是好的 ✓
 		hits.append({"n": n, "d": _node_distance(n as Node3D)})
 	hits.sort_custom(func(a, b): return float(a["d"]) < float(b["d"]))
 	for h in hits:
@@ -749,15 +750,28 @@ func _find_vegetation() -> Array:
 ##   会被 VEG_MAX(12) 个名额挤掉 —— 实测诊断：组里 836、圈内 63，点燃的 12 个
 ##   全是个体道具，草丛一个没轮到。
 ## MultiMesh 的**块索引**：把实例按 cell 米见方的格子归类；查询时**先筛块、再看块内**。
-## 键 = MultiMesh 实例 id；值 = {cell, count, blocks:{Vector2i -> Array[实例下标]}}
+## 键 = MultiMesh 实例 id；值 = {cell, count, pos, blocks:{Vector2i -> PackedInt32Array[实例下标]}}
 ## 补充说明：键用的是 MultiMesh 的**实例 id**（mm.get_instance_id()），不是节点 id；
 ##   值里的 count 用来判断"实例数变没变"，变了就整片重建索引。
-##   当前实现只增不删（推测施法次数不多，这点缓存可以接受）。
-var _mm_index: Dictionary = {}
+##   pos 是**世界坐标**（逐实例），扫描时直接取用，不再逐实例换算变换 ✓
+## ★★ 缓存必须是**跨实例共享**（用户实测"草地点燃卡"）：每次施法都会 new() 一个
+##   flame_scorch 实例，按实例缓存的话每一发都要把整片草地重新建一次索引 ✗
+##   键是 MultiMesh 的实例 id，与控制器实例无关 → 跨施法共享安全 ✓
+##   （Dictionary 是引用类型：下面的 _mm_index 只是同一份共享数据的别名，
+##     这样既可跨实例复用，又保留实例字段供自检读取）
+static var _mm_index_shared: Dictionary = {}
 ## 块大小（米）。太小 -> 块数爆炸；太大 -> 每块实例太多。8 米对草地比较合适。
 ## 影响：调小 -> 块数变多（建索引更慢、内存更多）；调大 -> 每块实例多，"先按块筛"的收益变小。
 ## 内部有 maxf(mm_cell_size, 0.5) 下限保护，填 0 不会除零。
 @export var mm_cell_size := 8.0
+var _mm_index: Dictionary = _mm_index_shared
+## 本次扫描结果的缓存：MultiMesh 实例 id -> 命中数组。
+## ★ 同一次施法里 `_mm_scan_circle` 会被反复调用（触摸判定 / 距离排序 / 实例白名单 /
+##   波前延迟各一次，实测同一片草最多扫 5 遍 ✗）→ 圆心/半径不变就直接复用 ✓
+var _scan_cache: Dictionary = {}
+var _scan_min: Dictionary = {}          ## 同一缓存周期内：mm 实例 id -> 圈内最近实例距离
+var _scan_center := Vector3(1e20, 1e20, 1e20)
+var _scan_radius := -1.0
 
 
 ## 参数 mmi：一片草（MultiMeshInstance3D）。返回：索引字典；multimesh 为 null 时返回 {}。
@@ -767,20 +781,50 @@ func _mm_block_index(mmi: MultiMeshInstance3D) -> Dictionary:
 	var mm := mmi.multimesh
 	if mm == null:
 		return {}
+	var count := mm.instance_count
+	if count <= 0:
+		return {}
 	var key := mm.get_instance_id()
+	var cell := maxf(mm_cell_size, 0.5)
 	var idx: Dictionary = _mm_index.get(key, {})
 	# 缓存命中条件：实例数没变就复用；实例数变了（草被增删）必须整片重建，否则存的下标会错位
-	if not idx.is_empty() and int(idx.get("count", -1)) == mm.instance_count:
+	# ★ 另存 weakref：static 缓存跨场景存活，旧 MultiMesh 释放后实例 id 可能被新对象复用 ✗
+	#   weakref 失效即视为未命中，避免拿旧坐标去扫新草 ✓
+	var mm_ref: Variant = idx.get("mm_ref", null)
+	if not idx.is_empty() and mm_ref != null and mm_ref.get_ref() == mm \
+			and int(idx.get("count", -1)) == count \
+			and is_equal_approx(float(idx.get("cell", 0.0)), cell):
 		return idx
-	var cell := maxf(mm_cell_size, 0.5)
+	var xf := mmi.global_transform
+	var pos := PackedVector3Array()
+	pos.resize(count)
 	var blocks := {}
-	for i in range(mm.instance_count):
-		var w: Vector3 = mmi.global_transform * mm.get_instance_transform(i).origin
+	# ★★ 性能（用户实测"草地点燃卡"）：一次性读 MultiMesh.buffer 比逐实例
+	#   get_instance_transform 快一个数量级 ✓（每实例 stride 个 float，TRANSFORM_3D 的
+	#   origin 固定在 3 / 7 / 11 —— 行主/列主都这三位，已实测比对 ✓）
+	#   buffer 不可用（2D 变换 / 空缓冲）时退回逐实例 ✓
+	var buf := mm.buffer
+	var stride := 0
+	if buf.size() > 0 and buf.size() % count == 0:
+		stride = buf.size() / count
+	var fast := stride >= 12
+	for i in range(count):
+		var o: Vector3
+		if fast:
+			var b := i * stride
+			o = Vector3(buf[b + 3], buf[b + 7], buf[b + 11])
+		else:
+			o = mm.get_instance_transform(i).origin
+		var w: Vector3 = xf * o
+		pos[i] = w
 		var bk := Vector2i(int(floor(w.x / cell)), int(floor(w.z / cell)))
 		if not blocks.has(bk):
-			blocks[bk] = []
-		(blocks[bk] as Array).append(i)
-	var built := {"cell": cell, "count": mm.instance_count, "blocks": blocks}
+			blocks[bk] = PackedInt32Array()
+		var ids: PackedInt32Array = blocks[bk]
+		ids.append(i)
+		blocks[bk] = ids
+	var built := {"cell": cell, "count": count, "pos": pos, "blocks": blocks,
+			"mm_ref": weakref(mm)}
 	_mm_index[key] = built
 	return built
 
@@ -791,14 +835,29 @@ func _mm_block_index(mmi: MultiMeshInstance3D) -> Dictionary:
 ## ★ 两级过滤：**先按块**（只保留与圆相交的块）**再查块内**实例。
 ## 直接全量遍历上万实例太浪费 —— 这就是块索引的意义。
 ## 返回 [{i, w}]，w = 实例世界坐标。
+## ★ 同一圆心/半径下的结果会缓存（_scan_cache）：一次施法里同一片草只会真扫一遍 ✓
 func _mm_scan_circle(mmi: MultiMeshInstance3D, center: Vector3, radius: float) -> Array:
+	# 圆心/半径换了（同一实例再次施法、或自检换了圈）→ 之前的结果作废
+	if center != _scan_center or radius != _scan_radius:
+		_scan_cache.clear()
+		_scan_min.clear()
+		_scan_center = center
+		_scan_radius = radius
+	var cache_key := 0
+	if mmi.multimesh != null:
+		cache_key = mmi.multimesh.get_instance_id()
+	if _scan_cache.has(cache_key):
+		return _scan_cache[cache_key]
 	var idx := _mm_block_index(mmi)
 	if idx.is_empty():
+		_scan_cache[cache_key] = []
+		_scan_min[cache_key] = INF
 		return []
 	var cell: float = idx["cell"]
 	var blocks: Dictionary = idx["blocks"]
-	var mm := mmi.multimesh
+	var pos: PackedVector3Array = idx["pos"]
 	var out: Array = []
+	var best := INF
 	var bx0 := int(floor((center.x - radius) / cell))
 	var bx1 := int(floor((center.x + radius) / cell))
 	var bz0 := int(floor((center.z - radius) / cell))
@@ -808,13 +867,18 @@ func _mm_scan_circle(mmi: MultiMeshInstance3D, center: Vector3, radius: float) -
 			var bk := Vector2i(bx, bz)
 			if not blocks.has(bk):
 				continue                  # 空块直接跳过（这才是"先按块"的收益）
-			for i in (blocks[bk] as Array):
-				var w: Vector3 = mmi.global_transform * mm.get_instance_transform(int(i)).origin
+			for i in (blocks[bk] as PackedInt32Array):
+				var w := pos[int(i)]       # ★ 直接用索引里存好的世界坐标（不再换算变换）
 				# 自检计数：只有真正被逐个检查过的实例才累加
 				# （tools/verify_flame_scorch.gd 靠它证明"先按块筛"确实跳过了远处整片实例）
 				_scanned_instances += 1
-				if Vector2(w.x - center.x, w.z - center.z).length() <= radius:
+				var d := Vector2(w.x - center.x, w.z - center.z).length()
+				if d <= radius:
 					out.append({"i": int(i), "w": w})
+					if d < best:
+						best = d
+	_scan_cache[cache_key] = out
+	_scan_min[cache_key] = best
 	return out
 
 
@@ -831,13 +895,11 @@ func _node_distance(n: Node3D) -> float:
 		var mmi := n as MultiMeshInstance3D
 		if mmi.multimesh != null:
 			# ★ 先按块筛、再查块内（见 _mm_scan_circle）：命中就返回其中最近的距离
-			var hit := _mm_scan_circle(mmi, _center, _radius)
-			if not hit.is_empty():
-				var best := 1e9
-				for h in hit:
-					var w: Vector3 = h["w"]
-					best = minf(best, Vector2(w.x - _center.x, w.z - _center.z).length())
-				return best
+			#   ★ 最近距离在扫描时已经算好并缓存（_scan_min）→ 重复调用不再遍历命中表 ✓
+			_mm_scan_circle(mmi, _center, _radius)
+			var c := float(_scan_min.get(mmi.multimesh.get_instance_id(), INF))
+			if c < INF:
+				return c
 			# 圈内没有 -> 用节点原点距离参与排序（它必然被排除）
 			return Vector2(mmi.global_position.x - _center.x,
 					mmi.global_position.z - _center.z).length()
