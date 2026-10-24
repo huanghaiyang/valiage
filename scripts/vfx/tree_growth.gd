@@ -20,6 +20,12 @@ extends Node
 ##      → 必须给它们铺**同一个**复制品，否则各块风摆参考高度不同会出现撕裂 ✓
 ##   ③ 不在 @tool 下运行 ✓ 只在游戏运行时生效 ✓
 
+## 生长模式：
+##   0 = 高度推导（现有实现：按顶点高度从根到梢扫过去）
+##   1 = fast-tree 原版（逐顶点 aGrow 区间：树干 [0,.30] → L5 [.74,.96]，
+##       叶片逐叶随机 [0.5,.98]）—— 需要网格已烘焙 CUSTOM3
+##       （tools/bake_tree_grow_windows.gd）
+@export_enum("高度推导（现有）:0", "fast-tree 原版 aGrow:1") var mode := 0
 ## 树实例路径（留空 = 父节点）
 @export var tree_path: NodePath
 ## 从零长到满的时长（秒）
@@ -71,6 +77,22 @@ func play() -> void:
 	_push_growth()
 
 
+## 用指定模式播放
+func play_with_mode(m: int) -> void:
+	mode = clampi(m, 0, 1)
+	play()
+
+
+## 高度推导版（现有实现）
+func play_height() -> void:
+	play_with_mode(0)
+
+
+## fast-tree 原版（逐顶点 aGrow）
+func play_agrow() -> void:
+	play_with_mode(1)
+
+
 ## 直接回到「长成」状态（不播动画、不留顶点位移开销）
 func reset() -> void:
 	if not _setup_done:
@@ -103,6 +125,28 @@ func _setup() -> void:
 		m.set_shader_parameter("growth_span", growth_span)
 		m.set_shader_parameter("growth", 1.0)
 		m.set_shader_parameter("growth_enabled", false)
+		m.set_shader_parameter("growth_mode", mode)
+	if mode == 1:
+		_warn_if_no_agrow(root)
+
+
+## 「fast-tree 原版」模式需要网格烘焙过 CUSTOM3；没有的话提前警告（否则看起来像没效果）
+func _warn_if_no_agrow(root: Node) -> void:
+	var checked := {}
+	for n in root.find_children("*", "MeshInstance3D", true, false):
+		var mi := n as MeshInstance3D
+		if mi.mesh == null:
+			continue
+		var mid := mi.mesh.get_instance_id()
+		if checked.has(mid):
+			continue
+		checked[mid] = true
+		if mi.mesh.get_surface_count() <= 0:
+			continue
+		var arr: Array = mi.mesh.surface_get_arrays(0)
+		if arr.is_empty() or arr[Mesh.ARRAY_CUSTOM3] == null:
+			push_warning("[树生长] %s 没有烘焙 aGrow（CUSTOM3）→ 原版生长无效；先跑 tools/bake_tree_grow_windows.gd" % mi.name)
+			return
 
 
 func _tree_root() -> Node:
@@ -174,6 +218,7 @@ func _push_growth() -> void:
 		if not is_instance_valid(m):
 			continue
 		m.set_shader_parameter("growth", _growth)
+		m.set_shader_parameter("growth_mode", mode)
 		m.set_shader_parameter("growth_enabled", true)
 
 
@@ -182,4 +227,5 @@ func _push_disabled() -> void:
 		if not is_instance_valid(m):
 			continue
 		m.set_shader_parameter("growth", 1.0)
+		m.set_shader_parameter("growth_mode", mode)
 		m.set_shader_parameter("growth_enabled", false)

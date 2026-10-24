@@ -26,7 +26,8 @@ const LEAF_SHADER := "res://assets/shaders/tree_leaves_burn_ds.gdshader"
 const CANOPY_SCRIPT := "res://scripts/world/canopy_chunk_cull.gd"
 const CUSTOM_FLAGS: int = (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT) \
 		| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM1_SHIFT) \
-		| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM2_SHIFT)
+		| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM2_SHIFT) \
+		| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM3_SHIFT)
 ## 位置分格（米）：Godot 导入会压缩顶点属性（~5e-4 m 误差），不能用精确 key 匹配
 const CELL := 0.002
 const MATCH_EPS := 0.003
@@ -196,6 +197,7 @@ func _bake_mesh(glb: Dictionary, mi: MeshInstance3D) -> Dictionary:
 	var g_phase: PackedFloat32Array = prim["phase"]
 	var g_origin: PackedVector3Array = prim["origin"]
 	var g_nodeid: PackedFloat32Array = prim["nodeid"]
+	var g_grow: PackedVector2Array = prim["grow"]
 	var is_leaf := _is_leaf_node(nm)
 	# 位置索引
 	var index := {}
@@ -224,9 +226,14 @@ func _bake_mesh(glb: Dictionary, mi: MeshInstance3D) -> Dictionary:
 		var c0 := PackedFloat32Array()
 		var c1 := PackedFloat32Array()
 		var c2 := PackedFloat32Array()
+		# CUSTOM3 = (aGrow.x, aGrow.y, 0, 1=有生长数据)
+		#   逐顶点生长区间（fast-tree 原版生长动画）：树干 [0,0.30] → L5 [0.74,0.96]，
+		#   叶片是逐叶随机 [0.5,0.98]。没读到 _AGROW 时 w=0，着色器按"已长成"处理。
+		var c3 := PackedFloat32Array()
 		c0.resize(n * 4)
 		c1.resize(n * 4)
 		c2.resize(n * 4)
+		c3.resize(n * 4)
 		for vi in range(n):
 			var v: Vector3 = verts[vi]
 			if v.y > top:
@@ -236,11 +243,16 @@ func _bake_mesh(glb: Dictionary, mi: MeshInstance3D) -> Dictionary:
 			var a_phase := 0.0
 			var a_origin := Vector3.ZERO
 			var a_node := 0.0
+			var a_grow := Vector2.ZERO
+			var has_grow := 0.0
 			if gi >= 0:
 				a_wind = g_wind[gi]
 				a_phase = g_phase[gi]
 				a_origin = g_origin[gi]
 				a_node = g_nodeid[gi]
+				if gi < g_grow.size():
+					a_grow = g_grow[gi]
+					has_grow = 1.0
 				if v.distance_to(g_pos[gi]) > MATCH_EPS:
 					missing += 1
 			else:
@@ -253,6 +265,10 @@ func _bake_mesh(glb: Dictionary, mi: MeshInstance3D) -> Dictionary:
 			c1[vi * 4 + 1] = 1.0 if is_leaf else 0.0
 			c1[vi * 4 + 2] = a_node
 			c1[vi * 4 + 3] = 1.0
+			c3[vi * 4 + 0] = a_grow.x
+			c3[vi * 4 + 1] = a_grow.y
+			c3[vi * 4 + 2] = 0.0
+			c3[vi * 4 + 3] = has_grow
 			# CUSTOM2 = (宿主枝条 phase, 宿主枝条 aWind, 宿主 nodeId, 1=有宿主)
 			#   刚性摆动用宿主值 → 叶片/花朵与枝条同步；局部抖动仍用叶子自己的 aPhase。
 			if is_leaf and not _host.is_empty():
@@ -271,6 +287,7 @@ func _bake_mesh(glb: Dictionary, mi: MeshInstance3D) -> Dictionary:
 		out_arr[Mesh.ARRAY_CUSTOM0] = c0
 		out_arr[Mesh.ARRAY_CUSTOM1] = c1
 		out_arr[Mesh.ARRAY_CUSTOM2] = c2
+		out_arr[Mesh.ARRAY_CUSTOM3] = c3
 		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, out_arr, [], {}, CUSTOM_FLAGS)
 		out.surface_set_name(s, am_src.surface_get_name(s))
 	if not _dry:
@@ -564,8 +581,11 @@ func _parse_glb(path: String) -> Dictionary:
 		var phase := _acc_float(accessors, views, bin, int(attrs.get("_APHASE", -1)), pos.size(), 0.0)
 		var origin := _acc_vec3_or_zero(accessors, views, bin, int(attrs.get("_AORIGIN", -1)), pos.size())
 		var nodeid := _acc_float(accessors, views, bin, int(attrs.get("_ANODEID", -1)), pos.size(), 0.0)
+		# 生长区间 [start, end]（fast-tree 的 aGrow）：逐顶点烘焙进 CUSTOM3.xy
+		var grow := _acc_vec2_or_zero(accessors, views, bin, int(attrs.get("_AGROW", -1)), pos.size())
 		(out["prims"] as Dictionary)[node_name] = {
 			"pos": pos, "wind": wind, "phase": phase, "origin": origin, "nodeid": nodeid,
+			"grow": grow,
 		}
 	return out
 
@@ -635,6 +655,22 @@ func _acc_vec3_or_zero(accessors: Array, views: Array, bin: PackedByteArray, idx
 		v.resize(count)
 		v.fill(Vector3.ZERO)
 	return v
+
+
+func _acc_vec2_or_zero(accessors: Array, views: Array, bin: PackedByteArray, idx: int, count: int) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	out.resize(count)
+	out.fill(Vector2.ZERO)
+	var info := _acc_bytes(accessors, views, idx, 5126)
+	if info.is_empty():
+		return out
+	var n := mini(count, int(info["count"]))
+	var base := int(info["base"])
+	var stride := int(info["stride"])
+	for i in range(n):
+		var o := base + i * stride
+		out[i] = Vector2(bin.decode_float(o), bin.decode_float(o + 4))
+	return out
 
 
 # ============================================================================

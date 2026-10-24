@@ -58,27 +58,34 @@ fov = 60.0
 [node name="Panel" type="PanelContainer" parent="UI"]
 offset_left = 24.0
 offset_top = 24.0
-offset_right = 304.0
-offset_bottom = 154.0
+offset_right = 344.0
+offset_bottom = 226.0
 
 [node name="VBox" type="VBoxContainer" parent="UI/Panel"]
 layout_mode = 2
 theme_override_constants/separation = 8
 
-[node name="PlayButton" type="Button" parent="UI/Panel/VBox"]
+[node name="PlayHeightButton" type="Button" parent="UI/Panel/VBox"]
 layout_mode = 2
-theme_override_font_sizes/font_size = 20
-text = "播放生长"
+theme_override_font_sizes/font_size = 18
+text = "播放生长（高度版）"
+
+[node name="PlayAGrowButton" type="Button" parent="UI/Panel/VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "播放生长（fast-tree 原版）"
 
 [node name="ResetButton" type="Button" parent="UI/Panel/VBox"]
 layout_mode = 2
-theme_override_font_sizes/font_size = 20
+theme_override_font_sizes/font_size = 18
 text = "重置"
 
 [node name="Hint" type="Label" parent="UI/Panel/VBox"]
 layout_mode = 2
-theme_override_font_sizes/font_size = 13
-text = "点击「播放生长」：树从根部向上依次长出"
+theme_override_font_sizes/font_size = 12
+text = "高度版：生长前沿从根扫到梢
+原版：树干 0~30% → L1~L5 逐层 → 花叶随机绽放"
 
-[connection signal="pressed" from="UI/Panel/VBox/PlayButton" to="TreeGrowth" method="play"]
+[connection signal="pressed" from="UI/Panel/VBox/PlayHeightButton" to="TreeGrowth" method="play_height"]
+[connection signal="pressed" from="UI/Panel/VBox/PlayAGrowButton" to="TreeGrowth" method="play_agrow"]
 [connection signal="pressed" from="UI/Panel/VBox/ResetButton" to="TreeGrowth" method="reset"]

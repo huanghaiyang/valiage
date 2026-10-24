@@ -76,6 +76,11 @@ uniform float growth_span : hint_range(0.01, 1.0) = 0.3;
 ///   （fast-tree 的 aGrow 本质是"按节点深度排先后"：树干先、枝梢后、花叶最后）
 ///   用 wind_is_leaf 区分枝干材质与花叶材质
 uniform float growth_leaf_delay : hint_range(0.0, 0.9) = 0.45;
+// ★★ 生长模式（两套实现并存，互不影响）：
+//   0 = 高度推导版（上面的 growth_span / growth_leaf_delay 生效；现有实现，保持原样）
+//   1 = fast-tree aGrow 原版：逐顶点生长区间来自烘焙的 CUSTOM3.xy（树干 [0,.30] →
+//       L5 [.74,.96]，叶片逐叶随机 [0.5,.98]）—— 与源实现逐位等价
+uniform int growth_mode = 0;
 
 // ---- 旧回退路径用（未烘焙网格；语义与移植前一致）----
 uniform float wind_strength = 0.18;             // 相对强度 0..1.5（不是米）
@@ -115,6 +120,32 @@ vec3 tree_growth_offset(vec3 pos, vec3 a_origin) {
 	float k = clamp((front - h) / max(0.0001, growth_span), 0.0, 1.0);
 	k = k * k * (3.0 - 2.0 * k);          // smoothstep（与 fast-tree 一致）
 	return (a_origin - pos) * (1.0 - k);
+}
+
+
+// ---------------------------------------------------------------------------
+//  fast-tree **原版**生长：直接使用烘焙的逐顶点生长区间（CUSTOM3.xy）
+//    源实现（materials.js vertexBody）：
+//      growK = smoothstep(clamp((uGrowth - aGrow.x) / (aGrow.y - aGrow.x)))
+//      treePos = mix(aOrigin, treePos, mix(1.0, growK, uGrowthEnabled))
+//    c3 = (aGrow.x, aGrow.y, 0, 1=有数据)；没烘焙 CUSTOM3 的网格（c3.w=0）→ 不动
+// ---------------------------------------------------------------------------
+vec3 tree_growth_offset_agrow(vec3 pos, vec3 a_origin, vec4 c3) {
+	if (!growth_enabled || c3.w < 0.5) {
+		return vec3(0.0);
+	}
+	float k = clamp((growth - c3.x) / max(1e-4, c3.y - c3.x), 0.0, 1.0);
+	k = k * k * (3.0 - 2.0 * k);
+	return (a_origin - pos) * (1.0 - k);
+}
+
+
+// 按 growth_mode 选实现（0 = 高度推导 / 1 = fast-tree 原版）
+vec3 tree_growth_offset_auto(vec3 pos, vec3 a_origin, vec4 c3) {
+	if (growth_mode == 1) {
+		return tree_growth_offset_agrow(pos, a_origin, c3);
+	}
+	return tree_growth_offset(pos, a_origin);
 }
 
 

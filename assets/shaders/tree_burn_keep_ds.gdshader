@@ -158,7 +158,8 @@ void vertex() {
 	// ★★ 从零生长（fast-tree uGrowth 移植）：按顶点高度把未长出的部分收缩到枝条基点 ✓
 	//   必须放在风摆**之前** → 风场作用在"已经长出来的位置"上 ✓
 	//   growth_enabled = false（默认）时该函数直接返回 0，行为与移植前完全一致 ✓
-	VERTEX += tree_growth_offset(VERTEX, CUSTOM0.xyz);
+	//   growth_mode：0 = 高度推导（现有）/ 1 = fast-tree 原版（用 CUSTOM3.xy 的 aGrow）
+	VERTEX += tree_growth_offset_auto(VERTEX, CUSTOM0.xyz, CUSTOM3);
 	// ★★★ 与树叶**同步**（用户要求 ✓）：用**同一套风**（阵风/沿线/湍流/高度加权 ✓）
 	//   相位、方向、风速与叶子**完全一致** ✓ → 两者一起摆 ✓（不再各摆各的 ✗）
 	//   树枝幅度 ×0.45 ✓（比叶子更硬 ✓ 叶子摆得最凶 ✓）；× alive（烧得越深越不摆 ✓）
