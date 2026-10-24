@@ -155,6 +155,10 @@ void vertex() {
 	v_radial = normalize((MODELVIEW_MATRIX * vec4(normalize(vec3(VERTEX.x, 0.0, VERTEX.z) + vec3(1e-5, 0.0, 1e-5)), 0.0)).xyz);
 	float h = clamp(VERTEX.y / max(height_ref, 0.01), 0.0, 1.5);
 	float alive = 1.0 - clamp(burn, 0.0, 1.0) * 0.75;
+	// ★★ 从零生长（fast-tree uGrowth 移植）：按顶点高度把未长出的部分收缩到枝条基点 ✓
+	//   必须放在风摆**之前** → 风场作用在"已经长出来的位置"上 ✓
+	//   growth_enabled = false（默认）时该函数直接返回 0，行为与移植前完全一致 ✓
+	VERTEX += tree_growth_offset(VERTEX, CUSTOM0.xyz);
 	// ★★★ 与树叶**同步**（用户要求 ✓）：用**同一套风**（阵风/沿线/湍流/高度加权 ✓）
 	//   相位、方向、风速与叶子**完全一致** ✓ → 两者一起摆 ✓（不再各摆各的 ✗）
 	//   树枝幅度 ×0.45 ✓（比叶子更硬 ✓ 叶子摆得最凶 ✓）；× alive（烧得越深越不摆 ✓）

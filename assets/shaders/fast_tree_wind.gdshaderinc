@@ -54,6 +54,29 @@ uniform float wind_leaf_flutter = 0.6;          // 叶片抖动（fast-tree uLea
 uniform float wind_leaf_twist = 0.5;            // 叶片俯仰（fast-tree uLeafTwist）
 uniform float wind_flutter_rate = 1.0;           // 该材质的抖动频率倍率（花比叶慢，避免同频）
 
+// ---- 生长动画（fast-tree uGrowth / uGrowthEnabled 移植）----
+//   源实现：materials.js  vertexBody()
+//     growK = smoothstep(clamp((uGrowth - aGrow.x) / (aGrow.y - aGrow.x)))
+//     treePos = mix(aOrigin, treePos, mix(1.0, growK, uGrowthEnabled))
+//   这里不依赖 aGrow（烘焙产物没有该属性）✗ 改用**顶点高度**推导生长窗口：
+//     h     = 顶点的归一化高度（0 根部 / 1 树梢）
+//     front = growth × (1 + growth_span)     生长前沿（略高过 1，保证长满时树梢也 k=1）
+//     k     = smoothstep((front - h) / growth_span)
+//   → growth=0 时整棵树都收缩到枝条基点（等于"还没长"✓）
+//   → growth 从 0 涨到 1 时，生长前沿**从根部扫到树梢**（树干先、枝梢后 ✓）
+//   growth_enabled = false（默认）时**零影响** ✓ 现有场景/编辑器预览完全不变 ✓
+uniform float growth : hint_range(0.0, 1.0) = 1.0;
+uniform bool growth_enabled = false;
+/// 整棵树的高度（模型空间米；运行时由驱动脚本按 AABB / height_ref 写入）
+uniform float growth_height = 8.0;
+/// 生长前沿的过渡带（占全高的比例）：越大越"软"，越小越"一刀切"
+uniform float growth_span : hint_range(0.01, 1.0) = 0.3;
+/// 树叶/花朵相对枝干的**延后**比例（0..0.9）：
+///   0.45 → 枝干在 growth=0 到 0.55 之间长完，花叶在 0.45 到 1 之间绽放
+///   （fast-tree 的 aGrow 本质是"按节点深度排先后"：树干先、枝梢后、花叶最后）
+///   用 wind_is_leaf 区分枝干材质与花叶材质
+uniform float growth_leaf_delay : hint_range(0.0, 0.9) = 0.45;
+
 // ---- 旧回退路径用（未烘焙网格；语义与移植前一致）----
 uniform float wind_strength = 0.18;             // 相对强度 0..1.5（不是米）
 uniform float wind_height_ref : hint_range(0.01, 30.0) = 8.0;
@@ -67,6 +90,31 @@ vec3 treeRotate(vec3 v, vec3 axis, float angle) {
 	float s = sin(angle);
 	float d = dot(axis, v);
 	return v * c + cross(axis, v) * s + axis * d * (1.0 - c);
+}
+
+
+// ---------------------------------------------------------------------------
+//  生长位移：返回需要加到 VERTEX 上的模型空间偏移（= aOrigin - pos 的剩余部分）
+//    pos       模型空间顶点（调用前必须是**原始**位置，不要已经加过风摆）
+//    a_origin  该顶点所属枝条的基点（= CUSTOM0.xyz；与 fast-tree 的 aOrigin 同义）
+//    growth=0 → 全部收缩到枝条基点（未长出）✓
+//    growth=1 → 偏移为 0（完全长成）✓
+// ---------------------------------------------------------------------------
+vec3 tree_growth_offset(vec3 pos, vec3 a_origin) {
+	if (!growth_enabled) {
+		return vec3(0.0);
+	}
+	// 花叶比枝干晚（fast-tree 的 aGrow 按节点深度排先后）
+	float delay = clamp(growth_leaf_delay, 0.0, 0.9);
+	float span_t = max(0.01, 1.0 - delay);
+	float t = wind_is_leaf
+			? clamp((growth - delay) / span_t, 0.0, 1.0)
+			: clamp(growth / span_t, 0.0, 1.0);
+	float h = clamp(pos.y / max(0.001, growth_height), 0.0, 1.0);
+	float front = t * (1.0 + growth_span);
+	float k = clamp((front - h) / max(0.0001, growth_span), 0.0, 1.0);
+	k = k * k * (3.0 - 2.0 * k);          // smoothstep（与 fast-tree 一致）
+	return (a_origin - pos) * (1.0 - k);
 }
 
 
