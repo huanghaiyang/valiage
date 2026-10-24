@@ -110,6 +110,8 @@ uniform float ambient_fill : hint_range(0.0, 1.0) = 0.0;
 uniform float burn : hint_range(0.0, 1.0) = 0.0;
 /// 消失进度 0..1（前沿到顶后开始 ✓ 叶子缩小淡出 ✓）
 uniform float ash : hint_range(0.0, 1.0) = 0.0;
+/// ★ 崩毁（与 tree_burn_keep_ds 同名同义 ✓）：树烧透后叶子提前散尽 + 纯高度序 discard ✓
+uniform float crumble : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 char_color : source_color = vec3(0.06, 0.05, 0.045);
 uniform vec3 ember_color : source_color = vec3(1.0, 0.34, 0.05);
 uniform float ember_width : hint_range(0.005, 0.5) = 0.045;
@@ -219,6 +221,14 @@ void fragment() {
 	//   这和 tree_burn_keep_ds 当年踩的是**同一个坑** ✓（那边已改成 UV ✓ 见其注释 ✓）
 	//   UV 是模型自带的静态数据 ✓ 不随风/相机变化 ✓ → 火焰前沿牢牢"长"在叶子上 ✓
 	float nz = fract(sin(dot(v_uv * 37.0, vec2(12.9898, 78.233))) * 43758.5453);
+
+	// ★ 崩毁：与 tree_burn_keep_ds 同一套**纯高度序** discard ✓（从上到下消失 ✓）
+	//   叶子通常已由 ash 淡尽 ✓ 这里只兜底 ✓；不用随机块状噪声 ✗（避免颗粒感）
+	if (crumble > 0.001) {
+		if (v_hnorm > 1.0 - crumble) {
+			discard;
+		}
+	}
 
 	// ★★ 从下往上烧 ✓：前沿高度比例 = burn ✓（+ 噪声扰动 → 边缘不规则 ✓）
 	float front = clamp(burn, 0.0, 1.0);

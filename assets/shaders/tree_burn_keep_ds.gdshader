@@ -85,6 +85,11 @@ uniform vec4 base_color : source_color = vec4(1.0, 1.0, 1.0, 1.0);
 uniform float burn : hint_range(0.0, 1.0) = 0.0;
 /// ★ 本 shader **忽略 ash 的消失作用** ✓（仅留作兼容 ✓：控制器仍会写它 ✓）
 uniform float ash : hint_range(0.0, 1.0) = 0.0;
+/// ★★★ 崩毁（用户需求 ✓）：树木烧透后**碎裂消失** ✓
+///   0 = 完好（烧完只是焦黑）✓；1 = 整棵崩解殆尽 ✓
+///   驱动：scripts/vfx/foliage_burn.gd 在"烧透 + 焦黑停留"之后按 collapse_time 推进 ✓
+///   表现：顶点下沉（见 vertex）+ 分块 discard 抠掉几何（见 fragment ✓ 用 discard 不写 ALPHA ✓）
+uniform float crumble : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 char_color : source_color = vec3(0.06, 0.05, 0.045);
 uniform vec3 ember_color : source_color = vec3(1.0, 0.34, 0.05);
 uniform float ember_width : hint_range(0.005, 0.5) = 0.035;
@@ -193,6 +198,15 @@ void vertex() {
 	//   amount=0.45：枝条比叶子硬（与风摆的比例一致 ✓）
 	// ⚠ 第一个实参必须是 MODEL_MATRIX：该函数内部取不到内置变量，只能在这里传（否则编译报"标识符未知"）
 	VERTEX += tree_player_displace(MODEL_MATRIX, VERTEX, CUSTOM0, CUSTOM1, true, 0.45) * alive;
+	// ★★★ 崩毁下沉：**树冠先塌、树干后动**（用户要求 ✓ 从上到下 ✓）
+	//   下沉量与高度成正比：高点先没入地面，底部最后才动 ✓
+	if (crumble > 0.0) {
+		float ch = clamp(VERTEX.y / max(height_ref, 0.01), 0.0, 1.0);
+		float ck = crumble * crumble;
+		VERTEX.y -= ck * (0.25 + ch * 0.75) * height_ref * 0.05;
+		// 上半部轻微向树干轴收拢（塌陷感；底部几乎不动）
+		VERTEX.xz -= VERTEX.xz * (ck * 0.05 * ch * ch);
+	}
 	// ★ 这里**没有** `VERTEX *= 1.0 - ash * 0.35` ✓ —— 烧完不收缩 ✓（与 burn_foliage 的关键区别 ✓）
 }
 
@@ -238,6 +252,17 @@ void fragment() {
 	//   相机稍微一动 / 浮点误差 → 整片图案**每帧重新随机** → **闪烁** ✓✓（用户实测 ✓）
 	//   UV 是模型自带数据 ✓ 不随相机变化 ✓ → 同一位置永远同一个值 ✓ 稳定不闪 ✓✓
 	float n = fract(sin(dot(v_uv * noise_scale, vec2(12.9898, 78.233))) * 43758.5453);
+
+	// ★★★ 崩毁：**纯高度序**从上到下逐层消失（用户要求 ✓）
+	//   · 不使用块状随机噪声 ✗（那会变成"碎屑颗粒"观感）
+	//   · crumble=0 不抠任何像素；crumble=1 时 hk > 0 全部消失（不留残影）
+	//   · 用 discard 而不是 ALPHA ✓ 木材质必须留在不透明队列（见文件头说明 ✓）
+	if (crumble > 0.001) {
+		float hk = clamp(v_hgt / max(height_ref, 0.01), 0.0, 1.0);
+		if (hk > 1.0 - crumble) {
+			discard;
+		}
+	}
 
 	// ★★ 关键修复（实测推理 ✓）：**不再看 `use_albedo`** ✓，无条件采样 ✓
 	//   证据链：① `base_color=红` → 树干变红 ✓（shader 在跑 ✓）

@@ -54,6 +54,21 @@ const NOISE := "res://assets/textures/法术特效/Noise1_tiled.png"
 									  ##   判据：材质带 `burn_mode == "wood"`（插件写的 ✓）
 									  ##   或 shader 是 tree_burn_keep* ✓ → 走这个时长 ✓
 @export var ash_time_tree := 8.0      ## ★ 树烧完后的消失时长（同样更慢 ✓）
+## ★★★ 崩毁（用户需求 ✓）：树木**烧透 + 焦黑停留**之后，用这段时间崩解消失 ✓
+##   0 = 不崩（旧行为：焦黑树架永久留下）；> 0 = 枝条从上到下脱落 + 高度序崩碎
+##   只对木质目标（tree_burn_keep*）生效；草/灌木仍走 ash 淡出 ✓
+@export var collapse_time := 4.0
+## ★ 枝条脱落窗口占 collapse_time 的比例（0.7 = 前 70% 时间内 L5→L1 依次脱落）
+@export var branch_fall_window := 0.7
+## 枝条（含碎枝）掉落重力（米/秒²）
+@export var branch_gravity := 12.0
+## 枝条落地后崩碎消失所需时间（秒）——用 shader 的 crumble 高度序逐层削掉
+@export var branch_crumble_time := 0.8
+## 枝条落地后静置多久才开始崩碎（秒）
+@export var branch_rest_time := 0.25
+## ★ 树木本体消失后，枝条继续落地/崩碎的收尾时长（秒）
+##   没有这段的话，"崩毁到顶"的同帧会把还在半空的枝条一起藏掉 → 突然消失 ✗
+@export var debris_linger := 2.5
 @export var char_hold := 0.7          ## 全焦黑后停留
 @export var ash_time := 3.3           ## 缩到消失所需时间（用户要求：原来 1.1 秒 ×3）
 ## ★ 烧透之后多久长回来（秒）。0 = 永久烧毁（不再恢复）。
@@ -155,6 +170,30 @@ var _sp := PackedVector3Array()       ## 位置（本节点局部坐标）
 var _sv := PackedVector3Array()       ## 速度
 var _sl := PackedFloat32Array()       ## 剩余寿命
 var _surface := PackedVector3Array()  ## 表面点池（取自真实顶点）
+## ★ 本目标是不是"木质保留型"（树）——决定走崩毁时间轴还是原 ash 淡出（见 _process）
+var _is_tree := false
+## ★★ 崩毁枝条（用户要求 ✓：L5→L1 从上到下掉落，**不使用小方块**）
+##   直接拿树本身的 Bark_Branch_L* 网格做"脱落替身"，掉下来的是真实枝条 ✓
+##   全部状态在**控制器局部坐标**里算（控制器被摆到目标位置）。
+var _sec_meshes: Array[MeshInstance3D] = []   ## 原枝条节点（按 L5→L1 排序）
+var _sec_dups: Array[MeshInstance3D] = []     ## 脱落后的替身（挂在控制器下）
+var _sec_mat_idx: Dictionary = {}             ## 燃烧材质副本 -> 段索引（写各自 crumble）
+var _sec_t := PackedFloat32Array()            ## 计划脱落时刻（相对崩毁开始，秒）
+var _sec_state := PackedByteArray()           ## 0=待脱落 1=下落 2=落地静置 3=崩碎 4=结束
+var _sec_crumble := PackedFloat32Array()      ## 该枝条的崩碎进度（只写它自己的材质）
+var _sec_rest := PackedFloat32Array()         ## 落地静置剩余时间
+var _sec_angle := PackedFloat32Array()        ## 累计翻转角
+var _sec_spin := PackedFloat32Array()         ## 翻转角速度
+var _sec_axis := PackedVector3Array()         ## 翻转轴（水平切向 → 向外倒）
+var _sec_center := PackedVector3Array()       ## 当前网格中心（控制器局部）
+var _sec_vel := PackedVector3Array()          ## 中心速度
+var _sec_basis: Array[Basis] = []             ## 脱离瞬间的局部 basis
+var _sec_mesh_center := PackedVector3Array()  ## 网格 AABB 中心（mesh 局部）
+var _sec_aabb: Array[AABB] = []               ## 网格 AABB（判落地用）
+var _sec_full := PackedFloat32Array()         ## 该段"整根抠光"所需的 crumble 值（按它自己的高度区间缩放）
+## ★ 崩毁到顶后的枝条收尾阶段：树木本体已隐藏，等枝条落定/崩碎再真正 _finish
+var _collapse_tail := false
+var _tail_time := 0.0
 ## 本控制器专用的随机源（_ready 里 randomize）。
 ## 斑点相位、摆动幅度、火星散布、兜底点燃延迟都取它；每控制器一份，互不干扰。
 var _rng := RandomNumberGenerator.new()
@@ -305,6 +344,7 @@ func burn_node(n: Node3D, delay: float = 0.0) -> bool:
 	if n != null and not mm_target:
 		n.set_meta("burning", true)
 	if _target_is_keep():
+		_is_tree = true
 		burn_time = burn_time_tree
 		ash_time = ash_time_tree
 		print("[燃烧] 树/木质 ✓ 时长 = %.1fs（烧）+ %.1fs（消失）｜ %s" % [
@@ -393,6 +433,7 @@ func burn_node(n: Node3D, delay: float = 0.0) -> bool:
 	if _first_burn_material() != null:
 		global_position = n.global_position
 		_apply_in_shader_burn()
+		_build_collapse_sections()    # ★ 树木：登记 L5→L1 枝条，供崩毁时依次脱落
 		_collect_surface_points()      # ★ 不能漏：否则 _surface 为空 -> 火星取模崩溃
 		_build_sparks()
 		set_process(true)
@@ -1109,8 +1150,18 @@ func _process(delta: float) -> void:
 	# → 最后用 ash_time 秒灰化消失。三段首尾相接、互不重叠，所以停留期内 ash 恒为 0。
 	var burn := clampf(_t / maxf(burn_time, 0.01), 0.0, 1.0)
 	var ash := 0.0
-	# 停留期结束才开始灰化：保证"先烧透、再停留、最后消失"的观感顺序。
-	if _t > burn_time + char_hold:
+	var crumble := 0.0
+	# ★★ 树（保留型）走**崩毁**时间轴（用户需求 ✓）：停留期结束后 collapse_time 秒内
+	#   **L5→L1 枝条从上到下依次脱落**，落地的枝条再按高度序崩碎消失 ✓
+	#   叶片用 ash 提前散尽（crumble×2.2 → 崩到约 45% 时叶子已全没了 ✓）
+	#   collapse_time = 0 时退回旧行为（ash_time_tree 灰化，焦黑树架保留）
+	var collapsing := _is_tree and collapse_time > 0.0
+	if collapsing:
+		if _t > burn_time + char_hold:
+			crumble = clampf((_t - burn_time - char_hold) / collapse_time, 0.0, 1.0)
+			ash = clampf(crumble * 2.2, 0.0, 1.0)
+	elif _t > burn_time + char_hold:
+		# 停留期结束才开始灰化：保证"先烧透、再停留、最后消失"的观感顺序。
 		ash = clampf((_t - burn_time - char_hold) / maxf(ash_time, 0.01), 0.0, 1.0)
 	if not _mm_burn.is_empty():
 		# ★ 逐实例路线：进度写在 MultiMesh 的 custom data 上
@@ -1125,14 +1176,39 @@ func _process(delta: float) -> void:
 			if sm2 != null:
 				sm2.set_shader_parameter("burn", burn)
 				sm2.set_shader_parameter("ash", ash)
+				# ★ 崩毁进度只写给带 crumble 的树着色器（草/灌木的 shader 没有这个 uniform）
+				#   ★ 枝条用**自己的** crumble（落地后才开始崩碎；未脱落/下落中保持完整）
+				if _is_tree and sm2.shader != null:
+					var sp2 := String(sm2.shader.resource_path)
+					if sp2.contains("tree_burn_keep") or sp2.contains("tree_leaves_burn"):
+						var cv := crumble
+						var sec_i: int = int(_sec_mat_idx.get(sm2, -1))
+						if sec_i >= 0 and sec_i < _sec_crumble.size():
+							cv = _sec_crumble[sec_i]
+						sm2.set_shader_parameter("crumble", cv)
 				# ★ 每帧同步天气风：副本不在风系统的材质名单里，不抄就会"一烧就不摆"
 				_copy_wind_params(si)
 	elif _mat != null:
 		_mat.set_shader_parameter("burn", burn)
 		_mat.set_shader_parameter("ash", ash)
+	# ★ 崩毁枝条：L5→L1 按高度顺序依次脱落 → 自由落体 → 落地静置 → 原地崩碎消失
+	if collapsing:
+		_update_collapse_sections(delta, _t - burn_time - char_hold)
 	_update_sparks(delta, burn)
 	# 只有"叠加层/材质内建 burn"两条路线会走到这里收尾；逐实例路线已在上面 return。
-	if ash >= 1.0:
+	# ★ 树看 crumble 到顶（而非 ash）—— ash 只是叶片提前散尽的伴随量
+	if collapsing:
+		if crumble >= 1.0:
+			# ★★ 时间轴（用户要求 ✓）：树体先消失，但枝条还要继续落地/崩碎 ✓
+			#    没有这段的话，"崩毁到顶"的同帧会把半空中的枝条一起藏掉 → 突兀 ✓
+			if not _collapse_tail:
+				_collapse_tail = true
+				_tail_time = debris_linger
+				_hide_collapsed_target()
+			_tail_time -= delta
+			if _tail_time <= 0.0 or _sections_all_done():
+				_finish()
+	elif ash >= 1.0:
 		_finish()
 
 
@@ -1164,6 +1240,224 @@ func _update_sparks(delta: float, burn: float) -> void:
 		var k := clampf(_sl[i] / maxf(spark_lifetime, 0.01), 0.0, 1.0)
 		var b := Basis().scaled(Vector3.ONE * clampf(k, 0.25, 1.0))
 		mm.set_instance_transform(i, Transform3D(b, _sp[i]))
+
+
+# ==================== 崩毁枝条（树干烧透后 L5→L1 依次脱落） ====================
+## ★ 用户需求：**不要小方块** ✓ 直接用树本身的 Bark_Branch_L* 网格当碎块 —
+##   掉下来的就是真实枝条；落地后再用 shader 的高度序 crumble 原地崩碎消失 ✓
+##   顺序：L5（最高）→ L1（最低），从上到下 ✓
+## 段状态（_sec_state 里存这些值）
+const SEC_WAIT := 0
+const SEC_FALL := 1
+const SEC_REST := 2
+const SEC_CRUMBLE := 3
+const SEC_DEAD := 4
+
+
+## 登记要脱落的枝条（名字以 Bark_Branch_L 开头），按 L5→L1 排序并排好脱落时刻。
+## 只在"树木 + 开启崩毁"时有意义；其它目标一律留空 → 崩毁仍走原来的高度序。
+func _build_collapse_sections() -> void:
+	_sec_meshes.clear()
+	_sec_dups.clear()
+	_sec_mat_idx.clear()
+	_sec_t.resize(0)
+	_sec_state.resize(0)
+	_sec_crumble.resize(0)
+	_sec_rest.resize(0)
+	_sec_angle.resize(0)
+	_sec_spin.resize(0)
+	_sec_axis.resize(0)
+	_sec_center.resize(0)
+	_sec_vel.resize(0)
+	_sec_basis.clear()
+	_sec_mesh_center.resize(0)
+	_sec_aabb.clear()
+	_sec_full.resize(0)
+	if not _is_tree or collapse_time <= 0.0:
+		return
+	for mi in _meshes:
+		if mi == null or not is_instance_valid(mi):
+			continue
+		if String(mi.name).begins_with("Bark_Branch_L"):
+			_sec_meshes.append(mi)
+	# ★ 名字降序 = L5, L4, L3, L2, L1（单数字后缀，字符串比较即可）
+	_sec_meshes.sort_custom(func(a: MeshInstance3D, b: MeshInstance3D) -> bool:
+		return String(a.name) > String(b.name))
+	var n := _sec_meshes.size()
+	if n == 0:
+		return
+	_sec_t.resize(n)
+	_sec_state.resize(n)
+	_sec_crumble.resize(n)
+	_sec_rest.resize(n)
+	_sec_angle.resize(n)
+	_sec_spin.resize(n)
+	_sec_axis.resize(n)
+	_sec_center.resize(n)
+	_sec_vel.resize(n)
+	_sec_basis.resize(n)
+	_sec_mesh_center.resize(n)
+	_sec_aabb.resize(n)
+	_sec_full.resize(n)
+	_sec_dups.resize(n)
+	# ★ 脱落窗口：collapse_time 的前 branch_fall_window 比例内，L5→L1 均匀散开
+	var window := maxf(collapse_time * clampf(branch_fall_window, 0.05, 1.0), 0.01)
+	for i in range(n):
+		var mi := _sec_meshes[i]
+		_sec_t[i] = float(i) / maxf(n - 1.0, 1.0) * window
+		_sec_state[i] = SEC_WAIT
+		_sec_crumble[i] = 0.0
+		_sec_rest[i] = 0.0
+		_sec_angle[i] = 0.0
+		_sec_dups[i] = null
+		if mi == null or mi.mesh == null:
+			_sec_full[i] = 1.0
+			continue
+		# 各面的燃烧材质副本 → 段索引（_process 按段写它自己的 crumble）
+		for s in range(mi.mesh.get_surface_count()):
+			var sm := mi.get_surface_override_material(s) as ShaderMaterial
+			if sm != null:
+				_sec_mat_idx[sm] = i
+		# ★ 每段"整根抠光"所需的 crumble：shader 的 discard 条件是 hk > 1 - crumble
+		#   （hk = VERTEX.y / height_ref，height_ref = 该网格 AABB 顶部）。
+		#   枝条本身悬在半空（AABB 底不是 0）→ 必须按它自己的高度区间缩放，
+		#   否则 crumble 还没到 1 就已经整根被抠光了 ✗
+		var ab: AABB = mi.mesh.get_aabb()
+		var top := ab.position.y + ab.size.y
+		if mi.has_meta("burn_height_ref"):
+			top = float(mi.get_meta("burn_height_ref"))
+		_sec_full[i] = clampf(1.0 - ab.position.y / maxf(top, 0.01), 0.15, 1.0)
+
+
+## 让第 i 段枝条脱离树干：复制一份**真实枝条网格**挂到控制器下，原节点隐藏。
+## 参数 i：段索引（0 = L5 最高）。返回：无。
+func _detach_section(i: int) -> void:
+	if i < 0 or i >= _sec_meshes.size():
+		return
+	var mi := _sec_meshes[i]
+	if mi == null or not is_instance_valid(mi) or mi.mesh == null:
+		_sec_state[i] = SEC_DEAD
+		return
+	# 原枝条在场景里没有自己的变换、顶点是**树空间**坐标 → 用它自己的 global_transform
+	# 乘上控制器逆变换，得到"控制器局部"的摆放（会带上主场景树的缩放 ✓）
+	var m0 := global_transform.affine_inverse() * mi.global_transform
+	var aabb: AABB = mi.mesh.get_aabb()
+	var mc := aabb.get_center()
+	var basis0 := m0.basis
+	var center := m0.origin + basis0 * mc
+	var dup := MeshInstance3D.new()
+	dup.name = "Fallen_%s" % String(mi.name)
+	dup.mesh = mi.mesh
+	dup.cast_shadow = mi.cast_shadow
+	for s in range(mi.mesh.get_surface_count()):
+		var om := mi.get_surface_override_material(s)
+		if om == null:
+			continue
+		dup.set_surface_override_material(s, om)
+		# ★ 脱离后不再跟风摆（否则整根枝条会在空中"自己扭"）
+		var sm := om as ShaderMaterial
+		if sm != null and sm.shader != null:
+			sm.set_shader_parameter("wind_enabled", false)
+	dup.transform = Transform3D(basis0, m0.origin)
+	add_child(dup)
+	mi.visible = false
+	_sec_dups[i] = dup
+	_sec_basis[i] = basis0
+	_sec_mesh_center[i] = mc
+	_sec_center[i] = center
+	_sec_aabb[i] = aabb
+	# 倒向：绕"水平切向轴"转 → 枝条顶端朝树外倒下
+	var out := Vector3(center.x, 0.0, center.z)
+	if out.length_squared() < 1e-4:
+		out = Vector3(_rng.randf_range(-1.0, 1.0), 0.0, _rng.randf_range(-1.0, 1.0))
+	out = out.normalized()
+	_sec_axis[i] = Vector3(out.z, 0.0, -out.x).normalized()
+	_sec_angle[i] = 0.0
+	_sec_spin[i] = _rng.randf_range(0.6, 1.6)
+	_sec_vel[i] = out * _rng.randf_range(0.05, 0.35) \
+			+ Vector3(0.0, -_rng.randf_range(0.1, 0.4), 0.0)
+	_sec_state[i] = SEC_FALL
+
+
+## 每帧推进崩毁枝条：待脱落 →（到点）脱离 → 自由落体 → 落地静置 → 原地崩碎消失。
+## 参数 delta：帧间隔（秒）；elapsed：距崩毁开始的秒数。返回：无。
+## 注意：所有运动都在**控制器局部坐标**里算（控制器就在树根处、无旋转缩放）。
+func _update_collapse_sections(delta: float, elapsed: float) -> void:
+	for i in range(_sec_state.size()):
+		var st := int(_sec_state[i])
+		if st == SEC_DEAD:
+			continue
+		if st == SEC_WAIT:
+			if elapsed < _sec_t[i]:
+				continue
+			_detach_section(i)
+			# ★ 脱离可能失败（网格丢失等）→ 直接判死，避免空转
+			st = int(_sec_state[i])
+			if st == SEC_DEAD:
+				continue
+		var dup: MeshInstance3D = _sec_dups[i]
+		if dup == null or not is_instance_valid(dup):
+			_sec_state[i] = SEC_DEAD
+			continue
+		# 当前姿态：绕 **AABB 中心**旋转（枝条的 AABB 中心在高处，绕节点原点转会甩飞）
+		var nb := Basis(_sec_axis[i], _sec_angle[i]) * _sec_basis[i]
+		var origin := _sec_center[i] - nb * _sec_mesh_center[i]
+		if st == SEC_FALL:
+			_sec_vel[i].y -= branch_gravity * delta
+			var drag := clampf(1.0 - 0.9 * delta, 0.0, 1.0)
+			_sec_vel[i].x *= drag
+			_sec_vel[i].z *= drag
+			_sec_center[i] += _sec_vel[i] * delta
+			_sec_angle[i] += _sec_spin[i] * delta
+			nb = Basis(_sec_axis[i], _sec_angle[i]) * _sec_basis[i]
+			origin = _sec_center[i] - nb * _sec_mesh_center[i]
+			# 落地：用 AABB 8 角点旋转后的最低点判，避免"插进地里"或"悬空"
+			var low := _lowest_y(nb, origin, _sec_aabb[i])
+			if low <= 0.0:
+				origin.y -= low
+				_sec_center[i] = origin + nb * _sec_mesh_center[i]
+				_sec_vel[i] = Vector3.ZERO
+				_sec_spin[i] = 0.0
+				_sec_rest[i] = branch_rest_time
+				_sec_state[i] = SEC_REST
+			dup.transform = Transform3D(nb, origin)
+			continue
+		if st == SEC_REST:
+			_sec_rest[i] -= delta
+			dup.transform = Transform3D(nb, origin)
+			if _sec_rest[i] <= 0.0:
+				_sec_rest[i] = 0.0
+				_sec_state[i] = SEC_CRUMBLE
+			continue
+		# SEC_CRUMBLE：用该段**自己的** crumble 从枝条顶部往下 discard 掉
+		_sec_rest[i] += delta
+		var p := clampf(_sec_rest[i] / maxf(branch_crumble_time, 0.01), 0.0, 1.0)
+		_sec_crumble[i] = _sec_full[i] * p
+		dup.transform = Transform3D(nb, origin)
+		if p >= 1.0:
+			_sec_crumble[i] = _sec_full[i]
+			dup.visible = false
+			_sec_state[i] = SEC_DEAD
+
+
+## 8 个 AABB 角点经 basis + origin 变换后的最低 y（判落地用）。
+func _lowest_y(basis: Basis, origin: Vector3, aabb: AABB) -> float:
+	var lowest := INF
+	for i in range(8):
+		var c := aabb.position + Vector3(
+				aabb.size.x if (i & 1) != 0 else 0.0,
+				aabb.size.y if (i & 2) != 0 else 0.0,
+				aabb.size.z if (i & 4) != 0 else 0.0)
+		lowest = minf(lowest, (origin + basis * c).y)
+	return lowest
+
+
+## 所有崩毁枝条都结束了吗？（收尾判断用；没有枝条时视为已结束）
+func _sections_all_done() -> bool:
+	for i in range(_sec_state.size()):
+		if int(_sec_state[i]) != SEC_DEAD:
+			return false
+	return true
 
 
 # ==================== 目标分类与收尾 ====================
@@ -1237,6 +1531,17 @@ func _target_is_keep() -> bool:
 	return false
 
 
+## ★ 崩毁到顶：立刻隐藏整棵树（碎块仍留在场上继续落/淡出），并标记 burned_out。
+## 与 _finish 分开的原因：_finish 会顺手把碎块一起藏掉；这里只处理"树体消失"这一步。
+func _hide_collapsed_target() -> void:
+	if _target == null or not is_instance_valid(_target):
+		return
+	_target.visible = false
+	_target.set_meta("burned_out", true)
+	if _target.has_meta("burning"):
+		_target.remove_meta("burning")
+
+
 ## 收尾：标记完成、关掉 _process、归还实例占用、熄灭火星，再按目标类型**冻结或还原**外观。
 ## 参数：无。返回：无。
 ## 副作用：清 _mm_custom_on；移除 meta("burning")；**可能**隐藏目标节点；
@@ -1256,6 +1561,9 @@ func _finish() -> void:
 	_release_instances()
 	if _sparks != null and is_instance_valid(_sparks):
 		_sparks.visible = false
+	for d in _sec_dups:
+		if d != null and is_instance_valid(d):
+			d.visible = false
 	# ★ MultiMesh（addon 的一整片草）**绝不能隐藏**：那是一片/整张地图的草，
 	#   隐藏 = "整个地图的草都烧没了"（用户实测）。它只做视觉燃烧、不消失。
 	if _target != null and is_instance_valid(_target):
@@ -1263,19 +1571,17 @@ func _finish() -> void:
 		if _target.has_meta("burning"):
 			_target.remove_meta("burning")
 		if _multimeshes.is_empty():
-			# ★★ 保留型（树干/枝 ✓）：**不隐藏** ✓ —— 叶子已由材质 alpha 缓慢淡出到透明 ✓
-			#    → 同一节点上也能做到"叶子没了、枝干焦黑留下" ✓ 不需要拆节点 ✓
-			# ★★★ 修复「烧完整棵树消失」✗：判定不能只看几何结构 ✓
-			#   只要本控制器**装上的燃烧副本里有任何木质材质** ✓ → 一律不隐藏 ✓
-			#   （这是最后一道保险：木材都烧成焦炭了，把节点藏掉显然不是需求 ✓）
-			if not (_target_is_keep() or _has_wood_mats()):
-				_target.visible = false      # 普通植被（草等）：烧尽 -> 消失 ✓
+			# ★ 普通植被（草等）：烧尽 -> 消失 ✓
+			# ★★ 树：崩毁结束时**整棵消失** ✓（用户需求 ✓）
+			#   collapse_time = 0（关闭崩毁）时保持旧行为：焦黑树架留下 ✓
+			if collapse_time > 0.0 or not (_target_is_keep() or _has_wood_mats()):
+				_target.visible = false
 		elif _mat != null:
 			_mat.set_shader_parameter("burn", 0.0)
 			_mat.set_shader_parameter("ash", 0.0)
 	# ★★ 保留型（树干/枝/整棵树 ✓）：**不还原材质** ✗→✓，而是**定在全焦黑** ✓
 	#   原因（用户实测 ✓）：还原 = 烧过的树**恢复原样、变绿** ✗✓
-	#   需求：烧过的树要保持"焦黑树架" ✓（再烧也还是焦的 ✓）
+	#   需求：烧过的树要保持焦黑（崩毁关闭时）/ 崩毁结束后节点已被隐藏 ✓
 	if _target_is_keep() or _has_wood_mats():
 		# ★★★ 记下"已烧毁"终态（用户要求 ✓）：第二次施法**直接跳过** ✗（见 burn_node 的检查 ✓）
 		#   否则第二次会从原始材质重新复制 → 看起来"又还原了" ✓✓（用户实测 ✓）
@@ -1298,7 +1604,7 @@ func _finish() -> void:
 				sm.set_shader_parameter("ash", 0.0)
 			else:
 				sm.set_shader_parameter("ash", 1.0)
-		print("[燃烧] 保留型 ✓ 已冻结（木质=焦黑 / 叶片=消失）：%s" % [
+		print("[燃烧] 保留型 ✓ 已收尾（崩毁=隐藏消失 / 关闭崩毁=焦黑留存）：%s" % [
 				_target.name if _target != null else "?"])
 		return
 	# 还原材质，避免这株被复用（对象池/重生）时还带着焦黑
@@ -1312,6 +1618,7 @@ func _finish() -> void:
 ## 本次燃烧是否已经收尾（法术/管理器可轮询它来决定何时回收本控制器节点）。
 ## 参数：无。返回：_done（true = 已烧完，或已被放弃）。
 ## 副作用：无。
-## 注意：只表示"收尾动作跑过了"，**不代表目标已经看不见**——保留型树木会一直以焦黑可见。
+## 注意：只表示"收尾动作跑过了"，**不代表目标已经看不见**——关闭崩毁（collapse_time = 0）
+##   的保留型树木会一直以焦黑可见；默认开着崩毁时目标会被隐藏。
 func is_done() -> bool:
 	return _done
