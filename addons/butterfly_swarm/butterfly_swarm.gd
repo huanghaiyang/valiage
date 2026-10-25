@@ -658,42 +658,47 @@ func _grass_scan_step(budget_us: int) -> bool:
 	var t_end := Time.get_ticks_usec() + budget_us
 	var walked := 0
 	while not _grass_scan_stack.is_empty():
-		var n: Node = _grass_scan_stack.pop_back()
-		if n != null:
-			# ★ 共同父类 GeometryInstance3D：MultiMeshInstance3D 与 MeshInstance3D 都是它的子类
-			if n is GeometryInstance3D:
-				var gi := n as GeometryInstance3D
-				var cands: Array = [gi.material_override]
-				# 按实际类型取 mesh（**不能**直接 `as MeshInstance3D`）
-				var mesh: Mesh = null
-				if n is MeshInstance3D:
-					mesh = (n as MeshInstance3D).mesh
-				elif n is MultiMeshInstance3D:
-					var mm := (n as MultiMeshInstance3D).multimesh
-					if mm != null:
-						mesh = mm.mesh
-				if mesh != null:
-					for s in range(mesh.get_surface_count()):
-						var sm := mesh.surface_get_material(s)
-						if sm != null:
-							cands.append(sm)
-				for c in cands:
-					if c == null:
+		# ★ 栈里的节点可能在分帧等待期间被释放（燃烧崩毁的枝条 / 树冠碎片会 queue_free）
+		#   → 直接赋给 `Node` 类型会报 "Trying to assign invalid previously freed instance"
+		#   先按 Variant 取出、用 is_instance_valid 校验，再转型 ✓
+		var nv: Variant = _grass_scan_stack.pop_back()
+		if not is_instance_valid(nv):
+			continue
+		var n := nv as Node
+		# ★ 共同父类 GeometryInstance3D：MultiMeshInstance3D 与 MeshInstance3D 都是它的子类
+		if n is GeometryInstance3D:
+			var gi := n as GeometryInstance3D
+			var cands: Array = [gi.material_override]
+			# 按实际类型取 mesh（**不能**直接 `as MeshInstance3D`）
+			var mesh: Mesh = null
+			if n is MeshInstance3D:
+				mesh = (n as MeshInstance3D).mesh
+			elif n is MultiMeshInstance3D:
+				var mm := (n as MultiMeshInstance3D).multimesh
+				if mm != null:
+					mesh = mm.mesh
+			if mesh != null:
+				for s in range(mesh.get_surface_count()):
+					var sm := mesh.surface_get_material(s)
+					if sm != null:
+						cands.append(sm)
+			for c in cands:
+				if c == null:
+					continue
+				_grass_looked += 1
+				if c is ShaderMaterial:
+					var smat := c as ShaderMaterial
+					var sh: Shader = smat.shader
+					if sh == null:
 						continue
-					_grass_looked += 1
-					if c is ShaderMaterial:
-						var smat := c as ShaderMaterial
-						var sh: Shader = smat.shader
-						if sh == null:
-							continue
-						var sp := String(sh.resource_path)
-						for hint in GRASS_SHADER_HINTS:
-							if sp.contains(String(hint)):
-								var id := smat.get_instance_id()
-								if not _grass_seen.has(id):
-									_grass_seen[id] = true
-									_grass_tmp_mats.append(smat)
-								break
+					var sp := String(sh.resource_path)
+					for hint in GRASS_SHADER_HINTS:
+						if sp.contains(String(hint)):
+							var id := smat.get_instance_id()
+							if not _grass_seen.has(id):
+								_grass_seen[id] = true
+								_grass_tmp_mats.append(smat)
+							break
 		for ch in n.get_children():
 			_grass_scan_stack.append(ch)
 		walked += 1

@@ -1,4 +1,4 @@
-﻿extends Node3D
+extends Node3D
 ## 植被燃烧控制器 —— 把「burn_foliage」材质贴到一株花草树木上，并跑完整段燃烧：
 ##   ① 斑点扩大（burn 0->1）② 焦黑停留 ③ 灰化消失（ash 0->1，然后隐藏）
 ##
@@ -60,6 +60,14 @@ const NOISE := "res://assets/textures/法术特效/Noise1_tiled.png"
 @export var collapse_time := 4.0
 ## ★ 枝条脱落窗口占 collapse_time 的比例（0.7 = 前 70% 时间内 L5→L1 依次脱落）
 @export var branch_fall_window := 0.7
+## ★★ 树冠（叶/花/果）是否也跟着**落到地面**（用户需求 ✓）：
+##   烧透后它们不再原地灰化淡出，而是像枝条一样往下掉、落地静置后缩小消失 ✓
+##   只对木质目标（有崩毁时间轴的树）生效 ✓
+@export var canopy_fall := true
+## 树冠下落前按**质心空间分桶**切几刀（每轴）：2 → 每块最多 8 片
+##   ★ 不能用枝条那套"连通分量"拆分 ✗：实测树冠每块有 63~2573 个连通分量
+##     （叶片/花瓣都是一张张独立卡片）→ 会生成数千个 MeshInstance3D ✗
+@export_range(1, 4) var canopy_fall_split := 2
 ## 枝条（含碎枝）掉落重力（米/秒²）
 @export var branch_gravity := 12.0
 ## 枝条落地后**缓慢缩小消失**所需时间（秒）
@@ -71,6 +79,17 @@ const NOISE := "res://assets/textures/法术特效/Noise1_tiled.png"
 ## ★ 树木本体消失后，枝条继续落地/缩小的收尾时长（秒）
 ##   没有这段的话，"崩毁到顶"的同帧会把还在半空的枝条一起藏掉 → 突然消失 ✗
 @export var debris_linger := 2.5
+## ★★ 树木崩毁**彻底消失后**，原地等这么久再从零长回来（秒）。0 = 不重生（永久烧毁）。
+@export var tree_regrow_delay := 5.0
+## 重生从零长到"长满"的时长（秒）。长满后自动关掉 growth，不再有逐顶点开销。
+@export var tree_regrow_time := 8.0
+## 重生用哪套生长：1 = fast-tree 原版（逐枝 aGrow，要求网格烘焙过 CUSTOM3）；
+##                  0 = 高度推导版（任意树都能用）。网格缺 CUSTOM3 时自动退回 0。
+@export var tree_regrow_mode := 1
+## 高度推导版（mode 0）的生长前沿过渡带（占全高比例）
+@export var tree_regrow_span := 0.3
+## 重生时把**站在树坑里**的角色浮空挪到旁边的空地（漂浮 + 粒子）。关闭则不做处理。
+@export var tree_regrow_evict := true
 @export var char_hold := 0.7          ## 全焦黑后停留
 @export var ash_time := 3.3           ## 缩到消失所需时间（用户要求：原来 1.1 秒 ×3）
 ## ★ 烧透之后多久长回来（秒）。0 = 永久烧毁（不再恢复）。
@@ -186,6 +205,9 @@ var _sec_part_mesh: Array[Mesh] = []          ## 拆出来的一根枝条网格�
 var _sec_part_mat: Array[Material] = []       ## 该层共用的材质副本（wind 关掉、crumble 恒 0）
 var _sec_dups: Array[MeshInstance3D] = []     ## 脱落后的替身（挂在控制器下）
 var _sec_mats: Dictionary = {}                ## 枝条的燃烧材质副本（命中 = 属于脱落段，crumble 恒为 0）
+## ★ 树冠（叶/花/果）脱落件的材质副本（命中 = 属于树冠脱落片）
+##   用途：它们**不能被全局 ash 灰化**溶解 ✓ 否则会在半空凭空消失 ✗（见 _process 的 ash 写入）
+var _cf_part_mats: Dictionary = {}
 var _sec_t := PackedFloat32Array()            ## 计划脱落时刻（相对崩毁开始，秒）
 var _sec_state := PackedByteArray()           ## 0=待脱落 1=下落 2=落定 3=缩小消失 4=结束
 var _sec_rest := PackedFloat32Array()         ## 落定/缩小阶段已用时间
@@ -215,6 +237,18 @@ var _sec_spawned := false
 ## ★ 崩毁到顶后的枝条收尾阶段：树木本体已隐藏，等枝条落定/缩小完再真正 _finish
 var _collapse_tail := false
 var _tail_time := 0.0
+## ★★ 树木崩毁消失后的"原地重生"阶段（用户需求）：
+##   0 = 无；1 = 等待 tree_regrow_delay；2 = 从零生长中（growth 0→1）
+const REGROW_NONE := 0
+const REGROW_WAIT := 1
+const REGROW_GROW := 2
+var _regrow_phase := REGROW_NONE
+var _regrow_wait := 0.0
+var _regrow_t := 0.0
+## 本次重生要逐帧写 growth 的材质副本（不含脱落枝条的替身材质 _sec_mats）
+var _regrow_mats: Array[ShaderMaterial] = []
+## 崩毁时临时撤掉的树体碰撞：[{b=StaticBody3D, layer=原 collision_layer}]，重生时恢复
+var _frozen_bodies: Array = []
 ## 本控制器专用的随机源（_ready 里 randomize）。
 ## 斑点相位、摆动幅度、火星散布、兜底点燃延迟都取它；每控制器一份，互不干扰。
 var _rng := RandomNumberGenerator.new()
@@ -828,6 +862,28 @@ func _copy_wind_params(i: int) -> void:
 
 
 # ==================== 材质内建 burn 路线（复制材质，逐株独立） ====================
+## ★ 会被复制到**燃烧副本**上的外观参数（贴图 / 法线 / 粗糙度 / 遮罩 等）。
+##   漏抄任何一个都会让副本掉成"白模"——症状就是"树干没有材质贴图"。
+##   两处共用：点燃时装配副本（_apply_in_shader_burn）、重生前再补抄一遍（_begin_tree_regrow）。
+const APPEARANCE_PARAMS := ["albedo_tex", "alpha_tex", "alpha_channel", "normal_up_blend",
+		"ambient_fill", "base_color", "use_albedo", "use_mask",
+		"mask_channel", "scissor", "scissor_enabled", "force_opaque", "use_uv",
+		"has_normal", "normal_tex", "normal_strength", "radial_normal", "has_rough",
+		"rough_tex", "rough_channel", "overlay_mode"]
+
+
+## 把 src 的外观参数抄到 dst（任一为空/已释放时安静返回）。
+func _copy_appearance(src: ShaderMaterial, dst: ShaderMaterial) -> void:
+	if src == null or dst == null:
+		return
+	if not is_instance_valid(src) or not is_instance_valid(dst):
+		return
+	for pn in APPEARANCE_PARAMS:
+		var pv: Variant = src.get_shader_parameter(pn)
+		if pv != null:
+			dst.set_shader_parameter(pn, pv)
+
+
 ## 走"改材质内建 burn"：给每个网格复制一份材质（共享 .tres 不能直接改，
 ## 否则所有同类植被会一起烧），之后逐帧只写这些副本的 burn / ash。
 func _apply_in_shader_burn() -> void:
@@ -868,12 +924,7 @@ func _apply_in_shader_burn() -> void:
 			#   会掉成"白模" ✓ —— 症状正是"编辑器里正常 ✓ 游戏内发白" ✓（用户实测 ✓）
 			var src_sm := base as ShaderMaterial
 			if src_sm != null:
-				for pn in ["albedo_tex", "alpha_tex", "alpha_channel", "normal_up_blend", "ambient_fill", "base_color", "use_albedo", "use_mask",
-						"mask_channel", "scissor", "scissor_enabled", "force_opaque", "use_uv",
-						"has_normal", "normal_tex", "normal_strength", "radial_normal", "has_rough", "rough_tex", "rough_channel", "overlay_mode"]:
-					var pv: Variant = src_sm.get_shader_parameter(pn)
-					if pv != null:
-						dup.set_shader_parameter(pn, pv)
+				_copy_appearance(src_sm, dup)
 			# ★★★ 自动量树高（用户要求 ✓）：用该网格**局部 AABB 的顶部**当 height_ref ✓
 			#   为什么必须自动 ✓：shader 的 `v_hgt` 就是**模型空间**的 y ✓
 			#     → height_ref 必须是**这个网格自己坐标系里的高度** ✓
@@ -1166,6 +1217,10 @@ func _build_sparks() -> void:
 func _process(delta: float) -> void:
 	if _done or _target == null or not is_instance_valid(_target):
 		return
+	# ★★ 重生阶段（等待 → 从零生长）：由下面接管，不再走燃烧时间轴
+	if _regrow_phase != REGROW_NONE:
+		_step_tree_regrow(delta)
+		return
 	# ★ 崩毁枝条拆分：点燃后按帧预算补完（不占点燃那一帧），崩毁前早已就绪 ✓
 	if not _cs_ready:
 		_step_collapse_sections()
@@ -1226,7 +1281,9 @@ func _process(delta: float) -> void:
 			var sm2: ShaderMaterial = _shader_mats[si]
 			if sm2 != null:
 				sm2.set_shader_parameter("burn", burn)
-				sm2.set_shader_parameter("ash", ash)
+				# ★★ 树冠脱落件（叶/花/果）**不吃全局灰化**：它们要靠"落地 → 缩小"消失 ✓
+				#   被 ash 提前溶解的话会在**半空中凭空消失** ✗（用户需求：落到地面 ✓）
+				sm2.set_shader_parameter("ash", 0.0 if _cf_part_mats.has(sm2) else ash)
 				# ★ 崩毁进度只写给带 crumble 的树着色器（草/灌木的 shader 没有这个 uniform）
 				#   ★ 脱落枝条**恒为 0**：它们靠落地后缩放消失，不能被 shader 提前抠掉
 				if _is_tree and sm2.shader != null:
@@ -1255,7 +1312,13 @@ func _process(delta: float) -> void:
 				_hide_collapsed_target()
 			_tail_time -= delta
 			if _tail_time <= 0.0 or _sections_all_done():
-				_finish()
+				# ★★ 用户需求：树崩毁消失后**原地重新从零长回来**（延迟 + 生长）
+				#   只有"材质内建 burn 副本"路线能重生（生长参数就写在这些副本上）
+				if tree_regrow_delay > 0.0 and tree_regrow_time > 0.0 \
+						and not _shader_mats.is_empty():
+					_start_tree_regrow()
+				else:
+					_finish()
 	elif ash >= 1.0:
 		_finish()
 
@@ -1311,6 +1374,36 @@ func _branch_level(n: String) -> int:
 	return int(n.substr(idx + 1))
 
 
+## ★ 树冠层的伪层号（比 L5 更早脱落）：叶/花/果烧完**立刻**往地面落（用户需求 ✓）
+const CANOPY_LAYER := 6
+## 认定"树冠网格"的名字关键字（材质 shader 判据之外的兜底；中英文都收）
+const CANOPY_NAME_HINTS := ["leaf", "leaves", "flower", "blossom", "petal", "fruit",
+		"叶", "花", "果"]
+
+
+## 这个网格算不算"树冠"（叶/花/果）？
+## 判据：① 是树冠分块节点（meta canopy_chunk ✓）
+##       ② 材质 shader 路径含 tree_leaves_burn ✓（最可靠）
+##       ③ 节点名含叶/花/果关键字（兜底）
+func _is_canopy_mesh(mi: MeshInstance3D) -> bool:
+	if mi == null or not is_instance_valid(mi) or mi.mesh == null:
+		return false
+	if mi.has_meta("canopy_chunk"):
+		return true
+	var m: Material = mi.material_override
+	if m == null and mi.mesh.get_surface_count() > 0:
+		m = mi.mesh.surface_get_material(0)
+	if m is ShaderMaterial:
+		var sm := m as ShaderMaterial
+		if sm.shader != null and String(sm.shader.resource_path).contains("tree_leaves_burn"):
+			return true
+	var ln := String(mi.name).to_lower()
+	for h in CANOPY_NAME_HINTS:
+		if ln.contains(h):
+			return true
+	return false
+
+
 ## 登记要脱落的枝条（名字以 Bark_Branch_L 开头）：按 L5→L1 分层，每层再按**连通分量**
 ## 拆成一根一根，并为每根排好"层内随机"的脱落时刻。
 ## ★ 为什么必须拆：Bark_Branch_L5 这种一层在场景里只有**一个**网格 → 整层是一个刚体，
@@ -1327,6 +1420,7 @@ func _build_collapse_sections() -> void:
 	_sec_part_mat.clear()
 	_sec_dups.clear()
 	_sec_mats.clear()
+	_cf_part_mats.clear()
 	_sec_t.resize(0)
 	_sec_state.resize(0)
 	_sec_rest.resize(0)
@@ -1365,6 +1459,22 @@ func _build_collapse_sections() -> void:
 	# ★ 优先脱落顺序固定为 L5 → L4 → L3 → L2 → L1（按名字里的层号降序）
 	_cs_layers.sort_custom(func(a: MeshInstance3D, b: MeshInstance3D) -> bool:
 		return _branch_level(String(a.name)) > _branch_level(String(b.name)))
+	# ★★ 树冠（叶/花/果）**排在最前**（用户需求 ✓）：烧完立刻往地面落 ✓
+	#   _finalize_collapse_times 按"连续同层"分窗 ✓ → 排前面的自然拿到最早的窗口 ✓
+	if canopy_fall:
+		var canopy: Array[MeshInstance3D] = []
+		for mi in _meshes:
+			if mi == null or not is_instance_valid(mi):
+				continue
+			if String(mi.name).begins_with("Bark_Branch_L"):
+				continue
+			if _is_canopy_mesh(mi):
+				canopy.append(mi)
+		if not canopy.is_empty():
+			var merged: Array[MeshInstance3D] = []
+			merged.append_array(canopy)
+			merged.append_array(_cs_layers)
+			_cs_layers = merged
 	if _cs_layers.is_empty():
 		_cs_ready = true
 		return
@@ -1418,6 +1528,59 @@ func _step_collapse_sections(budget_usec: int = CS_BUDGET_USEC) -> void:
 	_finalize_collapse_times()
 
 
+## ★ 树冠按**三角形质心**做空间分桶（每轴 canopy_fall_split 刀，最多 8 片）。
+## 为什么不用连通分量：树冠每块有 63~2573 个分量（每片叶/花瓣都是独立卡片）
+##   → 逐分量拆会生成数千个 MeshInstance3D ✗（实测数过）
+## 返回：每个非空桶的三角形下标表（3 个顶点下标一组），空的桶不返回。
+func _bucket_canopy_groups(verts: PackedVector3Array, tris: PackedInt32Array,
+		tcount: int) -> Array[PackedInt32Array]:
+	var out: Array[PackedInt32Array] = []
+	var div := clampi(canopy_fall_split, 1, 4)
+	if tcount <= 0:
+		return out
+	var bb := _aabb_of(verts)
+	var ncell := div * div * div
+	var inv := Vector3(
+			float(div) / maxf(bb.size.x, 1e-4),
+			float(div) / maxf(bb.size.y, 1e-4),
+			float(div) / maxf(bb.size.z, 1e-4))
+	var counts := PackedInt32Array()
+	counts.resize(ncell)
+	var cell_of := PackedInt32Array()
+	cell_of.resize(tcount)
+	for ti in range(tcount):
+		var base := ti * 3
+		var ctr := (verts[tris[base]] + verts[tris[base + 1]] + verts[tris[base + 2]]) / 3.0
+		var cx := clampi(int((ctr.x - bb.position.x) * inv.x), 0, div - 1)
+		var cy := clampi(int((ctr.y - bb.position.y) * inv.y), 0, div - 1)
+		var cz := clampi(int((ctr.z - bb.position.z) * inv.z), 0, div - 1)
+		var key := (cz * div + cy) * div + cx
+		cell_of[ti] = key
+		counts[key] += 1
+	var offsets := PackedInt32Array()
+	offsets.resize(ncell + 1)
+	var acc := 0
+	for s in range(ncell):
+		offsets[s] = acc
+		acc += counts[s]
+	offsets[ncell] = acc
+	var cursor := offsets.duplicate()
+	var flat := PackedInt32Array()
+	flat.resize(tcount * 3)
+	for ti in range(tcount):
+		var key2 := cell_of[ti]
+		var at := cursor[key2] * 3
+		cursor[key2] += 1
+		var base2 := ti * 3
+		flat[at] = tris[base2]
+		flat[at + 1] = tris[base2 + 1]
+		flat[at + 2] = tris[base2 + 2]
+	for s in range(ncell):
+		if counts[s] > 0:
+			out.append(flat.slice(offsets[s] * 3, offsets[s + 1] * 3))
+	return out
+
+
 ## 预处理一整层：并查集把三角形按**连通分量**分组（每根枝条一组）。
 ## 参数 mi：该层 MeshInstance3D。返回：true = 拆出了至少一根枝条。
 func _prepare_layer_parts(mi: MeshInstance3D) -> bool:
@@ -1441,76 +1604,84 @@ func _prepare_layer_parts(mi: MeshInstance3D) -> bool:
 			tris[i] = i
 	var vcount := verts.size()
 	var tcount := tris.size() / 3
-	# ★★ 并查集：共享顶点的三角形属于同一根枝条。
-	#   性能（实测）：原来每根三角形要 4 次 GDScript 函数调用 + Array[int] 装箱，
-	#   L3 一层就 24 ms ✗ → 改成 **PackedInt32Array + 完全内联 + 路径减半** ✓
-	var parent := PackedInt32Array()
-	parent.resize(vcount)
-	for i in range(vcount):
-		parent[i] = i
-	for ti in range(tcount):
-		var base := ti * 3
-		var a := tris[base]
-		var b := tris[base + 1]
-		var c := tris[base + 2]
-		while parent[a] != a:
-			parent[a] = parent[parent[a]]
-			a = parent[a]
-		while parent[b] != b:
-			parent[b] = parent[parent[b]]
-			b = parent[b]
-		if a != b:
-			parent[b] = a
-		while parent[c] != c:
-			parent[c] = parent[parent[c]]
-			c = parent[c]
-		if a != c:
-			parent[c] = a
-	# 统计每根枝条的三角形数（同时把每根三角形归到"槽号"）
-	var tri_root := PackedInt32Array()
-	tri_root.resize(tcount)
-	var slot_of := {}
-	var counts := PackedInt32Array()
-	for ti in range(tcount):
-		var a := tris[ti * 3]
-		while parent[a] != a:
-			parent[a] = parent[parent[a]]
-			a = parent[a]
-		tri_root[ti] = a
-		var slot: int = slot_of.get(a, -1)
-		if slot < 0:
-			slot = counts.size()
-			slot_of[a] = slot
-			counts.append(0)
-		counts[slot] += 1
-	# 按槽号算偏移，把三角形下标一次性铺进一个大数组，再切片（避免逐根数组反复复制 ✗）
-	var n_slot := counts.size()
-	var offsets := PackedInt32Array()
-	offsets.resize(n_slot + 1)
-	var acc := 0
-	for s in range(n_slot):
-		offsets[s] = acc
-		acc += counts[s]
-	offsets[n_slot] = acc
-	var cursor := PackedInt32Array()
-	cursor.resize(n_slot)
-	for s in range(n_slot):
-		cursor[s] = offsets[s]
-	var flat := PackedInt32Array()
-	flat.resize(tcount * 3)
-	for ti in range(tcount):
-		var slot2: int = slot_of[tri_root[ti]]
-		var at := cursor[slot2] * 3
-		cursor[slot2] += 1
-		var base2 := ti * 3
-		flat[at] = tris[base2]
-		flat[at + 1] = tris[base2 + 1]
-		flat[at + 2] = tris[base2 + 2]
-	for s in range(n_slot):
-		_cs_groups.append(flat.slice(offsets[s] * 3, offsets[s + 1] * 3))
-	_cs_lv = _branch_level(String(mi.name))
+	# ★★ 树冠（叶/花/果）走**质心空间分桶**，不走枝条那套连通分量（原因见 canopy_fall_split）
+	var canopy := canopy_fall and _is_canopy_mesh(mi)
+	if canopy:
+		_cs_groups = _bucket_canopy_groups(verts, tris, tcount)
+	else:
+		# ★★ 并查集：共享顶点的三角形属于同一根枝条。
+		#   性能（实测）：原来每根三角形要 4 次 GDScript 函数调用 + Array[int] 装箱，
+		#   L3 一层就 24 ms ✗ → 改成 **PackedInt32Array + 完全内联 + 路径减半** ✓
+		var parent := PackedInt32Array()
+		parent.resize(vcount)
+		for i in range(vcount):
+			parent[i] = i
+		for ti in range(tcount):
+			var base := ti * 3
+			var a := tris[base]
+			var b := tris[base + 1]
+			var c := tris[base + 2]
+			while parent[a] != a:
+				parent[a] = parent[parent[a]]
+				a = parent[a]
+			while parent[b] != b:
+				parent[b] = parent[parent[b]]
+				b = parent[b]
+			if a != b:
+				parent[b] = a
+			while parent[c] != c:
+				parent[c] = parent[parent[c]]
+				c = parent[c]
+			if a != c:
+				parent[c] = a
+		# 统计每根枝条的三角形数（同时把每根三角形归到"槽号"）
+		var tri_root := PackedInt32Array()
+		tri_root.resize(tcount)
+		var slot_of := {}
+		var counts := PackedInt32Array()
+		for ti in range(tcount):
+			var a := tris[ti * 3]
+			while parent[a] != a:
+				parent[a] = parent[parent[a]]
+				a = parent[a]
+			tri_root[ti] = a
+			var slot: int = slot_of.get(a, -1)
+			if slot < 0:
+				slot = counts.size()
+				slot_of[a] = slot
+				counts.append(0)
+			counts[slot] += 1
+		# 按槽号算偏移，把三角形下标一次性铺进一个大数组，再切片（避免逐根数组反复复制 ✗）
+		var n_slot := counts.size()
+		var offsets := PackedInt32Array()
+		offsets.resize(n_slot + 1)
+		var acc := 0
+		for s in range(n_slot):
+			offsets[s] = acc
+			acc += counts[s]
+		offsets[n_slot] = acc
+		var cursor := PackedInt32Array()
+		cursor.resize(n_slot)
+		for s in range(n_slot):
+			cursor[s] = offsets[s]
+		var flat := PackedInt32Array()
+		flat.resize(tcount * 3)
+		for ti in range(tcount):
+			var slot2: int = slot_of[tri_root[ti]]
+			var at := cursor[slot2] * 3
+			cursor[slot2] += 1
+			var base2 := ti * 3
+			flat[at] = tris[base2]
+			flat[at + 1] = tris[base2 + 1]
+			flat[at + 2] = tris[base2 + 2]
+		for s in range(n_slot):
+			_cs_groups.append(flat.slice(offsets[s] * 3, offsets[s + 1] * 3))
+	_cs_lv = CANOPY_LAYER if canopy else _branch_level(String(mi.name))
 	_cs_m0 = global_transform.affine_inverse() * mi.global_transform
 	_cs_mat = _make_part_material(mi)
+	if canopy and _cs_mat is ShaderMaterial:
+		# ★ 树冠脱落件不能被全局 ash 灰化溶解（见 _process 的 ash 写入）
+		_cf_part_mats[_cs_mat] = true
 	# ★ fast-tree 风摆移植：CUSTOM0~2 是每顶点 4 个 float，必须显式声明 RGBA_FLOAT，
 	#   否则 add_surface_from_arrays 按默认 RGBA8 去要 PackedByteArray → surface 建不出来
 	_cs_custom = 0
@@ -1567,12 +1738,17 @@ func _make_layer_part(tri_idx: PackedInt32Array) -> void:
 	_sec_land_o.append(m0.origin)
 	_sec_shrink_pivot.append(m0.origin)
 	# ★ 翻滚：随机水平轴 + 约 90°（树干上的枝条翻倒后正好横躺在地面上）✓
+	#   ★ 树冠片（叶/花/果）更轻更飘：转角小、转得慢（0.55~1.25 rad，时长 ×1.6）
 	var axis_ang := _rng.randf_range(0.0, TAU)
 	_sec_axis.append(Vector3(cos(axis_ang), 0.0, sin(axis_ang)))
 	_sec_angle.append(0.0)
-	var tgt := _rng.randf_range(1.42, 1.56)          # 81°~89°
+	var canopy := _cs_lv >= CANOPY_LAYER
+	var tgt := _rng.randf_range(0.55, 1.25) if canopy else _rng.randf_range(1.42, 1.56)
 	_sec_target.append(tgt)
-	_sec_spin.append(tgt / maxf(branch_rotate_time * _rng.randf_range(0.85, 1.15), 0.05))
+	var rot_t := branch_rotate_time * _rng.randf_range(0.85, 1.15)
+	if canopy:
+		rot_t *= 1.6
+	_sec_spin.append(tgt / maxf(rot_t, 0.05))
 
 
 ## 全部枝条拆完后：给每根排"层内随机"的脱落时刻，并放行崩毁。
@@ -1930,6 +2106,10 @@ func _hide_collapsed_target() -> void:
 	_target.set_meta("burned_out", true)
 	if _target.has_meta("burning"):
 		_target.remove_meta("burning")
+	# ★ 树体已经崩毁消失，碰撞也必须一起撤掉 —— 否则"看不见的树干"还在挡路，
+	#   重生时也不可能有人站在树坑里（重生开始前会恢复，见 _begin_tree_regrow）。
+	if tree_regrow_delay > 0.0:
+		_freeze_tree_collision()
 
 
 ## 收尾：标记完成、关掉 _process、归还实例占用、熄灭火星，再按目标类型**冻结或还原**外观。
@@ -1943,6 +2123,9 @@ func _hide_collapsed_target() -> void:
 func _finish() -> void:
 	_done = true
 	set_process(false)
+	# ★ 兜底：若崩毁时撤掉了树体碰撞却没走"重生"（例如材质副本装配失败），
+	#   必须在这里还原，否则树干会永久不再挡路。
+	_restore_tree_collision()
 	# ★ 逐实例燃烧**不清零**：烧掉的草要留在烧毁状态（清零会让它"又冒出来"）。
 	#   也**不还原 use_custom_data** —— 一还原就等于把每个实例的数据抹掉。
 	#   （同一片草再被烧时，_start_multimesh_burn 会重新写入它需要的实例。）
@@ -2003,6 +2186,263 @@ func _finish() -> void:
 		if nd != null and is_instance_valid(nd):
 			nd.material_override = d["m"]
 			nd.material_overlay = d["o"]
+
+
+# ==================== 崩毁后原地重生 ====================
+## 进入"等待 → 重生"阶段：收尾火星/碎枝，但**不**调用 _finish
+##（那会把树彻底定格成烧毁，且关掉 _process）。
+func _start_tree_regrow() -> void:
+	_regrow_phase = REGROW_WAIT
+	_regrow_wait = tree_regrow_delay
+	_regrow_t = 0.0
+	# 与 _finish 相同的收尾：归还实例占用、熄火星、藏碎枝（树体已在 _hide_collapsed_target 隐藏）
+	_release_instances()
+	if _sparks != null and is_instance_valid(_sparks):
+		_sparks.visible = false
+	for d in _sec_dups:
+		if d != null and is_instance_valid(d):
+			d.visible = false
+	# 等待期间材质定在"烧尽"，但树本身是隐藏的
+	for m in _shader_mats:
+		if m == null or not is_instance_valid(m) or _sec_mats.has(m):
+			continue
+		m.set_shader_parameter("burn", 1.0)
+		m.set_shader_parameter("ash", 1.0)
+
+
+## 重生阶段每帧：等待倒计时 → 从零生长（逐帧写材质的 growth）。
+func _step_tree_regrow(delta: float) -> void:
+	# ★ 副本不在 wind.gd 的材质名单里；等待/生长期间必须继续抄风参数，
+	#   否则树一出现就完全僵住（直到风系统下一次周期扫描收录它）。
+	for si in range(_shader_mats.size()):
+		_copy_wind_params(si)
+	if _regrow_phase == REGROW_WAIT:
+		_regrow_wait -= delta
+		if _regrow_wait <= 0.0:
+			_begin_tree_regrow()
+		return
+	_regrow_t = minf(_regrow_t + delta, maxf(0.01, tree_regrow_time))
+	var g := _regrow_t / maxf(0.01, tree_regrow_time)
+	for sm in _regrow_mats:
+		if sm != null and is_instance_valid(sm):
+			sm.set_shader_parameter("growth", g)
+	if _regrow_t >= tree_regrow_time:
+		_end_tree_regrow()
+
+
+## 重生真正开始：恢复树体/碰撞、清焦黑、装入 growth=0，再把树坑里的角色浮空挪开。
+func _begin_tree_regrow() -> void:
+	_regrow_phase = REGROW_GROW
+	_regrow_t = 0.0
+	if _target == null or not is_instance_valid(_target):
+		_finish()
+		return
+	# ① 树坑里的角色先查出来（查询只看形状，不受"碰撞层被临时撤掉"影响）
+	var occupants: Array = _find_tree_occupants() if tree_regrow_evict else []
+	# ② 树体碰撞恢复 —— 判断"旁边的空地能不能站"时必须能看见树干
+	_restore_tree_collision()
+	# ③ 选生长模式：网格没烘焙 CUSTOM3 的树自动退回高度推导版
+	var mode := tree_regrow_mode
+	if mode == 1 and not _has_agrow_data():
+		mode = 0
+		push_warning("[燃烧] %s 缺 aGrow(CUSTOM3) → 重生改用高度推导生长" % _target.name)
+	# ④ 清焦黑 + 装入 growth 参数（growth=0 → 整棵树收缩在枝基点，看不见）
+	_regrow_mats.clear()
+	for si in range(_shader_mats.size()):
+		var sm: ShaderMaterial = _shader_mats[si]
+		if sm == null or not is_instance_valid(sm) or _sec_mats.has(sm):
+			continue
+		# ★★ 防御（用户反馈"树干重生后没有材质贴图"）：重生前把**外观参数**
+		#   （albedo_tex / 法线 / 粗糙度 / 遮罩…）从原材质再补抄一遍 ✓
+		#   燃烧期任何环节把这些参数弄丢，都会让树长出来是"白模"✗
+		if si < _shader_src.size():
+			_copy_appearance(_shader_src[si], sm)
+		sm.set_shader_parameter("burn", 0.0)
+		sm.set_shader_parameter("ash", 0.0)
+		sm.set_shader_parameter("crumble", 0.0)
+		var hh := 0.0
+		var hv: Variant = sm.get_shader_parameter("height_ref")
+		if hv is float or hv is int:
+			hh = float(hv)
+		sm.set_shader_parameter("growth_height", maxf(hh, 0.1))
+		sm.set_shader_parameter("growth_span", tree_regrow_span)
+		sm.set_shader_parameter("growth_mode", mode)
+		sm.set_shader_parameter("growth", 0.0)
+		sm.set_shader_parameter("growth_enabled", true)
+		_regrow_mats.append(sm)
+	# ⑤ 原始枝条网格重新显示（崩毁替身保持隐藏），整棵树重新出现
+	for src in _sec_src:
+		if src != null and is_instance_valid(src):
+			src.visible = true
+	_target.visible = true
+	# ⑥ 把站在树坑里的角色浮空、漂到旁边的空地上
+	for b in occupants:
+		_levitate_out(b)
+	print("[燃烧] 重生开始：%s（模式 %d）" % [_target.name, mode])
+
+
+## 长满：关掉 growth（消除逐顶点开销），并撤销 burned_out 让树可以再次被点燃。
+func _end_tree_regrow() -> void:
+	for sm in _regrow_mats:
+		if sm != null and is_instance_valid(sm):
+			sm.set_shader_parameter("growth", 1.0)
+			sm.set_shader_parameter("growth_enabled", false)
+	_regrow_mats.clear()
+	_regrow_phase = REGROW_NONE
+	_done = true
+	set_process(false)
+	if _target != null and is_instance_valid(_target) and _target.has_meta("burned_out"):
+		_target.remove_meta("burned_out")
+	print("[燃烧] 重生完成 ✓ %s" % [_target.name if _target != null else "?"])
+
+
+## 撤掉树体碰撞（记录原值，重生时恢复）
+func _freeze_tree_collision() -> void:
+	_frozen_bodies.clear()
+	if _target == null or not is_instance_valid(_target):
+		return
+	for n in _target.find_children("*", "StaticBody3D", true, false):
+		var b := n as StaticBody3D
+		if b == null:
+			continue
+		_frozen_bodies.append({"b": b, "layer": b.collision_layer})
+		b.collision_layer = 0
+
+
+## 恢复树体碰撞（重生开始前调用）
+func _restore_tree_collision() -> void:
+	for e in _frozen_bodies:
+		var b: Variant = e.get("b")
+		if b != null and is_instance_valid(b):
+			(b as StaticBody3D).collision_layer = int(e.get("layer", 1))
+	_frozen_bodies.clear()
+
+
+## 找出**当前正站在树体碰撞范围内**的角色（只认 CharacterBody3D）
+func _find_tree_occupants() -> Array:
+	var out: Array = []
+	if _target == null or not is_instance_valid(_target):
+		return out
+	var space := _target.get_world_3d().direct_space_state
+	if space == null:
+		return out
+	var seen := {}
+	for n in _target.find_children("*", "CollisionShape3D", true, false):
+		var cs := n as CollisionShape3D
+		if cs == null or cs.shape == null:
+			continue
+		var q := PhysicsShapeQueryParameters3D.new()
+		q.shape = cs.shape
+		q.transform = cs.global_transform
+		q.collision_mask = 1          # 角色在物理层 1（player.gd: collision_layer = 1）
+		q.collide_with_areas = false
+		for hit in space.intersect_shape(q, 8):
+			var col: Variant = hit.get("collider")
+			if col is CharacterBody3D and not seen.has(col):
+				seen[col] = true
+				out.append(col)
+	return out
+
+
+## 让角色浮空并漂到旁边的空地（角色脚本提供 start_levitate；没有接口就兜底直接挪走）
+func _levitate_out(body: CharacterBody3D) -> void:
+	if body == null or not is_instance_valid(body):
+		return
+	var spot := _find_free_spot(body)
+	if not body.has_method("start_levitate"):
+		body.global_position = spot
+		return
+	var d := clampf(1.5 + body.global_position.distance_to(spot) * 0.35, 1.5, 3.4)
+	body.call("start_levitate", spot, d, 1.25)
+	print("[燃烧] 树坑里有角色 → 浮空挪开：%s -> %s" % [body.name, str(spot)])
+
+
+## 在树坑外找一块"胶囊放得下、且脚下有地"的空地（由近到远扫描一圈圈）
+func _find_free_spot(body: CharacterBody3D) -> Vector3:
+	if _target == null or not is_instance_valid(_target):
+		return global_position
+	var base := _target.global_position
+	if body == null or not is_instance_valid(body):
+		return base
+	var space := body.get_world_3d().direct_space_state
+	if space == null:
+		return base
+	var start_r := _trunk_radius() + 1.5
+	var radii := [start_r, start_r + 1.5, start_r + 3.0, start_r + 5.0, start_r + 7.5]
+	var exclude: Array[RID] = [body.get_rid()]
+	var mask := body.collision_mask
+	for r in radii:
+		for i in range(24):
+			var ang := TAU * float(i) / 24.0
+			var c := base + Vector3(cos(ang) * r, 0.0, sin(ang) * r)
+			var gy := _ground_y(space, c, base.y, mask, exclude)
+			if gy == INF:
+				continue
+			var feet := Vector3(c.x, gy + 0.08, c.z)
+			if _spot_clear(space, feet, mask, exclude):
+				return feet
+	# 兜底：至少别留在树坑里
+	return base + Vector3(start_r, 0.05, 0.0)
+
+
+## 从 ref_y 上方竖直打一条射线找地面高度；没打到返回 INF
+func _ground_y(space: PhysicsDirectSpaceState3D, at: Vector3, ref_y: float,
+		mask: int, exclude: Array[RID]) -> float:
+	var from := Vector3(at.x, ref_y + 40.0, at.z)
+	var to := Vector3(at.x, ref_y - 80.0, at.z)
+	var q := PhysicsRayQueryParameters3D.create(from, to, mask, exclude)
+	var hit := space.intersect_ray(q)
+	if hit.is_empty():
+		return INF
+	return float((hit["position"] as Vector3).y)
+
+
+## 该落脚点上放一个角色胶囊是否不撞任何东西
+func _spot_clear(space: PhysicsDirectSpaceState3D, feet: Vector3, mask: int,
+		exclude: Array[RID]) -> bool:
+	var cap := CapsuleShape3D.new()
+	cap.radius = 0.45
+	cap.height = 1.7
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = cap
+	q.transform = Transform3D(Basis(), feet + Vector3(0.0, 0.9, 0.0))
+	q.collision_mask = mask
+	q.exclude = exclude
+	q.collide_with_areas = false
+	return space.intersect_shape(q, 1).is_empty()
+
+
+## 树干碰撞体的水平半径（米）——决定"树坑外"从多远开始找空地
+func _trunk_radius() -> float:
+	var r := 1.5
+	if _target == null or not is_instance_valid(_target):
+		return r
+	var c := _target.global_position
+	for n in _target.find_children("*", "CollisionShape3D", true, false):
+		var cs := n as CollisionShape3D
+		if cs == null or not (cs.shape is ConvexPolygonShape3D):
+			continue
+		var pts: PackedVector3Array = (cs.shape as ConvexPolygonShape3D).points
+		for p in pts:
+			var w: Vector3 = cs.global_transform * p
+			r = maxf(r, Vector2(w.x - c.x, w.z - c.z).length())
+	return r
+
+
+## 树体所有网格是否都烘焙了 aGrow（CUSTOM3）——决定原版生长能否用
+func _has_agrow_data() -> bool:
+	if _target == null or not is_instance_valid(_target):
+		return false
+	var found := false
+	for n in _target.find_children("*", "MeshInstance3D", true, false):
+		var mi := n as MeshInstance3D
+		if mi == null or mi.mesh == null or mi.mesh.get_surface_count() <= 0:
+			continue
+		var arr: Array = mi.mesh.surface_get_arrays(0)
+		if arr.is_empty() or arr[Mesh.ARRAY_CUSTOM3] == null:
+			return false
+		found = true
+	return found
 
 
 ## 本次燃烧是否已经收尾（法术/管理器可轮询它来决定何时回收本控制器节点）。

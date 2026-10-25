@@ -777,6 +777,10 @@ func _physics_process(delta: float) -> void:
 	if interact_freeze:
 		_update_camera_only()
 		return
+	# ★ 浮空挪移（树木重生让位）期间：同样冻结物理推进，位置由 player.gd::_step_levitate 驱动
+	if player != null and player.has_method("is_levitating") and player.is_levitating():
+		_update_camera_only()
+		return
 	# WASD 水平移动：始终响应键盘（不依赖鼠标捕获）
 	var moved := false
 	var dir := _get_move_input()

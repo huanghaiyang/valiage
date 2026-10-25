@@ -104,6 +104,15 @@ var _cast_timer := 0.0            # 放置施法手势剩余时间（到时恢�
 var _spell_casting := false
 var _interact := ""                 # "", "sit", "sleep", "climb"（家具互动）
 var _interact_top_y := 0.0        # 爬梯目标顶 y
+## ★ 浮空挪移（树木重生时把站在树坑里的角色漂到旁边的空地）：
+##   true 时位置由 _step_levitate 直接驱动，camera_rig 的物理推进被跳过。
+var _levitate := false
+var _lev_t := 0.0                   # 已用时间
+var _lev_dur := 1.0                 # 总时长
+var _lev_from := Vector3.ZERO       # 起点
+var _lev_to := Vector3.ZERO         # 终点（地面）
+var _lev_lift := 1.25               # 浮空高度（米）
+var _lev_fx: CPUParticles3D = null  # 漂浮粒子（挂在本节点下，随角色走）
 
 ## 角色档案 id（见 scripts/character_profile.gd）：换模型只改这里，或加一份档案
 ## "zhujue" = 主角（唯一；旧的 KayKit "mage" 档案也在，便于回退对比）
@@ -579,6 +588,9 @@ func _physics_process(delta: float) -> void:
 	_sync_grip_target()
 	_auto_fist_calib()
 	_update_fist_marker(delta)
+	# ★ 浮空挪移：位置由本函数直接驱动（camera_rig 会跳过物理推进，见 is_levitating）
+	if _levitate:
+		_step_levitate(delta)
 	if _step_cooldown > 0.0:
 		_step_cooldown = maxf(0.0, _step_cooldown - delta)
 	# 滞空兜底：长时间处于跳跃状态说明落地事件漏了，强制复位状态机
@@ -1838,6 +1850,105 @@ func get_lean() -> float:
 ## 当前模型朝向 yaw（供相机控制器检测转身）
 func get_facing_yaw() -> float:
 	return body.rotation.y if body != null else rotation.y
+
+# ==================== 浮空挪移（树木重生让位） ====================
+## 让角色先浮起来、再漂到旁边空地，最后轻轻落回地面。
+## 参数：target = 目的地（世界坐标，通常是地面点）；duration = 总时长（秒）；
+##       lift = 浮空高度（米）。调用方：scripts/vfx/foliage_burn.gd 的 _levitate_out。
+## 副作用：打断家具互动/跳跃状态；本节点位置改由 _step_levitate 直接驱动，
+##         camera_rig 在 is_levitating() 为 true 期间跳过重力/移动推进。
+func start_levitate(target: Vector3, duration: float = 2.0, lift: float = 1.25) -> void:
+	if _interact != "":
+		stop_interact()
+	_levitate = true
+	_lev_t = 0.0
+	_lev_from = global_position
+	_lev_to = target
+	_lev_dur = maxf(0.3, duration)
+	_lev_lift = maxf(0.0, lift)
+	_jump_air = false
+	_air_time = 0.0
+	velocity = Vector3.ZERO
+	set_moving(false)
+	_spawn_levitate_fx()
+
+
+## 是否正在浮空挪移（camera_rig 据此跳过物理推进）
+func is_levitating() -> bool:
+	return _levitate
+
+
+## 浮空运动曲线：先快速浮起 → 悬浮漂移（带轻微上下浮动）→ 最后 22% 落回地面。
+func _step_levitate(delta: float) -> void:
+	_lev_t += delta
+	var t := clampf(_lev_t / maxf(0.01, _lev_dur), 0.0, 1.0)
+	var ease := t * t * (3.0 - 2.0 * t)
+	var rise := clampf(t / 0.28, 0.0, 1.0)
+	rise = 1.0 - pow(1.0 - rise, 2.0)          # 先快后慢地浮起来
+	var fall := smoothstep(0.78, 1.0, t)        # 最后 22% 才落回
+	var h := _lev_lift * (rise - fall)
+	var bob := sin(_lev_t * 7.5) * 0.08 * clampf(h / maxf(0.01, _lev_lift), 0.0, 1.0)
+	var p := _lev_from.lerp(_lev_to, ease)
+	p.y += maxf(h + bob, 0.0)
+	global_position = p
+	velocity = Vector3.ZERO
+	if t >= 1.0:
+		global_position = _lev_to
+		_levitate = false
+		_stop_levitate_fx()
+		_update_move_anim()
+
+
+## 创建漂浮粒子（淡蓝小光点，向上缓缓升起；挂在本节点下随角色移动）
+func _spawn_levitate_fx() -> void:
+	if _lev_fx != null and is_instance_valid(_lev_fx):
+		return
+	var p := CPUParticles3D.new()
+	p.name = "LevitateFx"
+	p.amount = 28
+	p.lifetime = 1.1
+	p.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
+	p.emission_sphere_radius = 0.35
+	p.direction = Vector3.UP
+	p.spread = 22.0
+	p.gravity = Vector3(0.0, 0.35, 0.0)
+	p.initial_velocity_min = 0.2
+	p.initial_velocity_max = 0.7
+	p.scale_amount_min = 0.6
+	p.scale_amount_max = 1.4
+	p.color = Color(0.65, 0.92, 1.0, 0.9)
+	var q := QuadMesh.new()
+	q.size = Vector2(0.1, 0.1)
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	m.vertex_color_use_as_albedo = true
+	m.emission_enabled = true
+	m.emission = Color(0.55, 0.85, 1.0)
+	m.emission_energy_multiplier = 1.6
+	q.material = m
+	p.mesh = q
+	p.position = Vector3(0.0, 0.35, 0.0)
+	p.emitting = true
+	add_child(p)
+	_lev_fx = p
+
+
+## 停止粒子发射：让已在飞的粒子自然消散后再释放节点
+func _stop_levitate_fx() -> void:
+	if _lev_fx == null or not is_instance_valid(_lev_fx):
+		_lev_fx = null
+		return
+	var p := _lev_fx
+	_lev_fx = null
+	p.emitting = false
+	var tr := get_tree()
+	if tr == null:
+		p.queue_free()
+		return
+	tr.create_timer(p.lifetime + 0.3).timeout.connect(p.queue_free)
+
 
 # ==================== 移动状态联动（走 / 跑 / 侧移 / Idle） ====================
 # ---------- 移动状态联动 ----------
