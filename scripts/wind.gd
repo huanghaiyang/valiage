@@ -662,8 +662,11 @@ func _register(m: ShaderMaterial) -> int:
 	#   它的路径不含 `grass_wind` ✗ → 之前**不被注册** → 叶子换成燃烧材质后就**不受风** ✓✓
 	#   （`tree_burn_keep*` 是木质 ✓ sway_amt=0 ✓ 注册也无位移 ✓ 一并纳入便于统一管理 ✓）
 	# ★ fast-tree 风摆移植：树独立成 _mats_tree（米级风场），草留在 _mats_ours（相对风场）
+	# ★ 落叶（scripts/vfx/falling_leaves.gd → assets/shaders/falling_leaves.gdshader）也走
+	#   _mats_tree：它与树**共用同一份风场 uniform**，风向/阵风必须完全同步
 	var is_grass := path.contains("grass_wind") or path.contains("blend_alpha")
-	var is_tree := path.contains("tree_leaves_burn") or path.contains("tree_burn_keep")
+	var is_tree := path.contains("tree_leaves_burn") or path.contains("tree_burn_keep") \
+			or path.contains("falling_leaves")
 	var is_sgt := path.contains("simplegrasstextured")
 	if not (is_grass or is_tree or is_sgt):
 		return 0

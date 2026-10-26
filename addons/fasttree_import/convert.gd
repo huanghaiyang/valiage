@@ -8,6 +8,7 @@ extends RefCounted
 ##   res://assets/models/树/<name>/wind/<节点>.res   烘焙网格（CUSTOM0/1 风摆数据）
 ##   res://scenes/树/<name>/_ft_mat_<角色>.tres       树着色器材质（贴图/风参/燃烧元数据）
 ##   res://scenes/树/<name>/<name>.tscn               可直接拖进场景的预制场景
+##      （含 CanopyCull 树冠分块剔除；有树叶/花朵时自动带 FallingLeaves 落叶节点）
 ##
 ## 为什么需要它：
 ##   Godot 的 glTF 导入器会丢弃 `_AWIND/_APHASE/_AORIGIN`（自定义属性），
@@ -24,6 +25,7 @@ extends RefCounted
 const BARK_SHADER := "res://assets/shaders/tree_burn_keep_ds.gdshader"
 const LEAF_SHADER := "res://assets/shaders/tree_leaves_burn_ds.gdshader"
 const CANOPY_SCRIPT := "res://scripts/world/canopy_chunk_cull.gd"
+const FALLING_SCRIPT := "res://scripts/vfx/falling_leaves.gd"
 const CUSTOM_FLAGS: int = (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT) \
 		| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM1_SHIFT) \
 		| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM2_SHIFT) \
@@ -419,6 +421,8 @@ func _build_scene(src: Node, meshes: Array, baked: Dictionary, mats: Dictionary,
 			leaf_mat = mats[role]["mat"]
 			break
 	_rebuild_nodes(src, root, root, baked, mats, leaf_mat)
+	# 落叶 / 落花：按实际存在的树叶、花朵网格自动挂 FallingLeaves
+	_add_falling_leaves(root, baked, tree_top)
 	# 树冠分块剔除（只有真的存在叶片网格才挂）
 	if leaf_mat != null:
 		var cull_script: Script = load(CANOPY_SCRIPT)
@@ -476,6 +480,53 @@ func _rebuild_nodes(src: Node, dst: Node, scene_root: Node, baked: Dictionary, m
 			dst.add_child(wrap)
 			wrap.owner = scene_root
 			_rebuild_nodes(child, wrap, scene_root, baked, mats, leaf_mat)
+
+
+## 落叶 / 落花：给烘好的树自动挂一个 FallingLeaves 节点。
+##   · 挂在树叶（没有树叶就挂花朵）所在的**同一父节点**下，路径才能写成 `../<节点名>`
+##   · 只按**实际存在**的来源打开开关（没有花朵的树不会去落花）
+##   · 卡片尺寸按树高自适应（大樱花树 27.2 模型单位 → 0.9）
+func _add_falling_leaves(root: Node3D, baked: Dictionary, tree_top: float) -> void:
+	var script: Script = load(FALLING_SCRIPT)
+	if script == null:
+		_log("[落叶] 找不到 %s，跳过" % FALLING_SCRIPT)
+		return
+	var leaves_mi := _foliage_of_role(root, baked, "leaves")
+	var flowers_mi := _foliage_of_role(root, baked, "flowers")
+	if leaves_mi == null and flowers_mi == null:
+		return
+	var host: Node = (leaves_mi if leaves_mi != null else flowers_mi).get_parent()
+	if host == null:
+		return
+	var fl: MeshInstance3D = script.new()
+	fl.name = "FallingLeaves"
+	host.add_child(fl)
+	fl.owner = root
+	var base := clampf(tree_top * 0.033, 0.25, 2.0)
+	fl.set("leaves_size_scale", base)
+	fl.set("flowers_size_scale", base * 0.89)
+	if leaves_mi != null:
+		fl.set("leaves_path", fl.get_path_to(leaves_mi))
+	else:
+		fl.set("leaves_enabled", false)
+	if flowers_mi != null:
+		fl.set("flowers_path", fl.get_path_to(flowers_mi))
+	else:
+		fl.set("flowers_enabled", false)
+	_log("落叶 / 落花：树叶 %s ｜ 花朵 %s（卡片尺寸 %.2f）" % [
+			"有" if leaves_mi != null else "无",
+			"有" if flowers_mi != null else "无", base])
+
+
+## 按角色（leaves / flowers）找重建后的第一个树冠网格
+func _foliage_of_role(root: Node, baked: Dictionary, role: String) -> MeshInstance3D:
+	for nm in baked.keys():
+		if _role_of(String(nm)) != role:
+			continue
+		var mi := _find_node(root, String(nm)) as MeshInstance3D
+		if mi != null:
+			return mi
+	return null
 
 
 func _add_collision(root: Node3D, baked: Dictionary) -> void:

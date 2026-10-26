@@ -37,7 +37,7 @@ cd D:\sgames\CozyVale
 | --- | --- | --- |
 | 烘焙网格 | `assets/models/树/<名字>/wind/<节点>.res` | 每个网格节点一个 `ArrayMesh`：`VERTEX/NORMAL/TANGENT/COLOR/TEX_UV/INDEX`（与原网格一致）+ `CUSTOM0=(aOrigin, aWind)`、`CUSTOM1=(aPhase, isLeaf, nodeId, 1)` |
 | 材质 | `scenes/树/<名字>/_ft_mat_bark.tres`<br>`_ft_mat_leaves.tres`<br>`_ft_mat_flowers.tres` | 自动套 `tree_burn_keep_ds`（树干/枝/果）或 `tree_leaves_burn_ds`（叶/花），贴图直接引用 GLB 导入出来的 PNG，写入风摆/燃烧/法线参数 |
-| 场景 | `scenes/树/<名字>/<名字>.tscn` | 独立场景（不依赖 GLB 实例）：`<名字>` → `FastTree` → 8 个 `MeshInstance3D`（烘焙网格 + 材质覆盖）+ `CanopyCull`（树冠分块剔除） |
+| 场景 | `scenes/树/<名字>/<名字>.tscn` | 独立场景（不依赖 GLB 实例）：`<名字>` → `FastTree` → 8 个 `MeshInstance3D`（烘焙网格 + 材质覆盖）+ `CanopyCull`（树冠分块剔除）+ `FallingLeaves`（落叶 / 落花，有树叶/花朵时才挂） |
 
 ---
 
@@ -70,6 +70,11 @@ cd D:\sgames\CozyVale
 - **燃烧**：`height_ref / wind_height_ref = 全树高度`，并写 `metadata/burn_mode`（wood/leaf）与 `cull_mode`，
   与项目现有树保持一致（供 `scripts/vfx/foliage_burn.gd` / `burn_toggle` 用）。
 - **树冠剔除**：只要存在叶片材质就挂 `CanopyCull`（`scripts/world/canopy_chunk_cull.gd`，2×2×2 分块）。
+- **落叶 / 落花**：只要存在树叶或花朵网格，就在它们所在的父节点下挂 `FallingLeaves`
+  （`scripts/vfx/falling_leaves.gd`），路径用 `get_path_to` 写成相对路径，**只打开实际存在的来源**
+  （有树叶就落树叶、有花朵就落花朵、两者都有就一起落）；卡片尺寸按树高自适应
+  （`clamp(树高 × 0.033, 0.25, 2.0)`，树叶用该值、花朵 ×0.89）。数量/贴图/下落速度/风力跟随
+  可在 Inspector 里分开调，详见 `docs/落叶与落花-技术文档.md`。
 
 ---
 

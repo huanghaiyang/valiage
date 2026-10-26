@@ -56,7 +56,7 @@ func _setup(glbs: PackedStringArray) -> void:
 			+ "  · 烘焙网格（含 CUSTOM0/1 风摆数据）→ assets/models/树/<名字>/wind/\n" \
 			+ "  · 树着色器材质（bark / leaves / flowers）→ scenes/树/<名字>/\n" \
 			+ "      （叶/花绑定最近的枝条做刚性同步，局部抖动各自独立）\n" \
-			+ "  · 可直接拖进场景的 .tscn（含树冠分块剔除）→ scenes/树/<名字>/"
+			+ "  · 可直接拖进场景的 .tscn（含树冠分块剔除；有树叶/花朵时自动带落叶节点）→ scenes/树/<名字>/"
 	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(intro)
 

@@ -5,6 +5,7 @@
 [ext_resource type="Material" path="res://scenes/树/大樱花树/_blend_mat_big_sakura_leaves.tres" id="3_leaf"]
 [ext_resource type="Material" path="res://scenes/树/大樱花树/_blend_mat_big_sakura_flowers.tres" id="4_flower"]
 [ext_resource type="Script" uid="uid://ocpr7iw51c8m" path="res://scripts/world/canopy_chunk_cull.gd" id="5_cull"]
+[ext_resource type="Script" path="res://scripts/vfx/falling_leaves.gd" id="6_fall"]
 [ext_resource type="ArrayMesh" path="res://assets/models/树/wind/Bark_Trunk.res" id="wind0"]
 [ext_resource type="ArrayMesh" path="res://assets/models/树/wind/Bark_Branch_L1.res" id="wind1"]
 [ext_resource type="ArrayMesh" path="res://assets/models/树/wind/Bark_Branch_L2.res" id="wind2"]
@@ -77,6 +78,9 @@ material_override = ExtResource("3_leaf")
 [node name="Flowers" parent="FastTree" index="7" unique_id=68357607]
 mesh = ExtResource("wind7")
 material_override = ExtResource("4_flower")
+
+[node name="FallingLeaves" type="MeshInstance3D" parent="FastTree" index="8"]
+script = ExtResource("6_fall")
 
 [node name="CanopyCull" type="Node" parent="." index="1" unique_id=362843379]
 script = ExtResource("5_cull")
