@@ -2032,6 +2032,47 @@ func category_model_path(cat: String, variant: int) -> String:
 	var list: Array = models
 	return str(list[posmod(variant, list.size())])
 
+
+## 追加某分类的模型变体（Mod 用；普通玩法不需要调用）。
+## 参数 cat：分类名（必须已存在于 _category_models）；paths：模型资源路径数组。
+## 返回值：追加后的变体总数；分类不存在时返回 0（并告警），表不作任何改动。
+## 副作用：写 _category_models[cat]（**新建数组再写回**，不原地 append ——
+##   分类表里可能是 const 数组，原地改会把常量绑定搅乱）。
+## 注意：重复路径（已在该分类里）会被跳过，所以重复加载同一 Mod 不会把表撑大。
+func add_model_variants(cat: String, paths: Array) -> int:
+	if not _category_models.has(cat):
+		push_warning("[Vegetation] 未知分类，无法追加模型: %s" % cat)
+		return 0
+	var list: Array = (_category_models[cat] as Array).duplicate()
+	for p in paths:
+		var s := String(p)
+		if s.is_empty() or list.has(s):
+			continue
+		list.append(s)
+	_category_models[cat] = list
+	return list.size()
+
+
+## 把某个模型路径在所有分类里替换成新路径（Mod 的"替换原版模型"用）。
+## 参数 old_path / new_path：原版资源路径 / Mod 资源路径。返回值：替换到的表项数。
+## 副作用：写 _category_models（新建数组再写回，原因同上）。
+func replace_model_path(old_path: String, new_path: String) -> int:
+	if old_path.is_empty() or new_path.is_empty():
+		return 0
+	var total := 0
+	for cat in _category_models.keys():
+		var list: Array = (_category_models[cat] as Array)
+		var hits := 0
+		var rebuilt: Array = list.duplicate()
+		for i in range(rebuilt.size()):
+			if String(rebuilt[i]) == old_path:
+				rebuilt[i] = new_path
+				hits += 1
+		if hits > 0:
+			_category_models[cat] = rebuilt
+			total += hits
+	return total
+
 # ==================== 家具互动（坐/睡/爬梯） ====================
 
 ## ---------- 家具互动（坐/睡/爬梯） ----------

@@ -71,6 +71,26 @@ const PATH := "res://data/spell_sheet.json"
 ##   加载函数以 is_empty() 判断缓存是否可用，所以空表会导致每次访问都重新读盘（见文件头坑 3）。
 ## 不要从外部写这个变量（本文件没有提供清缓存或写缓存的接口）。
 static var _cache: Dictionary = {}
+## Mod 注入的法术行（由 autoload Mods 在启动时写入）：{ "<法术 id>": { ... } }。
+## 与 _cache 的关系：_load() 读盘后把这里的行合并进去（同 id 以 Mod 字段为准，逐字段覆盖）。
+## 保持独立，是为了让"基础表没变"与"Mod 加了什么"可分开排查。
+static var _mod_rows: Dictionary = {}
+
+
+## 合并 Mod 法术行（由 Mods 调用；重复调用以新内容为准）。
+## 参数：rows —— { "<法术 id>": {字段...} }。返回：无。副作用：写 _mod_rows 并刷新 _cache。
+static func inject_mod_rows(rows: Dictionary) -> void:
+	if rows.is_empty():
+		return
+	for id in rows.keys():
+		var row: Variant = rows[id]
+		if not (row is Dictionary):
+			continue
+		if _mod_rows.has(id) and _mod_rows[id] is Dictionary:
+			(_mod_rows[id] as Dictionary).merge(row as Dictionary, true)
+		else:
+			_mod_rows[id] = (row as Dictionary).duplicate(true)
+	_cache = {}
 
 
 # ==================== 段 2：内部实现 —— 惰性加载与解析 ====================
@@ -100,6 +120,18 @@ static func _load() -> Dictionary:
 	# 只取 "spells" 这一层：顶层另有 "_说明" / "_字段" 两个下划线元数据键（写给人看的），
 	# 它们不是法术行，所以不能把整个根字典当成查询表；缺 "spells" 键时退化为空表。
 	_cache = (parsed as Dictionary).get("spells", {})
+	# Mod 注入行合并（同 id 逐字段覆盖，Mod 新 id 直接追加）。
+	# 先 copy 原行再 merge：基础表被 mod 覆盖时只影响合并结果，不污染 JSON 解析出来的原对象。
+	if not _mod_rows.is_empty():
+		var base: Dictionary = (_cache as Dictionary).duplicate()
+		for id in _mod_rows.keys():
+			if base.has(id) and base[id] is Dictionary:
+				var merged: Dictionary = (base[id] as Dictionary).duplicate()
+				merged.merge(_mod_rows[id] as Dictionary, true)
+				base[id] = merged
+			else:
+				base[id] = _mod_rows[id]
+		_cache = base
 	return _cache
 
 

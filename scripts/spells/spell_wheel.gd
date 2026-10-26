@@ -120,6 +120,58 @@ const ASSIGNED := {
 	1002: "invisibility",    # 第二圈第 3 格（新法术：隐身）
 }
 
+# ==================== Mod 术法：运行时追加 ====================
+## Mod 注册的术法放在这两份**运行时副本**里；上面的 ASSIGNED / SPELL_NAMES 保持原样，
+## 这样自检工具读常量表时仍然只看到原版术法，不会因为装了 Mod 而校验失败。
+var _extra_assigned := {}   # 槽位键 -> 术法 id
+var _extra_names := {}      # 术法 id -> 显示名
+
+
+## 注册一个 Mod 术法，并尽量塞进第一个空格子。
+## 参数 id：术法 id（= spell_caster.SPELLS 的键）；display_name：圆盘显示名。
+## 返回值：分配的槽位键（i*1000+k）；已存在或没有空位时返回 -1
+##   （返回 -1 只表示"圆盘里选不到"，术法本身仍可通过 select_spell() 施放）。
+## 副作用：写 _extra_assigned / _extra_names。
+func register_spell(id: String, display_name: String) -> int:
+	if id.is_empty():
+		return -1
+	if not display_name.is_empty():
+		_extra_names[id] = display_name
+	# 已经分配过（同一个 id 重复注册）就直接返回原槽位
+	for key in _extra_assigned.keys():
+		if String(_extra_assigned[key]) == id:
+			return int(key)
+	# 按层、按格找第一个空格子（格号必须 < 该层格子数，见 RING_COUNTS 的说明）
+	for i in range(RING_COUNTS.size()):
+		for k in range(int(RING_COUNTS[i])):
+			var key := i * 1000 + k
+			if ASSIGNED.has(key) or _extra_assigned.has(key):
+				continue
+			_extra_assigned[key] = id
+			return key
+	push_warning("[SpellWheel] 圆盘已满，术法 %s 无法放进圆盘" % id)
+	return -1
+
+
+## 槽位键 -> 术法 id（空格子返回 ""）。Mod 槽位优先于基础表。
+func _spell_at(slot: int) -> String:
+	if _extra_assigned.has(slot):
+		return String(_extra_assigned[slot])
+	return String(ASSIGNED.get(slot, ""))
+
+
+## 该槽位是否有术法
+func _has_spell_at(slot: int) -> bool:
+	return _extra_assigned.has(slot) or ASSIGNED.has(slot)
+
+
+## 术法 id -> 显示名（Mod 名优先，未登记退回 id 原文）
+func _display_name(id: String) -> String:
+	if _extra_names.has(id):
+		return String(_extra_names[id])
+	return String(SPELL_NAMES.get(id, id))
+
+
 # ==================== 运行时状态 ====================
 ## 圆盘是否打开。唯一的权威开关量：open()/close() 只改它 + visible，
 ## is_open() 直接返回它；spell_caster 也靠它判断"鼠标下压着圆盘 -> 不施法"。
@@ -378,7 +430,7 @@ func _on_gui_input(ev: InputEvent) -> void:
 ##   · ASSIGNED.get(id, "") 用空串当"没有术法"的哨兵：表里 value 都是非空 String，
 ##     不存在合法的 ""，所以 is_empty() 判定是安全的（也用不着 has() 再取一次）。
 func _choose(id: int) -> void:
-	var sid: String = String(ASSIGNED.get(id, ""))
+	var sid: String = _spell_at(id)
 	if sid.is_empty():
 		return                      # 空格子：不关圆盘（按需求只有选中术法才关）
 	close()
@@ -422,7 +474,7 @@ func _on_draw(c: Control) -> void:
 		for k in range(n):
 			var id := i * 1000 + k
 			# 是否已分配术法：只影响配色与是否写名字，**不影响命中**（空格子照样能被点中，只是选了不生效）。
-			var filled := ASSIGNED.has(id)
+			var filled := _has_spell_at(id)
 			# 本格起始弧度：-PI/2 是正上方，k 越大越顺时针 —— 必须与 slot_at 的角度约定一致。
 			var a0 := -PI * 0.5 + float(k) * step
 			# 两侧各内缩 0.012 弧度，画出格子间的可见缝。这是**纯视觉**偏差：命中判定按整格 step 算，
@@ -450,7 +502,7 @@ func _on_draw(c: Control) -> void:
 				var p := center + Vector2(cos(mid), sin(mid)) * rr
 				# 优先取中文名，未登记则退回显示 id 原文（便于一眼发现漏登记）；
 				# SPELL_NAMES 的 value 是 Variant，取用必须 String(...) 转一次。
-				var txt: String = String(SPELL_NAMES.get(String(ASSIGNED[id]), String(ASSIGNED[id])))
+				var txt: String = _display_name(_spell_at(id))
 				# 先量出文字尺寸，后面才能做水平居中。
 				var sz := _font.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13)
 				# 居中修正：横向减去半宽；纵向只扣约 1/4 字高 —— draw_string 的 y 是基线不是顶边。
@@ -464,9 +516,9 @@ func _on_draw(c: Control) -> void:
 	var tip := "点击选择术法 ｜ 空格子暂未开放"
 	# 悬停优先：鼠标指向哪格就报哪格（_hover 由 _on_gui_input 更新，-1 = 没悬停在任何格子）。
 	if _hover >= 0:
-		var sid2: String = String(ASSIGNED.get(_hover, ""))
+		var sid2: String = _spell_at(_hover)
 		if not sid2.is_empty():
-			tip = String(SPELL_NAMES.get(sid2, sid2))
+			tip = _display_name(sid2)
 		else:
 			# 键的整除 / 取模就是层号与格号；两处 +1 是换成人类习惯的 1 起计数（"第 1 层" = 最内圈）。
 			tip = "%d 层第 %d 格：空" % [_hover / 1000 + 1, _hover % 1000 + 1]

@@ -64,6 +64,7 @@ Vitals="*res://scripts/vitals.gd"
 VitalsHud="*res://scripts/ui/vitals_hud.gd"
 _mcp_game_helper="*res://addons/godot_ai/runtime/game_helper.gd"
 SimpleGrass="*uid://bfq0snth8sj3h"
+Mods="*res://scripts/mod/mod_loader.gd"
 
 [display]
 

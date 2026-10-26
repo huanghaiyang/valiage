@@ -52,11 +52,12 @@ extends Node
 ## 本文件只 new() 一个实例挂到 root，并消费它的 spell_chosen 信号；
 ## 布局、按钮、开关逻辑全在 spell_wheel.gd 内部，这里不碰。
 const SpellWheel := preload("res://scripts/spells/spell_wheel.gd")
-## 术法注册表：id -> 视觉脚本。视觉脚本只要实现
+## 术法注册表：id -> 视觉来源（GDScript 或 PackedScene）。视觉脚本只要实现
 ##   setup(player, staff) / start_cast() / stop_cast()
 ## 这三件事即可；瞄准方向与起始位置由 scripts/spells/spell_aim.gd 共用。
 ## 想换回着色器版火焰喷射：把 "flame_jet" 的值改成 preload(".../flame_visual.gd")。
-const SPELLS := {
+## ★ 用 var 而不是 const：Mod 系统（autoload Mods）启动时会通过 register_spell() 追加条目。
+var SPELLS := {
 	"flame_jet": preload("res://scripts/spells/flame_jet_particles.gd"),
 	"fire_tornado": preload("res://scripts/spells/fire_tornado_particles.gd"),
 	"blue_tornado": preload("res://scripts/spells/blue_tornado.gd"),
@@ -74,6 +75,36 @@ const SPELLS := {
 #   invisibility 没有视觉节点：效果宿主挂在角色下（invisibility_effect.gd），
 #     共享 jet 只负责"每次按下 -> refresh"，切法术时 jet 被释放也不影响 60s 计时
 #   flame_jet / fire_tornado 只有基础三件：按住期间持续演，松手停，不参与选点
+
+
+# ==================== 术法动态注册（Mod 用） ====================
+## 注册一个新术法（由 autoload Mods 在启动时调用；普通玩法不需要碰）。
+## 参数：
+##   id     —— 术法英文 id（= SPELLS 的键，也是圆盘槽位的 value）；重名会被拒绝。
+##   source —— GDScript（走 new()）或 PackedScene（走 instantiate()），两种都支持。
+##   name   —— 圆盘上显示的中文名（空则退回显示 id）。
+## 返回值：true = 注册成功；false = id 空/重名/来源类型不支持。
+## 副作用：写 SPELLS、转发给圆盘 register_spell()（分配一个空槽位）。
+## 注意：必须在圆盘建好之后调用（autoload Mods 排在 SpellCaster 之后）；
+##   圆盘还没建好时只登记 SPELLS，术法能施放但圆盘里选不到。
+func register_spell(id: String, source: Variant, name := "") -> bool:
+	if id.is_empty() or SPELLS.has(id):
+		return false
+	if not (source is Script or source is PackedScene):
+		return false
+	SPELLS[id] = source
+	if wheel != null and is_instance_valid(wheel) and wheel.has_method("register_spell"):
+		wheel.call("register_spell", id, name if not name.is_empty() else id)
+	return true
+
+
+## 把注册表里的"术法来源"实例化成节点（GDScript -> new() / PackedScene -> instantiate()）
+func _spell_new(source: Variant) -> Node3D:
+	if source is PackedScene:
+		return (source as PackedScene).instantiate() as Node3D
+	if source is Script:
+		return (source as Script).new() as Node3D
+	return null
 
 
 # ==================== 导出配置（可在检查器里改，不写场景也能生效） ====================
@@ -411,8 +442,8 @@ var _cast_instances: Array = []
 ## 时机：选点类法术"按下且已上膛"的那一瞬，一次施法调一次。
 ## 注意：只有**点击式（选点类）**法术才走这里；按住式法术（flame_jet / fire_tornado）直接用共享 jet。
 func _spawn_cast_instance() -> Node3D:
-	var script: GDScript = SPELLS.get(selected, null)
-	if script == null or _player == null or _staff == null:
+	var source: Variant = SPELLS.get(selected, null)
+	if source == null or _player == null or _staff == null:
 		# ★ 兜底（用户要求）：脚本/参数取不到时，用**共享实例的副本** ✓（副本状态独立 ✓）
 		#   —— 比"回退到共享实例"好得多 ✗（后者会让第二发被法术状态机忽略 ✗）
 		if jet != null and is_instance_valid(jet):
@@ -433,7 +464,9 @@ func _spawn_cast_instance() -> Node3D:
 		return null
 	# 每次施法都 new 一个：这样法术脚本内部的状态机（很多是"非 ST_OFF 就忽略新施法"）
 	# 各自独立，第二发不会被第一发挡住
-	var inst: Node3D = script.new()
+	var inst: Node3D = _spell_new(source)
+	if inst == null:
+		return null
 	inst.name = "SpellCast_" + selected
 	# 挂在玩家父节点下 = 玩家的**兄弟节点**：本节点是 autoload 不在场景树该位置，
 	# 也避免实例继承玩家骨骼/模型变换（世界坐标由各视觉脚本自己算）
@@ -504,8 +537,8 @@ func _ensure_jet() -> void:
 	# 已经是这个术法的视觉：什么都不用做
 	if jet != null and is_instance_valid(jet) and _jet_spell == selected:
 		return
-	var script: GDScript = SPELLS.get(selected, null)
-	if script == null:
+	var source: Variant = SPELLS.get(selected, null)
+	if source == null:
 		# 圆盘给的 id 不在 SPELLS 表里：只警告不崩，保持旧视觉不动（便于热改法术表）
 		push_warning("[SpellCaster] 未注册的术法: " + selected)
 		return
@@ -523,7 +556,10 @@ func _ensure_jet() -> void:
 			jet.call("stop_cast")
 			jet.queue_free()
 		jet = null
-	var j: Node3D = script.new()
+	var j: Node3D = _spell_new(source)
+	if j == null:
+		push_warning("[SpellCaster] 术法来源无法实例化: " + selected)
+		return
 	j.name = "Spell_" + selected
 	# 与独立实例同理：挂在玩家父节点（兄弟节点）下，不继承玩家骨骼/模型变换
 	_player.get_parent().add_child(j)

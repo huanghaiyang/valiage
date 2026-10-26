@@ -157,7 +157,8 @@ func _ready() -> void:
 ##   * KayKit 那套是按玩具尺寸做的，要放大 3.5 倍（HOUSE_BASE_SCALE）
 ##   * 自制的茅草屋是**按真实米数建的**（占地 4.2x3.0m、脊高 3.45m），倍数只能是 1.0，
 ##     否则套上 3.5 会变成一栋十几米的房子
-const HOUSE_MODELS := [
+## ★ 用 var 而不是 const：Mod 系统（autoload Mods）启动时通过 add_house_model() 追加条目。
+var HOUSE_MODELS := [
 	{"id": "red_home", "name": "红顶小屋", "base": HOUSE_BASE_SCALE,
 	 "path": "res://assets/models/buildings/buildings/red/building_home_A_red.gltf"},
 	{"id": "cottage", "name": "茅草屋", "base": 1.0,
@@ -573,7 +574,8 @@ func _place_tower(center: Vector3, radius: float, yaw: float, target: Node3D = n
 ## 树木表：Tripo 出的"并排多份"已用 `.runtime/cut_tripo_parts.py` **逐份切成独立 glb**
 ## （秋树 4 份、水晶树 8 份），各自脚底归零、缩放到真实米数，所以 base 都是 1.0。
 ## 滚轮可以在这些变体之间切换。
-const TREE_MODELS := [
+## ★ 用 var 而不是 const：Mod 系统（autoload Mods）启动时通过 add_tree_model() 追加条目。
+var TREE_MODELS := [
 	{"id": "red_maple", "name": "红枫树", "base": 1.0,
 	 "path": "res://assets/models/plants/autumn_tree_1.glb"},
 	# 红色水晶树（Tripo）：模型只有 0.98m 高，base 是"补到真实米数"的倍率 ——
@@ -652,6 +654,64 @@ func cycle_tree_variant(dir: int = 1) -> void:
 func set_tree_variant(i: int) -> void:
 	if i >= 0 and i < TREE_MODELS.size():
 		tree_variant = i
+
+
+# ==================== Mod 扩展接口（新增/替换模型表项） ====================
+## 追加一个可摆放树模型（由 autoload Mods 调用）。
+## 参数 entry：{id, name, base, path}；path 为空或 id 重复时拒绝。
+## 返回值：追加后的模型总数。副作用：写 TREE_MODELS。
+## 注意：树在 vegetation.gd 里还有一张**同序**的分类表（"tree"），
+##   Mods 会在建筑表追加后同步补上，调用方不要只补一边。
+func add_tree_model(entry: Dictionary) -> int:
+	var path := String(entry.get("path", ""))
+	if path.is_empty():
+		return TREE_MODELS.size()
+	var id := String(entry.get("id", path.get_file().get_basename()))
+	for m in TREE_MODELS:
+		if String((m as Dictionary).get("id", "")) == id:
+			return TREE_MODELS.size()
+	TREE_MODELS.append({"id": id, "name": String(entry.get("name", id)),
+			"base": float(entry.get("base", 1.0)), "path": path})
+	return TREE_MODELS.size()
+
+
+## 追加一个可摆放房屋模型（由 autoload Mods 调用）。参数/返回同 add_tree_model。
+func add_house_model(entry: Dictionary) -> int:
+	var path := String(entry.get("path", ""))
+	if path.is_empty():
+		return HOUSE_MODELS.size()
+	var id := String(entry.get("id", path.get_file().get_basename()))
+	for m in HOUSE_MODELS:
+		if String((m as Dictionary).get("id", "")) == id:
+			return HOUSE_MODELS.size()
+	HOUSE_MODELS.append({"id": id, "name": String(entry.get("name", id)),
+			"base": float(entry.get("base", 1.0)), "path": path})
+	return HOUSE_MODELS.size()
+
+
+## 按原版模型路径替换表项（Mod 的"替换模型"用；树表与房屋表都会搜）。
+## 参数 old_path：原版 path（精确匹配）；entry：{path, name?, base?}。
+## 返回值：替换到的表项数（0 = 没有这张表用到该模型）。
+## 副作用：原地改表项字典（Dictionary 是引用，数组里的元素会被一起改到）。
+func replace_model_path(old_path: String, entry: Dictionary) -> int:
+	if old_path.is_empty():
+		return 0
+	var new_path := String(entry.get("path", ""))
+	if new_path.is_empty():
+		return 0
+	var hits := 0
+	for table in [TREE_MODELS, HOUSE_MODELS]:
+		for m in (table as Array):
+			var row: Dictionary = m
+			if String(row.get("path", "")) != old_path:
+				continue
+			row["path"] = new_path
+			if entry.has("name"):
+				row["name"] = String(entry["name"])
+			if entry.has("base"):
+				row["base"] = float(entry["base"])
+			hits += 1
+	return hits
 
 
 # ==================== 放置实现：树 / 房屋（写历史 + 落场景） ====================
