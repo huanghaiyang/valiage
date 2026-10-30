@@ -89,12 +89,12 @@ const GAP := 3.0                         ## 层与层之间的缝
 ## 术法英文 id -> 圆盘上显示的中文名。**只影响显示文案**，不影响功能
 ## （功能映射在 spell_caster.gd 的 SPELLS 表里，两边必须同时登记，否则会出现"选了没反应"）。
 ## 未登记的 id 在绘制时会退回显示 id 原文（见 _on_draw），便于一眼发现漏登记。
-## 当前 9 条与 spell_caster.gd 的 SPELLS 一一对应：
+## 当前 10 条与 spell_caster.gd 的 SPELLS 一一对应：
 ##   flame_jet 火焰喷射 / fire_tornado 火焰编织 / blue_tornado 蓝色龙卷风 / detect_pulse 物体探测
 ##   flame_scorch 火焰灼烧 / gold_body 金色守护 / water_heal 流水治疗 / flame_advance 火焰推进
-##   invisibility 隐身（一次性 10 蓝 / 60s / 可刷新）
+##   invisibility 隐身（一次性 10 蓝 / 60s / 可刷新）/ blood_flower 嗜血狂花（一次性 20 蓝 / 10s / 圈内每秒 5 伤害）
 ## 注意：value 是 Variant，取用时必须 String(...) 转换（见 _on_draw / 中心提示文案）。
-const SPELL_NAMES := { "flame_jet": "火焰喷射", "fire_tornado": "火焰编织", "blue_tornado": "蓝色龙卷风", "detect_pulse": "物体探测", "flame_scorch": "火焰灼烧", "gold_body": "金色守护", "water_heal": "流水治疗", "flame_advance": "火焰推进", "invisibility": "隐身" }
+const SPELL_NAMES := { "flame_jet": "火焰喷射", "fire_tornado": "火焰编织", "blue_tornado": "蓝色龙卷风", "detect_pulse": "物体探测", "flame_scorch": "火焰灼烧", "gold_body": "金色守护", "water_heal": "流水治疗", "flame_advance": "火焰推进", "invisibility": "隐身", "blood_flower": "嗜血狂花" }
 ## 槽位分配表：key = 层*1000 + 格（int），value = 术法英文 id（String）。
 ##   层 = i（0 = 最内圈，向上到 RING_COUNTS.size()-1）；格 = k（0 = **正上方**，顺时针递增）。
 ##   这套约定必须与 slot_at() 的起点、_on_draw 的 a0 = -PI/2 完全一致，否则高亮会偏。
@@ -118,6 +118,7 @@ const ASSIGNED := {
 	1000: "water_heal",      # 第二圈第 1 格
 	1001: "flame_advance",   # 第二圈第 2 格（新法术：火焰推进）
 	1002: "invisibility",    # 第二圈第 3 格（新法术：隐身）
+	1003: "blood_flower",    # 第二圈第 4 格（新法术：嗜血狂花 · 圆圈选点）
 }
 
 # ==================== Mod 术法：运行时追加 ====================
@@ -524,7 +525,7 @@ func _on_draw(c: Control) -> void:
 			tip = "%d 层第 %d 格：空" % [_hover / 1000 + 1, _hover % 1000 + 1]
 	# 刚打开的前 3 秒给一次"哪一圈有什么"的引导文案（_t 由 _process 累加，open() 时清零）。
 	elif _t < 3.0:
-		tip = "第 1 圈已满（6 格）｜第 2 圈：流水治疗 / 火焰推进 / 隐身（其余暂空）"
+		tip = "第 1 圈已满（6 格）｜第 2 圈：流水治疗 / 火焰推进 / 隐身 / 嗜血狂花（其余暂空）"
 	# 提示文字 15px（比格子里的 13px 略大），同样做水平居中。
 	var ts := _font.get_string_size(tip, HORIZONTAL_ALIGNMENT_LEFT, -1, 15)
 	c.draw_string(_font, center - Vector2(ts.x * 0.5, -ts.y * 0.25), tip, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color(0.9, 0.94, 1.0, 0.95))

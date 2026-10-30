@@ -169,6 +169,30 @@
       "fade_time": 0.0,
       "total_time": 60.0,
       "note": "一次性：前摇 0 / 单次耗蓝 10 / 持续 60s；生效期间可再次施放刷新（剩余时间清零、重新计时 60s）；角色与随身物品半透明"
+    },
+    "blood_flower": {
+      "name": "嗜血狂花",
+      "one_shot": true,
+      "mana_cost": 20,
+      "mana_per_sec": 0,
+      "cast_climb": 0.0,
+      "cast_veil": 0.0,
+      "cast_time": 0.0,
+      "duration": 10.0,
+      "fade_time": 0.8,
+      "total_time": 10.8,
+      "note": "一次性范围法术：圆圈选点（同火焰灼烧的操作）。单次耗蓝 20；圈内石蒜花从种球长到枯萎（6 帧精灵），持续时间 10.0s，圈内敌人每秒扣 5 血；全程血雾弥漫，到期后 0.8s 淡出。整体 10.8s",
+      "targeting": {
+        "_说明": "通用圆圈选点参数（与 flame_scorch / blue_tornado 同一套）",
+        "enabled": true,
+        "diameter_min": 5.0,
+        "diameter_max": 10.0,
+        "range_min": 1.0,
+        "range_max": 12.0,
+        "wheel_step": 0.4,
+        "texture": "res://assets/textures/法术特效/kenney/particle-pack/circle_02.png",
+        "damage_per_sec": 5.0
+      }
     }
   }
 }

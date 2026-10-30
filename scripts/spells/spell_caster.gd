@@ -67,9 +67,10 @@ var SPELLS := {
 	"gold_body": preload("res://scripts/spells/gold_body.gd"),
 	"water_heal": preload("res://scripts/spells/water_heal.gd"),
 	"invisibility": preload("res://scripts/spells/invisibility.gd"),
+	"blood_flower": preload("res://scripts/spells/blood_flower.gd"),
 }
 # 注册表小抄（按各视觉脚本的实际实现核对，改动术法时可对照）：
-#   需要选点进圈(has_targeting)：blue_tornado / flame_advance / flame_scorch
+#   需要选点进圈(has_targeting)：blue_tornado / flame_advance / flame_scorch / blood_flower
 #     其中只有 flame_advance 提供 cast_sector（中轴 + 半角 -> 扇形），其余走 cast_at（圆心 + 半径）
 #   一次性法术(wants_cast_anim)：flame_scorch / water_heal —— 动作没演完不收起施法姿势
 #   invisibility 没有视觉节点：效果宿主挂在角色下（invisibility_effect.gd），

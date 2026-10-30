@@ -36,21 +36,23 @@ uniform vec2 viewport_size_px = vec2(1920.0, 1080.0);
  *  注意：只改尺寸、不改单位面积不透明度 —— 极小的粒子被撑大后略微变亮、
  *  极大的粒子被缩小后变成"同样浓度的一小团"，这是"看得见/不糊屏"与"能量守恒"的取舍。 */
 void vertex() {
-	if (min_pixel_size <= 0.0 && max_pixel_size <= 0.0) {
-		return;
-	}
-	vec4 clip_center = PROJECTION_MATRIX * MODELVIEW_MATRIX * vec4(0.0, 0.0, 0.0, 1.0);
-	vec4 clip_vert = PROJECTION_MATRIX * MODELVIEW_MATRIX * vec4(VERTEX, 1.0);
-	if (clip_center.w > 0.0 && clip_vert.w > 0.0) {
-		vec2 ndc_center = clip_center.xy / clip_center.w;
-		vec2 ndc_vert = clip_vert.xy / clip_vert.w;
-		vec2 pixels = abs(ndc_vert - ndc_center) * viewport_size_px * 0.5;
-		float max_pixels = max(pixels.x, pixels.y);
-		if (max_pixels > 0.0001) {
-			if (min_pixel_size > 0.0 && max_pixels < min_pixel_size) {
-				VERTEX.xy *= min_pixel_size / max_pixels;
-			} else if (max_pixel_size > 0.0 && max_pixels > max_pixel_size) {
-				VERTEX.xy *= max_pixel_size / max_pixels;
+	// 注意：Godot 4 的 vertex 处理器里**不允许 return**（编译报
+	// "Using 'return' in the 'vertex' processor function is incorrect"），
+	// 所以这里用 if 包住整段，而不是"提前 return"。
+	if (min_pixel_size > 0.0 || max_pixel_size > 0.0) {
+		vec4 clip_center = PROJECTION_MATRIX * MODELVIEW_MATRIX * vec4(0.0, 0.0, 0.0, 1.0);
+		vec4 clip_vert = PROJECTION_MATRIX * MODELVIEW_MATRIX * vec4(VERTEX, 1.0);
+		if (clip_center.w > 0.0 && clip_vert.w > 0.0) {
+			vec2 ndc_center = clip_center.xy / clip_center.w;
+			vec2 ndc_vert = clip_vert.xy / clip_vert.w;
+			vec2 pixels = abs(ndc_vert - ndc_center) * viewport_size_px * 0.5;
+			float max_pixels = max(pixels.x, pixels.y);
+			if (max_pixels > 0.0001) {
+				if (min_pixel_size > 0.0 && max_pixels < min_pixel_size) {
+					VERTEX.xy *= min_pixel_size / max_pixels;
+				} else if (max_pixel_size > 0.0 && max_pixels > max_pixel_size) {
+					VERTEX.xy *= max_pixel_size / max_pixels;
+				}
 			}
 		}
 	}
