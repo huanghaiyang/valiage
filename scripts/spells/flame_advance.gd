@@ -387,7 +387,12 @@ func _ignite_pending() -> void:
 		# "age = _wave_t - kd*advance_time" 同一套口径 —— 草和火才是同步的。
 		# 改成别的公式（例如直接用距离/速度）会让草比火早或晚。
 		if float(e["kd"]) * advance_time <= _wave_t:
-			_ignite_one(e["n"] as Node3D, int(e["i"]))
+			var n = e["n"]
+			# ★ 植被节点可能在波前到达前就被释放（世界重建 / 植被合批 / 切场景），
+			#   对已释放对象做 `as Node3D` 会抛 "Trying to cast a freed object"。
+			#   失效的直接丢弃：它永远点不着了，也不能留在 left 里反复报错。
+			if is_instance_valid(n) and n is Node3D:
+				_ignite_one(n as Node3D, int(e["i"]))
 		else:
 			left.append(e)
 	_pending_veg = left
