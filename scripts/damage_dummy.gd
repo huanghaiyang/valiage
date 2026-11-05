@@ -52,6 +52,11 @@ func take_damage(amount: int) -> void:
 	print("[靶子] +%d ｜ 累计 %d ｜ 第 %d 次命中 ｜ 平均 DPS %.1f" % [
 			amount, total_damage, hit_count, float(total_damage) / elapsed])
 	_refresh_label(elapsed)
+	# 头顶飘字：CombatText 是自动加载单例；这里用路径判空，缺该单例时只少一个表现、不报错。
+	# 传 self 作聚合键：高频多段伤害（火焰/龙卷每秒十几次）会合并成一条数字，避免刷屏。
+	var combat_text := get_node_or_null("/root/CombatText")
+	if combat_text != null:
+		combat_text.damage_at(global_position + Vector3(0.0, 2.4, 0.0), amount, self)
 
 
 ## R 键清零本轮统计（重新开始计时）。
