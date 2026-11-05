@@ -175,14 +175,16 @@ func _build_core_glow() -> void:
 		q.name = "CoreGlow%d" % i
 		var qm := QuadMesh.new()
 		# 尺寸随层号递减：光片自下而上收窄，火心呈锥形，而不是一根方形光柱
-		qm.size = Vector2(2.7 - 0.55 * float(i), 2.3 - 0.45 * float(i))
+		# ★ 竖向尺寸已随「火焰高度减半」压到 50%（水平宽度保持不变），
+		#   否则辉光会从缩短后的火苗顶上探出来。
+		qm.size = Vector2(2.7 - 0.55 * float(i), 1.15 - 0.225 * float(i))
 		q.mesh = qm
 		q.material_override = mat
 		# 加色光片也会参与投影计算，地上可能留一块方形硬影，所以显式关掉（推测：原作者的意图）
 		q.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		holder.add_child(q)
-		# 自下而上排布；最底层起始 0.85m ，略高于地面以免光片与地面相交出现硬边
-		q.position = Vector3(0.0, 0.85 + 0.75 * float(i), 0.0)
+		# 自下而上排布；最底层起始 0.425m（原 0.85m 的 50%），略高于地面以免光片与地面相交出现硬边
+		q.position = Vector3(0.0, 0.425 + 0.375 * float(i), 0.0)
 		_glows.append({
 			"node": q,
 			"mat": mat,

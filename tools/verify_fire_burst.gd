@@ -63,7 +63,8 @@ func _process(_d: float) -> bool:
 			lo = minf(lo, w.y)
 			hi = maxf(hi, w.y)
 	_ck("焰卡贴地（最低点 ≈ 0）", absf(lo) < 0.25, "最低 y=%.3f" % lo)
-	_ck("这是一团**大火**（总高 ≥ 3.5 米）", (hi - lo) >= 3.5, "总高 %.2f 米" % (hi - lo))
+	_ck("火焰高度已减半（总高 ≈ 2.0 米，原来 4.05 米）", (hi - lo) >= 1.8 and (hi - lo) <= 2.3,
+			"总高 %.2f 米" % (hi - lo))
 
 	var light := _find_light(root)
 	_ck("有红橙点光", light != null and light.light_energy > 0.0,
