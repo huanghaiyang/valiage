@@ -21,8 +21,11 @@ shader_type canvas_item;
 uniform sampler2D density_tex : filter_nearest, repeat_disable;
 /** 本帧最终速度场 */
 uniform sampler2D velocity_tex : filter_nearest, repeat_disable;
-/** 画笔底图（静态；没有笔刷时为全 0） */
-uniform sampler2D base_tex : filter_nearest, repeat_disable;
+/** 画笔底图（静态；没有笔刷时为全 0）
+ *  ★ filter_linear：底图分辨率（默认 256）通常高于模拟网格（96~160），
+ *    用 nearest 会把底图的边缘量化成台阶，多笔拼接处出现折痕；
+ *    线性采样把底图平滑地重采样到模拟网格上，边缘过渡连续。 */
+uniform sampler2D base_tex : filter_linear, repeat_disable;
 uniform float dt;
 /** 浓度耗散（每秒比例） */
 uniform float density_dissipation;

@@ -315,7 +315,7 @@ func _ensure_brush_field() -> FogBrushField:
 func _dock_grid_size() -> Vector2i:
 	if dock_content != null:
 		return dock_content.get("grid_size")
-	return Vector2i(96, 96)
+	return BRUSH_FIELD_SCRIPT.DEFAULT_GRID_SIZE
 
 
 ## 默认 PNG 资产路径：res://assets/fog/<场景名>_fog.png
