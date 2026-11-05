@@ -56,10 +56,13 @@ extends Node3D
 @onready var camera_rig: CameraRig = $CameraRig
 @onready var camera: Camera3D = $CameraRig/Camera3D
 @onready var sun: DirectionalLight3D = $Sun
+@onready var fill_light: DirectionalLight3D = $FillLight
 @onready var env: WorldEnvironment = $WorldEnvironment
 ## ★ 本项目改动：天气系统不再是 autoload，而是本场景里的节点 "Weather"。
 ##   刻意不写类型（保持动态调用），这样其他脚本/测试裁剪掉该节点时只需判空即可。
 @onready var weather = $Weather
+## 24 小时昼夜光照循环（同样是场景节点，同 weather 一样保持动态类型以便判空）。
+@onready var day_night = $DayNight
 @onready var ui: CanvasLayer = $UI
 # ==================== 二、交互半径参数 ====================
 ## 家具互动距离（米）：以**玩家的水平位置**为圆心，VegetationSystem.find_nearest_interactable()
@@ -428,6 +431,11 @@ func _ready() -> void:
 	# 植被的"碰撞流式加载"以**相机位置**为锚点（vegetation._collision_anchor() 取的就是它），
 	# 所以必须在世界生成完、开始建碰撞之前把相机交进去，否则远处实例的碰撞体不会被建出来。
 	vegetation.set_camera(camera_rig.camera)
+	# 昼夜循环：先于天气装配，拿到的是场景里未被天气改写的原始太阳/环境亮度。
+	# 本节点每帧在天气之后落地（process_priority 更大），最终画面以昼夜光照为准，
+	# 天气的云量/压暗系数会被叠加上去（见 day_night_cycle.gd 的文件头）。
+	if day_night != null:
+		day_night.bind_world(sun, fill_light, env, self)
 	# 天气系统：绑定太阳/环境/雨，并订阅相机跟随
 	# 顺序要求：放在植被之后 —— wind_materials() 返回的是已生成植被材质的引用集合，
 	# 植被还没建就调，会把空数组写进风摇 uniform。
@@ -451,6 +459,7 @@ func _ready() -> void:
 	# 自定义天气由 addons/weather_composer 面板生成，编号从 6 开始。
 	# 不存在的编号**静默忽略**（不报错），这样脚本传错参数也只是看到默认天气。
 	# 必须同时关掉 auto_change：否则过几十秒自动天气会把指定状态换走，截图就不可复现了。
+	# 另外支持 --hour=时刻(0..24) 与 --daylen=秒（一圈时长），用于昼夜光照截图验收。
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--weather=") and weather != null:
 			var k := int(a.split("=")[1])
@@ -458,6 +467,11 @@ func _ready() -> void:
 				weather.auto_change = false
 				weather.set_weather(k, true)
 				print("Weather | 启动指定 -> %s (wind=%.2f)" % [weather.weather_name(), weather.wind])
+		elif a.begins_with("--hour=") and day_night != null:
+			day_night.set_hour(float(a.split("=")[1]))
+			print("DayNight | 启动指定时刻 -> %s" % day_night.hour_string())
+		elif a.begins_with("--daylen=") and day_night != null:
+			day_night.day_length_seconds = maxf(1.0, float(a.split("=")[1]))
 	# 调试截图模式：渲染稳定后保存画面并退出
 	# 90 帧（60fps 下约 1.5s）是在"等世界/植被/天气过渡稳定"与"别白等"之间的折中；
 	# _capture_frames 与 _capture_start 一起写同一个值：前者负责倒计时，后者留作连拍反推 elapsed
