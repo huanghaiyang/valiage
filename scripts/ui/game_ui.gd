@@ -100,6 +100,17 @@ var _tool_before_create: int = Game.Tool.NONE
 var _variants_before_create: Dictionary = {}
 ## 帮助面板当前是否打开（状态真源，理由同 _create_visible）。
 var _help_visible := false
+## 开发者模式面板（F1 呼出）。目前只有一项：当前时间滑动条，直接改昼夜循环的时刻。
+var dev_panel: PanelContainer
+## 开发者面板可见性（状态真源，理由同 _create_visible）。
+var _dev_visible := false
+## 时间滑动条与它右侧的时刻文本（0~24 小时）。
+var _dev_time_slider: HSlider
+var _dev_time_label: Label
+## 是否正在拖动滑动条：拖动期间 **不要** 用自动推进的时间回写滑块，否则会和手指打架。
+var _dev_dragging := false
+## 昼夜节点缓存（分组 day_night_cycle；也可能在 main 的 "DayNight" 子节点上）。
+var _dev_day_night: Node = null
 
 # ==================== 通用小部件与常量（键列按钮 / 帮助文案 / 工具按钮表） ====================
 ## 左侧功能键统一用小尺寸按钮（原来 84x48、字号默认太大）
@@ -136,7 +147,8 @@ const HELP_TEXT := """WASD 移动 · Shift 加速 · Space 跳跃 · C 下降
 左键 建造/放置 · 右键 旋转视角（未选工具时按住拖动）
 滚轮 缩放视野（未选工具时 75%~200%）/ 换模型（选了工具时）
 E 交互（坐/睡/攀爬） · F 装备法杖 · Q 换杖 · V 换天气
-M 大地图 · Ctrl+Z 撤销 · ESC 关闭面板 · B/K/H 本面板"""
+M 大地图 · Ctrl+Z 撤销 · ESC 关闭面板 · B/K/H 本面板
+F1 开发者模式（拖动滑动条可改当前时间）"""
 
 ## 工具枚举值 → 按钮 的正向映射（键 = Game.Tool 的整数值，值 = 创造列表里的 Button）。
 ## _on_tool_changed() 靠它遍历所有按钮刷新按下态。只由 _build_ui() 填一次，之后只读。
@@ -412,6 +424,8 @@ func _build_ui() -> void:
 	# ---- 待建面板（动作 / 装备）----
 	_build_action_panel()
 	_build_staff_panel()
+	# ---- 开发者面板（F1 呼出：当前时间滑动条）----
+	_build_dev_panel()
 
 	# ---- 法杖装备格（右下角，保留：它是装备 HUD 不是提示文字）----
 	staff_slot = PanelContainer.new()
@@ -617,6 +631,137 @@ func _build_action_panel() -> void:
 		b.add_theme_font_size_override("font_size", 11)
 		b.pressed.connect(_on_action_pressed.bind(i))
 		list.add_child(b)
+
+# ==================== 开发者模式面板（F1） ====================
+## 造开发者模式面板：目前只有"当前时间"滑动条，拖动直接改昼夜循环的时刻。
+##
+## 参数/返回值：无。副作用：new 出控件挂到本 CanvasLayer；把滑块信号接到本文件的槽。
+## 设计说明：
+##   · 时间源是场景节点 DayNight（分组 day_night_cycle），这里**只读 time_hours /
+##     调 set_hour()**，不复制一份时间状态 —— 否则滑块与昼夜推进会各说各话；
+##   · 拖动期间用 _dev_dragging 屏蔽"_把自动推进的时间写回滑块"，避免滑块被拽回去；
+##   · 面板位置不写死，交给 _do_layout_panels() 与其它面板横向排开。
+func _build_dev_panel() -> void:
+	dev_panel = PanelContainer.new()
+	dev_panel.name = "DevPanel"
+	dev_panel.add_theme_stylebox_override("panel", _panel_style())
+	dev_panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	dev_panel.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	dev_panel.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	dev_panel.visible = false
+	add_child(dev_panel)
+
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 6)
+	dev_panel.add_child(v)
+
+	var title := Label.new()
+	title.text = "开发者模式（F1）"
+	title.add_theme_font_size_override("font_size", 13)
+	v.add_child(title)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	v.add_child(row)
+	var cap := Label.new()
+	cap.text = "当前时间"
+	cap.add_theme_font_size_override("font_size", 11)
+	row.add_child(cap)
+	_dev_time_label = Label.new()
+	_dev_time_label.add_theme_font_size_override("font_size", 11)
+	_dev_time_label.add_theme_color_override("font_color", Color(0.86, 0.92, 0.70))
+	row.add_child(_dev_time_label)
+
+	_dev_time_slider = HSlider.new()
+	_dev_time_slider.min_value = 0.0
+	_dev_time_slider.max_value = 24.0
+	# 0.05 小时 = 3 游戏分钟：足够细，又不会让拖动产生几千次 set_hour 调用。
+	_dev_time_slider.step = 0.05
+	_dev_time_slider.custom_minimum_size = Vector2(300, 20)
+	_dev_time_slider.tooltip_text = "拖动修改当前时刻（0~24 小时）"
+	_dev_time_slider.value_changed.connect(_on_dev_time_changed)
+	_dev_time_slider.drag_started.connect(_on_dev_drag_started)
+	_dev_time_slider.drag_ended.connect(_on_dev_drag_ended)
+	v.add_child(_dev_time_slider)
+
+	var tip := Label.new()
+	tip.text = "拖动即改时刻；松开后时间继续自动推进"
+	tip.add_theme_font_size_override("font_size", 10)
+	tip.add_theme_color_override("font_color", Color(0.72, 0.76, 0.66))
+	v.add_child(tip)
+
+	_sync_dev_panel()
+
+## 滑块值变化：把值写给昼夜节点，并刷新右侧时刻文本。
+##
+## 参数：value —— 0~24 的游戏小时。
+## 注意：set_hour() 内部会 clamp 并立刻重算光照，所以拖到哪一帧画面就变到哪一帧。
+func _on_dev_time_changed(value: float) -> void:
+	var dn := _day_night_node()
+	if dn != null:
+		dn.set_hour(value)
+	_update_dev_time_label(value)
+
+## 开始拖动：标记 _dev_dragging，_process 里的自动同步暂时让位给用户。
+func _on_dev_drag_started() -> void:
+	_dev_dragging = true
+
+## 结束拖动：解除标记，下一帧 _process 会重新按真实时间同步滑块。
+##
+## 参数：_value_changed —— 引擎传的"值是否变化"标志，这里用不到。
+func _on_dev_drag_ended(_value_changed: bool) -> void:
+	_dev_dragging = false
+	_sync_dev_panel()
+
+## 用昼夜节点的真实时间刷新滑块与文本（面板打开时每帧调用）。
+##
+## 副作用：写 HSlider.value（用 set_value_no_signal，避免触发 value_changed 反向再设时间）。
+## 提前返回：昼夜节点不存在时把文本写成"——"，滑块保持原位（不崩）。
+func _sync_dev_panel() -> void:
+	var dn := _day_night_node()
+	if dn == null:
+		if _dev_time_label != null:
+			_dev_time_label.text = "——"
+		return
+	var h := float(dn.get("time_hours"))
+	if _dev_time_slider != null and not _dev_dragging:
+		_dev_time_slider.set_value_no_signal(h)
+	_update_dev_time_label(h)
+
+## 刷新"当前时间"文本为 HH:MM（24 点整显示成 00:00，避免出现 24:00 这种不规范写法）。
+func _update_dev_time_label(h: float) -> void:
+	if _dev_time_label == null:
+		return
+	var hh := int(h)
+	if hh >= 24:
+		hh = 0
+	var mm := int((h - int(h)) * 60.0)
+	_dev_time_label.text = "%02d:%02d" % [hh, mm]
+
+## 取昼夜节点：优先分组 day_night_cycle，其次 main 下的 "DayNight"。
+##
+## 为什么要兜底：本文件可能被单独测试/裁剪场景复用时没有分组注册，但节点名约定仍在。
+## 返回 null 表示没有昼夜系统（此时滑块只显示"——"，拖动不会崩）。
+func _day_night_node() -> Node:
+	if _dev_day_night != null and is_instance_valid(_dev_day_night):
+		return _dev_day_night
+	if not is_inside_tree():
+		return null
+	_dev_day_night = get_tree().get_first_node_in_group(&"day_night_cycle")
+	if _dev_day_night == null and main != null:
+		_dev_day_night = main.get_node_or_null("DayNight")
+	return _dev_day_night
+
+## F1：开关开发者模式面板。
+##
+## 副作用：翻转 _dev_visible、同步面板可见性、刷新滑块、让出/收回 UI 占用并重排面板。
+func _toggle_dev_panel() -> void:
+	_dev_visible = not _dev_visible
+	dev_panel.visible = _dev_visible
+	if _dev_visible:
+		_sync_dev_panel()
+	_apply_ui_capture()
+	_layout_panels()
 
 ## 造一份面板通用样式：深蓝灰底(0.1,0.13,0.16) + 0.88 不透明度、2 px 描边、8 px 圆角、
 ## 四边 6 px 内容边距。
@@ -969,7 +1114,7 @@ func _apply_ui_capture() -> void:
 	if main == null or main.camera_rig == null:
 		return
 	var rig: CameraRig = main.camera_rig
-	rig.ui_override = _staff_visible or _action_visible or _create_visible or _help_visible
+	rig.ui_override = _staff_visible or _action_visible or _create_visible or _help_visible or _dev_visible
 
 
 ## 动态排布所有打开的菜单：**一行横向排开，互不遮挡**（用户要求）。
@@ -1012,6 +1157,8 @@ func _do_layout_panels() -> void:
 		panels.append(action_panel)
 	if _staff_visible:
 		panels.append(staff_panel)
+	if _dev_visible:
+		panels.append(dev_panel)
 	for p in panels:
 		if p == null or not p.visible:
 			continue
@@ -1146,6 +1293,9 @@ func close_any_panel() -> bool:
 	if _staff_visible:
 		_set_staff_panel(false)
 		return true
+	if _dev_visible:
+		_toggle_dev_panel()
+		return true
 	# 没有面板打开时：ESC = 取消当前工具（"选择"按钮去掉后功能保留在这里）
 	if main != null and Game.current_tool != Game.Tool.NONE:
 		main.set_tool(Game.Tool.NONE)
@@ -1182,6 +1332,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 		elif event.keycode == KEY_F:
 			_toggle_staff_panel()
+			get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_F1:
+			_toggle_dev_panel()
 			get_viewport().set_input_as_handled()
 		elif event.keycode == KEY_ESCAPE and close_any_panel():
 			get_viewport().set_input_as_handled()
@@ -1317,6 +1470,9 @@ func _update_weather_label() -> void:
 ##     但误差每轮都被清掉、不会累积漂移；
 ##   · 两件事放在同一次节流里刷不是巧合：都只依赖 autoload 的当前值，彼此无顺序要求。
 func _process(delta: float) -> void:
+	# 开发者面板打开时每帧把真实时间同步到滑块（拖动期间 _sync_dev_panel 内部会跳过滑块）。
+	if _dev_visible:
+		_sync_dev_panel()
 	_weather_accum += delta
 	if _weather_accum < 0.2:
 		return
